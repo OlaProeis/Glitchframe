@@ -61,8 +61,8 @@ TITLE_SIZE_MULTIPLIERS: Mapping[str, float] = {
     "medium": 0.80,
     "large": 1.15,
 }
-DEFAULT_TITLE_SIZE = "medium"
-DEFAULT_TITLE_POSITION = "top-center"
+DEFAULT_TITLE_SIZE = "small"
+DEFAULT_TITLE_POSITION = "bottom-left"
 
 # Horizontal / vertical padding from the frame edges, as a fraction of frame
 # dimensions. 4% keeps the text off the bleed area without looking floating.

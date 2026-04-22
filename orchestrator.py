@@ -41,13 +41,13 @@ class OrchestratorInputs:
     presets: dict[str, Any] = field(default_factory=dict)
     output_settings: dict[str, Any] = field(default_factory=dict)
     # Background compositor source (see ``pipeline.background``); not part of song hash.
-    background_mode: str = "sdxl-stills"
+    background_mode: str = "animatediff"
     static_background_image: str | Path | None = None
     # Cosmetic render settings (never influence the song cache key).
     preset_id: str | None = None
     reactive_intensity_pct: float = 50.0
     logo_path: str | Path | None = None
-    logo_position: str = "bottom-right"
+    logo_position: str = "center"
     logo_opacity_pct: float = 85.0
     logo_beat_pulse: bool = True
     # ``bass`` keys the pulse off low-frequency energy in ``analysis.json``
@@ -64,8 +64,8 @@ class OrchestratorInputs:
     # orchestrator can't derive a non-empty ``Artist - Title`` from metadata
     # the overlay is skipped automatically regardless of the switch.
     show_title: bool = True
-    title_position: str = "top-center"
-    title_size: str = "medium"
+    title_position: str = "bottom-left"
+    title_size: str = "small"
     width: int = 1920
     height: int = 1080
     fps: int = 30

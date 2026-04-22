@@ -61,6 +61,17 @@ transient from squashing every other kick to near zero while still mapping
 typical kicks to ~1.0 on energetic tracks.
 """
 
+DEFAULT_LOGO_PULSE_DYN_HI_PCT = 99.5
+"""Upper percentile for the high end of the logo envelope stretch range.
+
+``r_lo`` uses ``min(raw)`` so a single quiet intro (or digital silence) anchors
+the floor. If ``r_lo`` were a low *percentile* instead, long sustained bass
+sections dominate the histogram and the 5th–10th percentile lands **inside**
+the 808 plateau — then the whole hold maps near 0 and only rare transients
+hit 1 (inverted, tiny motion). The high end stays a robust percentile so one
+hot sample does not swallow the range.
+"""
+
 
 def _coerce_beats(beats: Iterable[float]) -> list[float]:
     """Return a sorted, float list of beat times (drops NaN / negative)."""
@@ -314,9 +325,30 @@ def build_logo_bass_pulse_track(
     a_n = _norm(attack)
     s_n = _norm(sustain)
     raw = np.maximum(a_n * float(attack_weight), s_n * float(sustain_weight))
-    peak = float(np.percentile(raw, p)) if raw.size else 0.0
-    peak = max(peak, float(raw.max()) * 0.5, 1e-3)
-    scaled = np.clip(raw * (float(sensitivity) / peak), 0.0, 1.0)
+
+    hi_pct = float(np.clip(float(DEFAULT_LOGO_PULSE_DYN_HI_PCT), 1.0, 100.0))
+    r_lo = float(np.min(raw)) if raw.size else 0.0
+    r_hi = float(np.percentile(raw, hi_pct)) if raw.size else 1.0
+    r_hi = max(r_hi, r_lo + 1e-5)
+    span = r_hi - r_lo
+    if span < 1e-5 or not math.isfinite(span):
+        # Flat ``raw`` (common on long held 808s): percentile span vanishes. Do
+        # not fall back to attack-only — that collapses the logo to silence while
+        # the sub is still holding. Scale by peak so a sustained high ``raw``
+        # reads as a steady elevated pulse instead.
+        rh = float(np.max(raw)) if raw.size else 0.0
+        if rh < 1e-6:
+            stretched = np.zeros_like(raw, dtype=np.float32)
+        else:
+            stretched = np.clip(raw / rh, 0.0, 1.0).astype(np.float32, copy=False)
+    else:
+        stretched = np.clip((raw - r_lo) / span, 0.0, 1.0).astype(
+            np.float32, copy=False
+        )
+
+    peak = float(np.percentile(stretched, p)) if stretched.size else 0.0
+    peak = max(peak, float(stretched.max()) * 0.5, 1e-3)
+    scaled = np.clip(stretched * (float(sensitivity) / peak), 0.0, 1.0)
     return PulseTrack(values=scaled.astype(np.float32, copy=False), fps=fps)
 
 

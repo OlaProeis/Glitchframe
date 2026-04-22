@@ -254,6 +254,37 @@ class TestBuildBassPulseTrack(unittest.TestCase):
 
 
 class TestLogoBassPulseTrack(unittest.TestCase):
+    def test_narrow_raw_band_gets_full_dynamic_range(self) -> None:
+        """Sustain-heavy curves must not collapse visual pulse to a tiny scale delta.
+
+        When ``raw = max(attack, sustain)`` sits in a tight band just below 1.0,
+        the compositor's absolute pulse→scale mapping would barely move the logo.
+        Post-stretch, kicks should sweep a large fraction of [0, 1].
+        """
+        fps = 30.0
+        frames = 300
+        spec = np.zeros((frames, 8), dtype=np.float32)
+        # Loud sustained sub (sustain branch pegs high) with sparse kicks.
+        spec[:, 0] = 0.88
+        spec[:, 1] = 0.75
+        for t in (0.4, 1.1, 2.0, 2.8):
+            idx = int(round(t * fps))
+            if 0 <= idx < frames:
+                spec[idx, 0] = 1.0
+                spec[idx, 1] = 0.92
+        analysis = {
+            "spectrum": {
+                "num_bands": 8,
+                "fps": fps,
+                "frames": frames,
+                "values": spec.tolist(),
+            }
+        }
+        logo = build_logo_bass_pulse_track(analysis)
+        assert logo is not None
+        vals = logo.values.astype(np.float64)
+        self.assertGreater(float(np.max(vals) - np.min(vals)), 0.45)
+
     def test_sustained_sub_stays_elevated_vs_attack_only(self) -> None:
         """Flat high bass after a ramp should keep logo envelope up (808 tail)."""
         fps = 30.0

@@ -334,7 +334,7 @@ def _build_render_inputs(
         preset_id=(preset_id or None),
         reactive_intensity_pct=float(reactive_intensity_pct),
         logo_path=_coerce_path(logo_file),
-        logo_position=str(logo_position or "bottom-right"),
+        logo_position=str(logo_position or "center"),
         logo_opacity_pct=float(logo_opacity_pct),
         logo_beat_pulse=bool(logo_beat_pulse),
         logo_pulse_mode=str(logo_pulse_mode or "bass").strip().lower(),
@@ -343,8 +343,8 @@ def _build_render_inputs(
         logo_snare_glow=bool(logo_snare_glow),
         logo_glow_strength=float(np.clip(logo_glow_strength_pct, 0.0, 200.0)) / 100.0,
         show_title=bool(show_title),
-        title_position=str(title_position or "top-center"),
-        title_size=str(title_size or "medium"),
+        title_position=str(title_position or "bottom-left"),
+        title_size=str(title_size or "small"),
         width=int(width),
         height=int(height),
         fps=int(fps or 30),
@@ -916,7 +916,7 @@ def build_ui() -> gr.Blocks:
                         "Bottom-right",
                         "Center",
                     ],
-                    value="Bottom-right",
+                    value="Center",
                 )
                 logo_opacity = gr.Slider(
                     label="Logo opacity",
@@ -1009,12 +1009,12 @@ def build_ui() -> gr.Blocks:
                         "Bottom-center",
                         "Bottom-right",
                     ],
-                    value="Top-center",
+                    value="Bottom-left",
                 )
                 title_size = gr.Dropdown(
                     label="Title size",
                     choices=["Small", "Medium", "Large"],
-                    value="Medium",
+                    value="Small",
                 )
 
             with gr.Tab("Lyrics"):
@@ -1138,7 +1138,7 @@ See `docs/technical/visual-style-presets.md` for the full schema and
                         ("Static image + Ken Burns (RMS)", MODE_STATIC_KENBURNS),
                         ("AnimateDiff loops (SDXL, GPU)", MODE_ANIMATEDIFF),
                     ],
-                    value=MODE_SDXL_STILLS,
+                    value=MODE_ANIMATEDIFF,
                     info=f"Canonical values: {', '.join(BACKGROUND_MODES)}",
                 )
                 static_bg_file = gr.File(

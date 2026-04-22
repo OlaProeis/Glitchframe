@@ -132,7 +132,7 @@ class CompositorConfig:
     base_color: str = "#FFFFFF"
     shadow_color: str | None = None
     logo_path: Path | None = None
-    logo_position: str = "bottom-right"
+    logo_position: str = "center"
     logo_opacity_pct: float = 100.0
     # Audio-reactive logo pulse: size + brightness kick on low-frequency hits
     # (``bass``, the default) or on every analyzer beat (``beats``). See
@@ -154,8 +154,8 @@ class CompositorConfig:
     # Persistent title/artist overlay burned into every frame. When
     # ``title_text`` is empty / None the overlay pass is skipped entirely.
     title_text: str | None = None
-    title_position: str = "top-center"
-    title_size: str = "medium"
+    title_position: str = "bottom-left"
+    title_size: str = "small"
     title_opacity: float = 0.90
     video_codec: str | None = None
     queue_size: int = DEFAULT_QUEUE_SIZE
