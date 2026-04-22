@@ -229,31 +229,50 @@ def render_title_rgba(
 
     x0, y_base = _text_anchor(position_key, width, height, text_w, text_h)
 
-    # --- Layer recipe --------------------------------------------------------
-    # 1. Soft blurred halo (Gaussian) — gives legibility over any background
-    #    without the "stamped twice" look of a hard-offset drop shadow.
-    # 2. Thin dark outline stroke — sharp edge contrast so letters never melt
-    #    into similar-luminance backgrounds.
-    # 3. Main fill — the bright glyphs on top.
+    # --- Layered bloom recipe -----------------------------------------------
+    # Three stacked Gaussian passes approximate a soft neon / display glow.
+    # Each uses ``kOuter_BlurStyle`` so the blur only bleeds *outside* the
+    # glyph — the fill stays crisp instead of being washed out by the wide
+    # pass. Wide-to-narrow sigmas with decreasing alpha give a smooth
+    # falloff (bright edge, soft halo, distant wash) rather than the hard
+    # "stamped blob" a single-pass normal blur produces.
     #
-    # ``shadow_offset`` is kept small (and only vertical) so the halo reads as
-    # a subtle grounding glow rather than a doubled stamp. Stroke stays thin so
-    # the card reads as clean UI type, not a heavy outlined sticker.
-    halo_sigma = max(0.9, size_px * 0.055)
-    halo_offset_y = max(0.5, size_px * 0.018)
-    halo_alpha = (0.38 if shadow_hex else 0.34) * alpha
+    # Followed by a thin outline for edge contrast on similar-luminance
+    # backgrounds, and finally the crisp fill on top.
+    wide_sigma = max(1.6, size_px * 0.22)
+    mid_sigma = max(1.0, size_px * 0.11)
+    tight_sigma = max(0.6, size_px * 0.045)
+
+    has_shadow = shadow_hex is not None
+    wide_alpha = (0.18 if has_shadow else 0.14) * alpha
+    mid_alpha = (0.30 if has_shadow else 0.24) * alpha
+    tight_alpha = (0.55 if has_shadow else 0.42) * alpha
+
     stroke_width = max(0.5, size_px * 0.010)
     stroke_alpha = 0.26 * alpha
 
+    # ``kOuter_BlurStyle`` / ``MakeBlur`` aren't part of every skia-python
+    # build — detect at runtime so CI / older wheels still get the old
+    # single-pass halo rather than a hard crash.
+    outer_style = getattr(skia, "kOuter_BlurStyle", None)
+    normal_style = getattr(skia, "kNormal_BlurStyle", None)
+
+    def _blur_paint(rgb: tuple[int, int, int], sigma: float, a: float) -> skia.Paint:
+        paint = skia.Paint(AntiAlias=True, Color=_argb_color(rgb, a))
+        style = outer_style if outer_style is not None else normal_style
+        if style is not None:
+            paint.setMaskFilter(skia.MaskFilter.MakeBlur(style, sigma))
+        return paint
+
     with surface as canvas:
-        halo_paint = skia.Paint(
-            AntiAlias=True,
-            Color=_argb_color(shadow_rgb, halo_alpha),
-            MaskFilter=skia.MaskFilter.MakeBlur(
-                skia.kNormal_BlurStyle, halo_sigma
-            ),
-        )
-        canvas.drawString(line, x0, y_base + halo_offset_y, font, halo_paint)
+        for sigma, halo_alpha in (
+            (wide_sigma, wide_alpha),
+            (mid_sigma, mid_alpha),
+            (tight_sigma, tight_alpha),
+        ):
+            canvas.drawString(
+                line, x0, y_base, font, _blur_paint(shadow_rgb, sigma, halo_alpha)
+            )
 
         stroke_paint = skia.Paint(
             AntiAlias=True,

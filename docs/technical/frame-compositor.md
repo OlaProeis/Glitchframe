@@ -12,12 +12,13 @@ End-to-end per-frame render for the full music video: pull the background RGB fr
 
 1. Frame-centered time `t = (i + 0.5) / fps` (consistent with `pipeline.renderer`).
 2. `background.background_frame(t)` → `(H, W, 3) uint8` RGB (shape / dtype validated).
-3. `uniforms_at_time(analysis, t, num_bands, intensity)` → reactive uniforms dict.
-4. `ReactiveShader.render_frame_composited_rgb(uniforms, bg_rgb)` blends the shader pass over the background on the GPU → `(H, W, 3) uint8` RGB.
-5. When `aligned_words` are provided: `KineticTypographyLayer.render_frame(t, uniforms)` → `(H, W, 4) uint8` RGBA, premultiplied-alpha blended via `composite_premultiplied_rgba_over_rgb`.
-6. When `config.title_text` is non-empty: a pre-rendered `(H, W, 4)` RGBA title card (rasterised once per render by `pipeline.title_overlay.render_title_rgba`) is alpha-blended on top. See **[`title-and-beat-pulse.md`](title-and-beat-pulse.md)** for position/size controls.
-7. When `config.logo_path` is set: logo is loaded + resized once up front, then `composite_logo_onto_frame(..., inplace=True, scale=…)` blends it at the chosen corner/center. When `config.logo_beat_pulse` is enabled the per-frame `scale` and `opacity_pct` are modulated by a pulse function built once via `pipeline.compositor._build_pulse_fn(cfg, analysis)`: `bass` mode (default) keys off low-frequency energy via `pipeline.beat_pulse.build_bass_pulse_track`, `beats` mode keys off the analyzer's grid via `pipeline.beat_pulse.beat_pulse_envelope`. See **[`title-and-beat-pulse.md`](title-and-beat-pulse.md)**.
-8. Final RGB frame is converted to a contiguous BGR buffer and pushed to the consumer.
+3. `uniforms_at_time(analysis, t, num_bands, intensity)` → reactive uniforms dict (`time`, `beat_phase`, `bar_phase`, `rms`, `onset_pulse`, `onset_env`, `build_tension`, `intensity`, `band_energies`).
+4. Compositor-scope envelopes are merged into the same dict right after `uniforms_at_time`: `bass_hit` from `_shader_bass_track_for_analysis`, `transient_lo / transient_mid / transient_hi` from `_shader_transient_tracks_for_analysis`, and `drop_hold` from `_drop_hold_fn_for_analysis`. All four are built **once per render** outside the frame loop (`PulseTrack` / closure scalar lookups inside) to keep the hot path scalar; see `docs/technical/reactive-shader-layer.md` for how shaders should consume each signal and **[`musical-events.md`](musical-events.md)** for the underlying detector + decays.
+5. `ReactiveShader.render_frame_composited_rgb(uniforms, bg_rgb)` blends the shader pass over the background on the GPU → `(H, W, 3) uint8` RGB.
+6. When `aligned_words` are provided: `KineticTypographyLayer.render_frame(t, uniforms)` → `(H, W, 4) uint8` RGBA, premultiplied-alpha blended via `composite_premultiplied_rgba_over_rgb`.
+7. When `config.title_text` is non-empty: a pre-rendered `(H, W, 4)` RGBA title card (rasterised once per render by `pipeline.title_overlay.render_title_rgba`) is alpha-blended on top. See **[`title-and-beat-pulse.md`](title-and-beat-pulse.md)** for position/size controls.
+8. When `config.logo_path` is set: logo is loaded + resized once up front, then `composite_logo_onto_frame(..., inplace=True, scale=…)` blends it at the chosen corner/center. When `config.logo_beat_pulse` is enabled the per-frame `scale` and `opacity_pct` are modulated by a pulse function built once via `pipeline.compositor._build_pulse_fn(cfg, analysis)`: `bass` mode (default) keys off low-frequency energy via `pipeline.beat_pulse.build_bass_pulse_track`, `beats` mode keys off the analyzer's grid via `pipeline.beat_pulse.beat_pulse_envelope`. See **[`title-and-beat-pulse.md`](title-and-beat-pulse.md)**.
+9. Final RGB frame is converted to a contiguous BGR buffer and pushed to the consumer.
 
 ## Threading / backpressure
 
@@ -54,6 +55,8 @@ The compositor also emits an `INFO` log on start (`N frames · WxH @ fps · laye
 
 - `docs/technical/background-modes.md` — `BackgroundSource` factory and caches.
 - `docs/technical/reactive-composite-and-gradio-preview.md` — GPU compositing math and `u_comp_background`.
+- `docs/technical/reactive-shader-layer.md` — per-uniform shader authoring guide for the signals injected in step 4.
+- `docs/technical/musical-events.md` — drop / build-up / band-transient detectors feeding `drop_hold` + `transient_lo/mid/hi`.
 - `docs/technical/kinetic-typography.md` — per-word RGBA layer and motion presets.
 - `docs/technical/logo-composite.md` — logo placement / opacity / alpha blend.
 - `docs/technical/spectrum-renderer-ffmpeg.md` — ffmpeg / NVENC pipe patterns reused here.

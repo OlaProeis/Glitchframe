@@ -58,7 +58,7 @@ class TestBuildMotionPrompt(unittest.TestCase):
     def test_includes_preset_prompt_and_flavor(self) -> None:
         p = _build_motion_prompt(
             "Deep space nebula, violet dust",
-            preset_id="cosmic",
+            preset_id="cosmic-flow",
             index=2,
             total=5,
         )
@@ -90,13 +90,13 @@ class TestBuildMotionPrompt(unittest.TestCase):
 
     def test_pacing_cue_changes_with_position(self) -> None:
         early = _build_motion_prompt(
-            "x", preset_id="cosmic", index=0, total=8
+            "x", preset_id="cosmic-flow", index=0, total=8
         )
         mid = _build_motion_prompt(
-            "x", preset_id="cosmic", index=4, total=8
+            "x", preset_id="cosmic-flow", index=4, total=8
         )
         late = _build_motion_prompt(
-            "x", preset_id="cosmic", index=7, total=8
+            "x", preset_id="cosmic-flow", index=7, total=8
         )
         self.assertIn("establishing", early)
         self.assertIn("steady motion", mid)
@@ -104,7 +104,7 @@ class TestBuildMotionPrompt(unittest.TestCase):
 
     def test_empty_preset_prompt_skipped_not_crashed(self) -> None:
         p = _build_motion_prompt(
-            "", preset_id="cosmic", index=0, total=1
+            "", preset_id="cosmic-flow", index=0, total=1
         )
         self.assertFalse(p.startswith(","))
         self.assertIn("cosmic drift", p)
@@ -113,7 +113,7 @@ class TestBuildMotionPrompt(unittest.TestCase):
 class TestMotionFlavors(unittest.TestCase):
     def test_all_builtin_presets_have_flavors(self) -> None:
         expected = {
-            "cosmic",
+            "cosmic-flow",
             "glitch-vhs",
             "lofi-warm",
             "minimal-mono",

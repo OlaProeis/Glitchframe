@@ -33,7 +33,7 @@ builder (`_build_keyframe_prompt` in `background_stills.py`):
   content and drifts off-topic. Instead every loop gets:
   1. The preset's scene prompt (from YAML `prompt`).
   2. A preset-specific **motion flavor** from `MOTION_FLAVORS` (e.g. "slow
-     cosmic drift, subtle parallax between dust layers" for `cosmic`). Unknown
+     cosmic drift, subtle parallax between dust layers" for `cosmic-flow`). Unknown
      preset ids fall back to `DEFAULT_MOTION_FLAVOR`.
   3. A **pacing cue** that varies by song position: `establishing shot, slow
      motion` in the first quartile, `steady motion` through the middle,

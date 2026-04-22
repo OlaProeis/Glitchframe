@@ -43,6 +43,7 @@
 | Defaults, paths, presets registry | `config.py` |
 | End-to-end pipeline coordination | `orchestrator.py` |
 | Audio ingest (hash, WAV cache, mono preview) | `pipeline/audio_ingest.py` |
+| Drop / build-up / band transients (analysis v2 `events` block) | `pipeline/musical_events.py`, `pipeline/beat_pulse.py` (`build_band_pulse_track`), `docs/technical/musical-events.md` |
 | M1 spectrum render → ffmpeg (`output.mp4` under `outputs/<run_id>/`) | `pipeline/renderer.py`, `config.new_run_id` |
 | Audio / lyrics / backgrounds / layers / encode | `pipeline/*.py` |
 | Background modes (factory + caches) | `pipeline/background.py`, `pipeline/background_stills.py`, `pipeline/background_kenburns.py`, `pipeline/background_animatediff.py`, `docs/technical/background-modes.md` |
@@ -56,6 +57,7 @@
 | Logo rim Gradio controls → orchestrator (`OrchestratorInputs`, `resolve_logo_rim_compositor_fields`) | `app.py` (Branding accordion), `orchestrator.py`, `docs/technical/logo-rim-branding-ui.md` |
 | Per-frame compositor → ffmpeg NVENC (bg + reactive + typo + logo, bounded queue) | `pipeline/compositor.py`, `docs/technical/frame-compositor.md` |
 | Thumbnail PNG (chorus/RMS frame, Skia title, beside `output.mp4`) | `pipeline/thumbnail.py`, `docs/technical/thumbnail-generator.md` |
+| Title / lyrics fill + glow color picker (bright-end of preset palette) | `pipeline/preset_colors.py::resolve_text_colors`, consumed by `orchestrator.py` and `pipeline/thumbnail.py::_resolve_title_colors` |
 | YouTube `metadata.txt` (title, description, chapters, tags) | `pipeline/metadata.py`, `orchestrator.write_run_metadata`, `docs/technical/metadata-generator.md` |
 | Preview 10 s (loudest RMS window), full render, ffprobe A/V sync check | `orchestrator.orchestrate_preview_10s`, `orchestrator.orchestrate_full_render`, `pipeline/preview.py`, `pipeline/av_sync.py`, `docs/technical/preview-and-render.md` |
 | GLSL shaders | `assets/shaders/` |

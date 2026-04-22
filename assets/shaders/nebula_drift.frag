@@ -14,9 +14,16 @@ out vec4 out_color;
 uniform vec2 resolution;
 uniform float time;
 uniform float beat_phase;
+uniform float bar_phase;       // 0..1 across the current 4-beat bar
 uniform float rms;
 uniform float onset_pulse;
+uniform float onset_env;       // continuous normalised onset-strength envelope
 uniform float bass_hit;
+uniform float transient_lo;    // low-band transient (kick / sub)
+uniform float transient_mid;   // mid-band transient (snare / body)
+uniform float transient_hi;    // high-band transient (hats / air)
+uniform float build_tension;   // 0..1 pre-drop smoothstep ramp
+uniform float drop_hold;       // post-drop exponential afterglow
 uniform float intensity;
 uniform float band_energies[8];
 uniform vec3 u_palette[5];

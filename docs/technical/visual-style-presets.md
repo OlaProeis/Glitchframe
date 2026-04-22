@@ -4,7 +4,7 @@ Feature: six bundled visual-style presets as validated YAML, registry loading in
 
 ## What was implemented
 
-- **Preset files:** `presets/*.yaml` — one file per stem: `neon-synthwave`, `minimal-mono`, `organic-liquid`, `glitch-vhs`, `cosmic`, `lofi-warm`. Each file defines an SD-oriented `prompt`, reactive `shader` stem, `typo_style` string, and `colors` as a non-empty list of `#RRGGBB` values.
+- **Preset files:** `presets/*.yaml` — one file per stem: `neon-synthwave`, `minimal-mono`, `organic-liquid`, `glitch-vhs`, `cosmic-flow`, `lofi-warm`. Each file defines an SD-oriented `prompt`, reactive `shader` stem, `typo_style` string, and `colors` as a non-empty list of `#RRGGBB` values.
 - **Registry API:** `load_preset_registry()` reads every `*.yaml`, validates schema and types, normalizes hex to uppercase, and rejects unknown `shader` values. `get_preset_ids()` returns sorted stems; `get_preset(name)` returns a shallow copy or raises `KeyError`.
 - **Shader allowlist:** `pipeline/builtin_shaders.py` defines `BUILTIN_SHADERS` (`spectrum_bars`, `particles`, `geometry_pulse`, `nebula_drift`, `liquid_chrome`, `vhs_tracking`, `synth_grid`, `paper_grain`) so preset validation and the UI do not import `moderngl`. `pipeline/reactive_shader` imports the same tuple for the GL layer.
 - **Gradio:** **Preset** dropdown drives a `.change` handler that fills **Custom prompt**, **Reactive shader**, **Typography style**, and **Color palette** (comma-separated hex). If no YAML is present, dropdown labels fall back to PRD ids but fields stay empty until files exist.
@@ -15,7 +15,7 @@ Each preset ships a coherent bundle of prompt + shader + typography + palette. T
 
 | Preset | Shader | Vibe | Palette role |
 |---|---|---|---|
-| **cosmic** | `nebula_drift` | Deep-space nebula; FBM cloud layers drift with bass, rare stars twinkle, onset bloom from accent slot | 0–3 ramp dark→bright nebula density, 4 = onset bloom |
+| **cosmic-flow** | `nebula_flow` | Deep-space nebula with bar-synced drift, pre-drop / drop dynamics, and bloom | 0–3 ramp dark→bright nebula density, 4 = onset bloom |
 | **glitch-vhs** | `vhs_tracking` | Analog VHS: scanlines, RGB chromatic aberration, per-line tracking jitter, onset-triggered noise bands | 0 base dark, 1 noise band color, 2 beat flash, 3 highlight, 4 alt dark |
 | **lofi-warm** | `paper_grain` | Cozy golden-hour wash: soft bokeh, animated film grain, warm vignette; deliberately gentle reactivity | 0–3 diagonal palette ramp, 0 bokeh tint, 4 onset bloom |
 | **minimal-mono** | `geometry_pulse` | Swiss brutalist: concentric rings on black, minimal motion | 4-color mono palette drives ring tones |

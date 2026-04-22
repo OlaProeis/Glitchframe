@@ -4,8 +4,8 @@ Offscreen :mod:`moderngl` reactive shader pass.
 Loads a fragment shader from :data:`config.SHADERS_DIR` (paired with the shared
 :file:`passthrough.vert`), creates a standalone GL context with an RGBA FBO at
 the target resolution, and renders single frames driven by analysis-derived
-uniforms (``beat_phase``, ``band_energies[8]``, ``rms``, ``onset_pulse``,
-``time``, ``intensity``).
+uniforms (``beat_phase``, ``bar_phase``, ``band_energies[8]``, ``rms``,
+``onset_pulse``, ``onset_env``, ``build_tension``, ``time``, ``intensity``).
 
 The main entry points are :class:`ReactiveShader` and :func:`uniforms_at_time`,
 which together let the compositor map an ``analysis.json`` bundle onto the
@@ -39,6 +39,16 @@ DEFAULT_VERTEX_SHADER = "passthrough.vert"
 # exp(-ONSET_DECAY_PER_SEC * dt) collapses to ~0 after roughly 0.5 s.
 ONSET_DECAY_PER_SEC = 6.0
 
+# Normalisation percentile for the continuous onset-strength envelope.
+# Dividing by the 95th percentile (instead of the raw max) keeps a single
+# outlier spike from crushing the rest of the track into near-zero.
+ONSET_ENV_NORM_PERCENTILE = 95.0
+
+# Key under which the normalised onset envelope is memoised on the analysis
+# dict. Caching is keyed by ``id(strength_list)`` so a swapped-in analysis
+# bundle with a new ``strength`` array naturally misses and recomputes.
+ONSET_ENV_CACHE_KEY = "_onset_env_cache"
+
 # Palette uniform layout. Must match ``uniform vec3 u_palette[PALETTE_SLOTS]``
 # in every fragment shader that reads the preset palette. PALETTE_SLOTS is a
 # fixed ceiling; presets shorter than this are padded by repeating the last
@@ -54,6 +64,12 @@ DEFAULT_PALETTE: tuple[str, ...] = (
 )
 
 _BACKGROUND_TEXTURE_UNIT = 0
+
+# Second sampler unit reserved for the optional feedback / warp framebuffer
+# (``u_prev_frame``). Kept distinct from the background unit so the compositor
+# path (``u_background`` on unit 0) and the Milkdrop-style feedback loop on
+# unit 1 can coexist without a manual rebind step per frame.
+_PREV_FRAME_TEXTURE_UNIT = 1
 
 
 def _parse_hex_color(hex_str: str) -> tuple[float, float, float]:
@@ -166,8 +182,11 @@ class ShaderUniforms:
 
     time: float = 0.0
     beat_phase: float = 0.0
+    bar_phase: float = 0.0
     rms: float = 0.0
     onset_pulse: float = 0.0
+    onset_env: float = 0.0
+    build_tension: float = 0.0
     intensity: float = 1.0
     band_energies: tuple[float, ...] = tuple([0.0] * DEFAULT_NUM_BANDS)
 
@@ -175,8 +194,11 @@ class ShaderUniforms:
         return {
             "time": float(self.time),
             "beat_phase": float(self.beat_phase),
+            "bar_phase": float(self.bar_phase),
             "rms": float(self.rms),
             "onset_pulse": float(self.onset_pulse),
+            "onset_env": float(self.onset_env),
+            "build_tension": float(self.build_tension),
             "intensity": float(self.intensity),
             "band_energies": [float(x) for x in self.band_energies],
         }
@@ -295,6 +317,179 @@ def _onset_pulse_at(
     return float(np.exp(-decay * dt))
 
 
+def _normalise_onset_strength(
+    strength: Sequence[float],
+    *,
+    percentile: float = ONSET_ENV_NORM_PERCENTILE,
+) -> np.ndarray:
+    """
+    Scale a raw onset-strength series into a roughly ``[0, 1]`` envelope.
+
+    Divides by the ``percentile``-th percentile (default 95th) so a single
+    outlier spike can't crush the rest of the track into near-zero, then
+    clips to ``[0, 1]``. Empty / non-positive inputs yield an empty array.
+    """
+    arr = np.asarray(strength, dtype=np.float32).reshape(-1)
+    if arr.size == 0:
+        return np.zeros(0, dtype=np.float32)
+    pivot = float(np.percentile(arr, float(percentile)))
+    if pivot <= 1e-6:
+        # Completely silent / flat analysis: nothing meaningful to normalise.
+        return np.zeros_like(arr)
+    return np.clip(arr / pivot, 0.0, 1.0).astype(np.float32, copy=False)
+
+
+def _interp_onset_strength(analysis: Mapping[str, Any], t: float) -> float:
+    """
+    Sample the continuous onset-strength envelope at time ``t`` (seconds).
+
+    Reads ``analysis['onsets']`` (schema: ``{strength, frame_rate_hz, ...}``)
+    and linearly interpolates between frames. The sampler uses
+    ``frame_rate_hz`` from the onset block itself — **not** ``analysis.fps``
+    — because onset analysis runs at a different hop than the mel spectrum.
+
+    Normalisation (divide by 95th percentile, clip to ``[0, 1]``) is done
+    once per ``strength`` array and memoised on the analysis dict under
+    :data:`ONSET_ENV_CACHE_KEY`, keyed by ``id(strength)``. Caching on the
+    dict (rather than a module-global ``WeakValueDictionary``) keeps the
+    helper stateless between songs and lets garbage collection drop the
+    cache when the analysis dict does.
+
+    Returns ``0.0`` for ``t < 0``, when the block is missing, when
+    ``strength`` is empty, or when ``frame_rate_hz`` is non-positive.
+    """
+    if float(t) < 0.0:
+        return 0.0
+    onsets = analysis.get("onsets") if isinstance(analysis, Mapping) else None
+    if not isinstance(onsets, Mapping):
+        return 0.0
+
+    strength = onsets.get("strength")
+    if not strength:
+        return 0.0
+
+    # Onset analysis uses its own hop; accept ``fps`` as a legacy alias but
+    # prefer ``frame_rate_hz`` since that's what ``_onset_features`` emits.
+    rate_raw = onsets.get("frame_rate_hz")
+    if rate_raw is None:
+        rate_raw = onsets.get("fps")
+    try:
+        rate = float(rate_raw) if rate_raw is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+    if rate <= 0.0:
+        return 0.0
+
+    cache_key = id(strength)
+    cache = analysis.get(ONSET_ENV_CACHE_KEY) if isinstance(analysis, Mapping) else None
+    normalised: np.ndarray | None = None
+    if isinstance(cache, dict):
+        cached = cache.get(cache_key)
+        if isinstance(cached, np.ndarray):
+            normalised = cached
+    if normalised is None:
+        normalised = _normalise_onset_strength(strength)
+        # Best-effort write-through cache. Mapping may be read-only (e.g.
+        # ``MappingProxyType`` in tests) — swallow the failure and just
+        # recompute next time rather than raising on a performance path.
+        try:
+            if not isinstance(cache, dict):
+                cache = {}
+                analysis[ONSET_ENV_CACHE_KEY] = cache  # type: ignore[index]
+            cache[cache_key] = normalised
+        except (TypeError, KeyError):
+            pass
+
+    if normalised.size == 0:
+        return 0.0
+    return _interp_scalar_series(normalised.tolist(), float(t), rate)
+
+
+def _bar_phase_at(
+    t: float,
+    downbeats: Sequence[float],
+    *,
+    beats_per_bar: int = 4,
+    bpm: float | None = None,
+    beats: Sequence[float] | None = None,
+) -> float:
+    """
+    Phase within the current ``beats_per_bar``-beat bar in ``[0, 1)``.
+
+    Resolution order:
+
+    1. **Downbeats given.** Interpolate between the nearest downbeat
+       boundaries, so ``t`` halfway between two consecutive downbeats
+       returns ``0.5``. Outside the downbeat grid, extrapolate using the
+       median downbeat span as the bar period.
+    2. **Only beats given.** Group beats into runs of ``beats_per_bar``
+       and treat every ``beats_per_bar``-th beat as a synthetic downbeat,
+       then interpolate as above.
+    3. **Fallback.** With neither grid, use ``60 / bpm * beats_per_bar``
+       as the bar period and phase-lock to ``t = 0``.
+    """
+    if beats_per_bar <= 0:
+        raise ValueError(f"beats_per_bar must be positive, got {beats_per_bar}")
+
+    t_f = float(t)
+
+    def _phase_in_span(prev: float, nxt: float) -> float:
+        span = nxt - prev
+        if span <= 1e-6:
+            return 0.0
+        return float(np.clip((t_f - prev) / span, 0.0, 1.0)) % 1.0
+
+    def _extrapolate(anchors: Sequence[float], period: float) -> float:
+        if period <= 1e-6:
+            return 0.0
+        if t_f < float(anchors[0]):
+            delta = (float(anchors[0]) - t_f) % period
+            phase = 1.0 - (delta / period)
+        else:
+            delta = (t_f - float(anchors[-1])) % period
+            phase = delta / period
+        return float(np.clip(phase, 0.0, 1.0)) % 1.0
+
+    # 1. Downbeat grid
+    if downbeats:
+        db = [float(x) for x in downbeats]
+        idx = _bisect_right_floats(db, t_f)
+        if 0 < idx < len(db):
+            return _phase_in_span(db[idx - 1], db[idx])
+        if len(db) >= 2:
+            spans = np.diff(np.asarray(db, dtype=np.float64))
+            period = float(np.median(spans))
+        elif bpm and bpm > 1e-3:
+            period = 60.0 / float(bpm) * float(beats_per_bar)
+        else:
+            period = 0.0
+        return _extrapolate(db, period)
+
+    # 2. Beat grid — treat every beats_per_bar-th beat as a synthetic downbeat.
+    if beats:
+        synth = [float(beats[i]) for i in range(0, len(beats), beats_per_bar)]
+        if synth:
+            idx = _bisect_right_floats(synth, t_f)
+            if 0 < idx < len(synth):
+                return _phase_in_span(synth[idx - 1], synth[idx])
+            if len(synth) >= 2:
+                spans = np.diff(np.asarray(synth, dtype=np.float64))
+                period = float(np.median(spans))
+            elif bpm and bpm > 1e-3:
+                period = 60.0 / float(bpm) * float(beats_per_bar)
+            else:
+                period = 0.0
+            return _extrapolate(synth, period)
+
+    # 3. Pure bpm fallback: anchor bar 0 at t = 0.
+    if bpm and bpm > 1e-3:
+        period = 60.0 / float(bpm) * float(beats_per_bar)
+        if period <= 1e-6:
+            return 0.0
+        return float((t_f % period) / period)
+    return 0.0
+
+
 def uniforms_at_time(
     analysis: Mapping[str, Any],
     t: float,
@@ -315,9 +510,17 @@ def uniforms_at_time(
         raise ValueError(f"num_bands must be positive, got {num_bands}")
 
     beats = list(analysis.get("beats") or [])
+    downbeats = list(analysis.get("downbeats") or [])
     tempo = analysis.get("tempo") or {}
     bpm = float(tempo.get("bpm") or 0.0)
     beat_phase = _beat_phase_at(beats, float(t), bpm=bpm)
+    bar_phase = _bar_phase_at(
+        float(t),
+        downbeats,
+        beats_per_bar=4,
+        bpm=bpm if bpm > 0.0 else None,
+        beats=beats,
+    )
 
     spec = analysis.get("spectrum") or {}
     spec_fps = float(spec.get("fps") or analysis.get("fps") or 0.0)
@@ -329,12 +532,25 @@ def uniforms_at_time(
 
     onset_peaks = (analysis.get("onsets") or {}).get("peaks") or []
     onset_val = _onset_pulse_at(onset_peaks, float(t), decay=onset_decay)
+    onset_env_val = _interp_onset_strength(analysis, float(t))
+
+    # Schema v2 ``events`` block. Defensive: pre-v2 caches re-analyze on load,
+    # but a hand-rolled test dict may omit it entirely — fall through to zero.
+    events = analysis.get("events") or {}
+    build_block = events.get("build_tension") or {}
+    build_fps = float(build_block.get("fps") or analysis.get("fps") or 0.0)
+    build_val = _interp_scalar_series(
+        build_block.get("values"), float(t), build_fps
+    )
 
     return {
         "time": float(t),
         "beat_phase": float(beat_phase),
+        "bar_phase": float(bar_phase),
         "rms": float(rms_val),
         "onset_pulse": float(onset_val),
+        "onset_env": float(onset_env_val),
+        "build_tension": float(build_val),
         "intensity": float(np.clip(intensity, 0.0, 1.0)),
         "band_energies": bands,
     }
@@ -364,6 +580,15 @@ class ReactiveShader:
     vertex_shader:
         Vertex-shader filename under ``shaders_dir`` (default
         ``passthrough.vert``).
+    feedback_enabled:
+        Opt into the ping-pong feedback framebuffer (``u_prev_frame`` +
+        ``u_has_prev``) for Milkdrop-style trails / tunnels. ``None`` (the
+        default) auto-detects by checking whether the fragment shader
+        declares the ``u_prev_frame`` sampler — existing shaders pay
+        zero cost. ``True`` / ``False`` forces the behaviour either way.
+        When enabled the renderer allocates a second RGBA8 FBO at the
+        output resolution (~8 MB at 1920×1080; ~16 MB including the
+        primary colour attachment).
 
     Use as a context manager or call :meth:`close` explicitly to release GL
     resources. The instance is **not** thread-safe.
@@ -379,6 +604,7 @@ class ReactiveShader:
         shaders_dir: Path | None = None,
         vertex_shader: str = DEFAULT_VERTEX_SHADER,
         palette: Sequence[str] | None = None,
+        feedback_enabled: bool | None = None,
     ) -> None:
         if width <= 0 or height <= 0:
             raise ValueError(f"Invalid resolution: {width}x{height}")
@@ -407,6 +633,17 @@ class ReactiveShader:
         self._color_tex: moderngl.Texture | None = None
         self._fbo: moderngl.Framebuffer | None = None
         self._bg_tex: moderngl.Texture | None = None
+        # Feedback / ping-pong state. ``_fbo_alt`` wraps ``_prev_tex`` so the
+        # two framebuffers can swap roles after every render; ``_color_tex``
+        # always tracks "the texture we just rendered into" and ``_prev_tex``
+        # "the texture the next frame reads as u_prev_frame".
+        self._feedback_requested: bool | None = (
+            feedback_enabled if feedback_enabled is None else bool(feedback_enabled)
+        )
+        self._feedback_enabled: bool = False
+        self._prev_tex: moderngl.Texture | None = None
+        self._fbo_alt: moderngl.Framebuffer | None = None
+        self._has_prev_frame: bool = False
 
         try:
             self._ctx = moderngl.create_standalone_context(require=330)
@@ -449,6 +686,46 @@ class ReactiveShader:
                 self._program["u_background"] = _BACKGROUND_TEXTURE_UNIT
             except KeyError:
                 pass
+
+            # Feedback FBO: auto-detect by default so existing shaders that
+            # don't declare ``u_prev_frame`` pay zero cost. Explicit ``True``
+            # / ``False`` from the caller wins over the auto-detect result.
+            shader_wants_feedback = True
+            try:
+                self._program["u_prev_frame"]
+            except KeyError:
+                shader_wants_feedback = False
+
+            if self._feedback_requested is None:
+                self._feedback_enabled = shader_wants_feedback
+            else:
+                self._feedback_enabled = bool(self._feedback_requested)
+
+            if self._feedback_enabled:
+                self._prev_tex = self._ctx.texture(
+                    (self._width, self._height), 4, dtype="f1"
+                )
+                # Nearest filtering is safe for a 1:1 feedback pass; switch to
+                # linear only if/when a shader intentionally samples off-grid.
+                self._prev_tex.filter = (moderngl.NEAREST, moderngl.NEAREST)
+                self._fbo_alt = self._ctx.framebuffer(
+                    color_attachments=[self._prev_tex]
+                )
+                try:
+                    self._program["u_prev_frame"] = _PREV_FRAME_TEXTURE_UNIT
+                except KeyError:
+                    # Caller forced ``feedback_enabled=True`` on a shader that
+                    # doesn't read the sampler — still allocate the FBO so the
+                    # ping-pong lifecycle is observable, but the binding here
+                    # is a no-op.
+                    pass
+                # Prime the "previous" texture to opaque-zero so frame 0's
+                # ``texture(u_prev_frame, ...)`` reads well-defined pixels even
+                # though ``u_has_prev`` will report zero. Using the alt FBO's
+                # clear avoids a separate ``texture.write`` upload path.
+                self._fbo_alt.use()
+                self._ctx.clear(0.0, 0.0, 0.0, 0.0)
+
             self._fbo.use()
             self._ctx.viewport = (0, 0, self._width, self._height)
             self._ctx.enable(moderngl.BLEND)
@@ -469,6 +746,34 @@ class ReactiveShader:
     @property
     def shader_name(self) -> str:
         return self._shader_name
+
+    @property
+    def feedback_enabled(self) -> bool:
+        """Whether the ping-pong feedback framebuffer is live for this instance."""
+        return self._feedback_enabled
+
+    @property
+    def has_prev_frame(self) -> bool:
+        """``True`` once at least one frame has been rendered into the feedback loop."""
+        return self._has_prev_frame
+
+    def reset_feedback(self) -> None:
+        """
+        Clear the feedback history so the next frame sees ``u_has_prev = 0``.
+
+        Zeros the previous-frame texture as well so a shader that samples
+        ``u_prev_frame`` regardless of ``u_has_prev`` reads deterministic
+        (0, 0, 0, 0) pixels rather than stale trail content. No-op when
+        feedback was not enabled for this instance.
+        """
+        if not self._feedback_enabled:
+            return
+        if self._fbo_alt is None or self._ctx is None or self._fbo is None:
+            return
+        self._fbo_alt.use()
+        self._ctx.clear(0.0, 0.0, 0.0, 0.0)
+        self._fbo.use()
+        self._has_prev_frame = False
 
     def write_background_rgb(self, background_rgb: np.ndarray) -> None:
         """
@@ -498,6 +803,17 @@ class ReactiveShader:
         except KeyError:
             return
         self._bg_tex.use(location=_BACKGROUND_TEXTURE_UNIT)
+
+    def _bind_prev_frame_sampler(self) -> None:
+        if not self._feedback_enabled:
+            return
+        if self._program is None or self._prev_tex is None:
+            return
+        try:
+            self._program["u_prev_frame"]
+        except KeyError:
+            return
+        self._prev_tex.use(location=_PREV_FRAME_TEXTURE_UNIT)
 
     # -- uniform handling ---------------------------------------------------
 
@@ -548,11 +864,19 @@ class ReactiveShader:
         defaults: dict[str, Any] = {
             "time": 0.0,
             "beat_phase": 0.0,
+            "bar_phase": 0.0,
             "rms": 0.0,
             "onset_pulse": 0.0,
+            "onset_env": 0.0,
+            "build_tension": 0.0,
+            "drop_hold": 0.0,
+            "transient_lo": 0.0,
+            "transient_mid": 0.0,
+            "transient_hi": 0.0,
             "bass_hit": 0.0,
             "intensity": 1.0,
             "u_comp_background": 0.0,
+            "u_has_prev": 0.0,
             "resolution": (float(self._width), float(self._height)),
             "band_energies": [0.0] * self._num_bands,
             # Palette is sticky per instance (set once at construction), but we
@@ -584,11 +908,22 @@ class ReactiveShader:
         if self._ctx is None or self._fbo is None or self._vao is None:
             raise RuntimeError("ReactiveShader has been closed")
 
+        # Feedback path: inject ``u_has_prev`` based on whether we've already
+        # produced at least one frame, and make the previous-frame texture
+        # sampleable before the draw call. ``setdefault`` preserves any
+        # explicit override the caller passes in (handy for manual tests).
+        effective: dict[str, Any] = dict(uniforms) if uniforms else {}
+        if self._feedback_enabled:
+            effective.setdefault(
+                "u_has_prev", 1.0 if self._has_prev_frame else 0.0
+            )
+
         self._fbo.use()
         self._ctx.viewport = (0, 0, self._width, self._height)
         self._ctx.clear(0.0, 0.0, 0.0, 0.0)
         self._bind_background_sampler()
-        self._apply_uniforms(uniforms or {})
+        self._bind_prev_frame_sampler()
+        self._apply_uniforms(effective)
         self._vao.render(moderngl.TRIANGLE_STRIP)
 
         err = self._ctx.error
@@ -599,6 +934,17 @@ class ReactiveShader:
         arr = np.frombuffer(raw, dtype=np.uint8).reshape(
             self._height, self._width, 4
         )
+
+        if self._feedback_enabled and self._fbo_alt is not None:
+            # Ping-pong swap: the texture we just wrote becomes next frame's
+            # ``u_prev_frame``, and the previous ``_prev_tex`` (now stale)
+            # becomes the write target. Framebuffers carry their colour
+            # attachments with them, so swapping both pairs keeps pairing
+            # consistent without rebuilding either FBO.
+            self._fbo, self._fbo_alt = self._fbo_alt, self._fbo
+            self._color_tex, self._prev_tex = self._prev_tex, self._color_tex
+            self._has_prev_frame = True
+
         # moderngl returns framebuffer pixels bottom-up; flip to top-left origin
         # so downstream code can treat the array like any other image.
         return np.flipud(arr).copy()
@@ -623,7 +969,16 @@ class ReactiveShader:
 
     def close(self) -> None:
         """Release GL resources. Safe to call multiple times."""
-        for attr in ("_fbo", "_color_tex", "_bg_tex", "_vao", "_vbo", "_program"):
+        for attr in (
+            "_fbo",
+            "_fbo_alt",
+            "_color_tex",
+            "_prev_tex",
+            "_bg_tex",
+            "_vao",
+            "_vbo",
+            "_program",
+        ):
             obj = getattr(self, attr, None)
             if obj is not None:
                 try:
@@ -665,6 +1020,8 @@ __all__: Sequence[str] = [
     "DEFAULT_VERTEX_SHADER",
     "DEFAULT_WIDTH",
     "ONSET_DECAY_PER_SEC",
+    "ONSET_ENV_CACHE_KEY",
+    "ONSET_ENV_NORM_PERCENTILE",
     "PALETTE_SLOTS",
     "ReactiveShader",
     "ShaderUniforms",

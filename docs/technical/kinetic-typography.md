@@ -62,8 +62,17 @@ around the glyph centre so words pop without shifting horizontally.
 ## Colors
 
 - `base_color` (hex `#RRGGBB`) is blended with the per-word alpha envelope.
-- `shadow_color` (optional) draws a 60% alpha drop shadow offset by `(+2,
-  +2)` px for readability over busy backgrounds.
+- `shadow_color` (optional) is drawn as a three-pass outer-blur halo
+  (sigma ≈ `font_size * {0.22, 0.11, 0.045}` with alpha
+  `{0.18, 0.32, 0.55}`) so lyrics stay legible over busy shader
+  backgrounds without the hard-stamped look of a fixed-offset drop shadow.
+  Mirrors the recipe in `pipeline.title_overlay.render_title_rgba`.
+- Both colors come from `pipeline.preset_colors.resolve_text_colors()`
+  applied to the preset palette, so the *brightest* palette entry drives
+  the fill and the most saturated mid-tone drives the glow — preset
+  palettes are ordered dark→bright for the shader's `u_palette[5]`, so
+  taking `colors[0]` / `colors[1]` directly would paint lyrics in the
+  darkest background tones and render them unreadable.
 
 ## Output
 

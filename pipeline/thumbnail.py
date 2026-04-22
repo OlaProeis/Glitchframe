@@ -17,6 +17,7 @@ from PIL import Image
 from pipeline.background import BackgroundSource
 from pipeline.compositor import CompositorConfig, render_single_frame
 from pipeline.kinetic_typography import DEFAULT_BASELINE_RATIO, KineticTypographyLayer
+from pipeline.preset_colors import resolve_text_colors
 from pipeline.reactive_shader import composite_premultiplied_rgba_over_rgb
 
 LOGGER = logging.getLogger(__name__)
@@ -104,10 +105,19 @@ def _resolve_title_colors(
     palette: Sequence[str] | None,
     cfg: CompositorConfig,
 ) -> tuple[str, str | None]:
-    if palette is not None and len(palette) >= 1:
-        main = str(palette[0])
-        shadow = str(palette[1]) if len(palette) >= 2 else None
-        return main, shadow
+    """Pick a readable ``(fill, glow)`` pair for the thumbnail line.
+
+    Prefers :func:`pipeline.preset_colors.resolve_text_colors` when a preset
+    palette is available (dark -> bright convention, text wants the bright
+    end). Falls back to ``cfg.base_color`` / ``cfg.shadow_color`` so callers
+    that pre-resolved the pair keep working.
+    """
+    if palette:
+        return resolve_text_colors(
+            palette,
+            default_fill=cfg.base_color,
+            default_glow=cfg.shadow_color,
+        )
     return cfg.base_color, cfg.shadow_color
 
 
@@ -154,14 +164,49 @@ def _overlay_title_line_skia(
     tw = float(font.measureText(line))
     x0 = (float(w) - tw) * 0.5
     y_base = baseline_y_ratio * float(h)
-    shadow_alpha = 0.65 if shadow_hex else 0.55
+
+    # Layered bloom — matches :mod:`pipeline.title_overlay` so the static
+    # thumbnail and the burned-in card read as the same typographic style.
+    # Wide-to-narrow ``kOuter_BlurStyle`` passes fall off smoothly around
+    # the glyph edges without bleeding into the fill. ``setMaskFilter`` is
+    # guarded so older skia-python wheels that don't expose ``MakeBlur`` /
+    # ``kOuter_BlurStyle`` still render a plain fill instead of crashing.
+    wide_sigma = max(1.6, size_px * 0.22)
+    mid_sigma = max(1.0, size_px * 0.11)
+    tight_sigma = max(0.6, size_px * 0.045)
+    has_shadow = shadow_hex is not None
+    wide_alpha = 0.20 if has_shadow else 0.15
+    mid_alpha = 0.34 if has_shadow else 0.26
+    tight_alpha = 0.60 if has_shadow else 0.46
+
+    outer_style = getattr(skia, "kOuter_BlurStyle", None)
+    normal_style = getattr(skia, "kNormal_BlurStyle", None)
+
+    def _blur_paint(sigma: float, a: float) -> skia.Paint:
+        paint = skia.Paint(AntiAlias=True, Color=_argb_color(shadow_rgb, a))
+        style = outer_style if outer_style is not None else normal_style
+        if style is not None:
+            paint.setMaskFilter(skia.MaskFilter.MakeBlur(style, sigma))
+        return paint
+
+    stroke_width = max(0.6, size_px * 0.010)
+    stroke_paint = skia.Paint(
+        AntiAlias=True,
+        Color=_argb_color(shadow_rgb, 0.28),
+        Style=skia.Paint.kStroke_Style,
+        StrokeWidth=stroke_width,
+        StrokeJoin=skia.Paint.kRound_Join,
+    )
 
     with surface as canvas:
-        shadow_paint = skia.Paint(
-            AntiAlias=True,
-            Color=_argb_color(shadow_rgb, shadow_alpha),
-        )
-        canvas.drawString(line, x0 + 3.0, y_base + 3.0, font, shadow_paint)
+        for sigma, halo_alpha in (
+            (wide_sigma, wide_alpha),
+            (mid_sigma, mid_alpha),
+            (tight_sigma, tight_alpha),
+        ):
+            canvas.drawString(line, x0, y_base, font, _blur_paint(sigma, halo_alpha))
+
+        canvas.drawString(line, x0, y_base, font, stroke_paint)
 
         main_paint = skia.Paint(
             AntiAlias=True,

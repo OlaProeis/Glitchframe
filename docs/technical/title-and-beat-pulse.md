@@ -51,18 +51,27 @@ stacking order and corner anchoring are shared.
 for 12–16 px UI text and distorts stroke weights at the sizes we render,
 so disabling it gives smoother, evenly-weighted letters.
 
-Each glyph is painted in three layered passes so the card stays legible
-over arbitrary backgrounds without looking "stamped twice":
+Each glyph is painted with a **layered outer-bloom** so the card stays
+legible over arbitrary backgrounds without looking "stamped twice":
 
-1. **Soft halo** — `MaskFilter.MakeBlur(kNormal_BlurStyle, σ)` with
-   `σ ≈ size_px * 0.11`, offset `+size_px * 0.03` on Y only. Acts as a
-   grounding glow.
-2. **Thin outline** — `Paint.kStroke_Style` with
-   `stroke_width ≈ size_px * 0.035` and round joins, in the shadow color
-   at 55 % alpha. Provides crisp edge contrast on busy/similar-luminance
-   backgrounds.
-3. **Fill** — the main glyph pass in `base_color` at the configured
+1. **Wide bloom** — `MaskFilter.MakeBlur(kOuter_BlurStyle, σ)` with
+   `σ ≈ size_px * 0.22`, alpha ≈ `0.18`. Far-falloff halo.
+2. **Mid halo** — `σ ≈ size_px * 0.11`, alpha ≈ `0.30`. Mid-range glow.
+3. **Tight edge lift** — `σ ≈ size_px * 0.045`, alpha ≈ `0.55`. Brightest
+   part of the halo, flush against the glyph edge.
+4. **Thin outline** — `Paint.kStroke_Style`, `stroke_width ≈ size_px *
+   0.010`, round joins, in the shadow color at 26 % alpha. Provides
+   crisp edge contrast on busy / similar-luminance backgrounds.
+5. **Fill** — the main glyph pass in `base_color` at the configured
    `title_opacity`.
+
+The `kOuter_BlurStyle` variant bleeds outward *only*, so the fill stays
+crisp. The three wide-to-narrow passes approximate a Gaussian pyramid —
+the result reads as a single smooth neon-style glow rather than the hard
+"stamped blob" a single-pass `kNormal` halo produces. Sigmas, styles, and
+alphas are looked up defensively so skia-python builds that don't expose
+`MaskFilter.MakeBlur` / `kOuter_BlurStyle` fall back to a plain tint
+instead of crashing the render.
 
 ### Stacking order (full compositor pipeline)
 
@@ -207,7 +216,32 @@ The `Branding` tab exposes:
 
 ## Fonts
 
-The title card uses `CompositorConfig.title_font_path` (default: bundled `Inter-SemiBold.ttf` when present). Kinetic lyrics use `CompositorConfig.font_path` (default: `Inter.ttf`). Both should live under `assets/fonts/` and be version-controlled so renders are consistent across machines (see `config.default_title_font_path` / `default_ui_font_path`).
+The title card uses `CompositorConfig.title_font_path`. Default resolution
+order in `config.default_title_font_path()`:
+
+1. `assets/fonts/SpaceGrotesk-SemiBold.ttf` — bundled display face (OFL,
+   see `SpaceGrotesk-LICENSE.txt`). Geometric neo-grotesque, reads
+   distinctly "modern" at 1080p+ title-card sizes.
+2. `assets/fonts/Inter-SemiBold.ttf` — kept as a fallback for machines
+   that haven't pulled the new asset. Was the previous default.
+3. The body font (`Inter.ttf`) as a last resort.
+4. `None` — Skia falls back to a system typeface.
+
+Kinetic lyrics use `CompositorConfig.font_path` (default: `Inter.ttf` via
+`config.default_ui_font_path()`). Both should live under `assets/fonts/`
+and be version-controlled so renders are consistent across machines.
+
+## Colors
+
+`CompositorConfig.base_color` (title fill) and `shadow_color` (glow) are
+resolved from the preset palette by
+`pipeline.preset_colors.resolve_text_colors()`. Preset palettes are
+ordered dark → bright for the shader's `u_palette[5]` — text needs the
+opposite, so the resolver picks the *brightest* entry for the fill and
+the most saturated remaining entry for the glow. This keeps titles
+readable on dark-theme presets (cosmic-flow, neon-synthwave, organic-liquid,
+glitch-vhs) where the first two palette slots are near-black
+background colors.
 
 ## Orchestrator inputs
 

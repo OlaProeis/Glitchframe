@@ -54,7 +54,13 @@ from pipeline.background import (
     normalize_background_mode,
 )
 from pipeline.builtin_shaders import BUILTIN_SHADERS
-from pipeline.beat_pulse import build_bass_pulse_track
+from pipeline.beat_pulse import (
+    build_bass_pulse_track,
+    build_hi_transient_track,
+    build_lo_transient_track,
+    build_mid_transient_track,
+)
+from pipeline.musical_events import sample_drop_hold
 from pipeline.compositor import DEFAULT_SHADER_BASS_DECAY_SEC, DEFAULT_SHADER_BASS_SENSITIVITY
 from pipeline.logo_composite import composite_logo_from_path
 from pipeline.lyrics_editor import (
@@ -75,7 +81,7 @@ _DEFAULT_PRESET_CHOICES: list[str] = [
     "minimal-mono",
     "organic-liquid",
     "glitch-vhs",
-    "cosmic",
+    "cosmic-flow",
     "lofi-warm",
 ]
 
@@ -309,6 +315,9 @@ def _build_render_inputs(
     logo_rim_sync_snare: bool,
     logo_rim_sync_bass: bool,
     logo_rim_mod_strength: float,
+    logo_rim_brightness_pct: float,
+    logo_rim_halo_size_px: float,
+    logo_rim_wave_shape: str,
     show_title: bool,
     title_position: str,
     title_size: str,
@@ -353,7 +362,7 @@ def _build_render_inputs(
         logo_pulse_strength=float(logo_pulse_strength),
         logo_pulse_sensitivity=float(logo_pulse_sensitivity),
         logo_snare_glow=bool(logo_snare_glow),
-        logo_glow_strength=float(np.clip(logo_glow_strength_pct, 0.0, 200.0)) / 100.0,
+        logo_glow_strength=float(np.clip(logo_glow_strength_pct, 0.0, 400.0)) / 100.0,
         logo_snare_squeeze_strength=float(np.clip(logo_snare_squeeze_pct, 0.0, 100.0))
         / 100.0,
         logo_impact_glitch_strength=float(np.clip(logo_impact_glitch_pct, 0.0, 100.0))
@@ -374,6 +383,10 @@ def _build_render_inputs(
         logo_rim_sync_bass=bool(logo_rim_sync_bass),
         logo_rim_mod_strength=float(np.clip(logo_rim_mod_strength, 0.0, 200.0))
         / 100.0,
+        logo_rim_brightness=float(np.clip(logo_rim_brightness_pct, 0.0, 500.0))
+        / 100.0,
+        logo_rim_halo_spread_px=float(np.clip(logo_rim_halo_size_px, 4.0, 64.0)),
+        logo_rim_wave_shape=str(logo_rim_wave_shape or "comet").strip().lower(),
         show_title=bool(show_title),
         title_position=str(title_position or "bottom-left"),
         title_size=str(title_size or "small"),
@@ -433,6 +446,9 @@ def _run_preview(
     logo_rim_sync_snare: bool,
     logo_rim_sync_bass: bool,
     logo_rim_mod_strength: float,
+    logo_rim_brightness_pct: float,
+    logo_rim_halo_size_px: float,
+    logo_rim_wave_shape: str,
     show_title: bool,
     title_position: str,
     title_size: str,
@@ -477,6 +493,9 @@ def _run_preview(
             logo_rim_sync_snare=logo_rim_sync_snare,
             logo_rim_sync_bass=logo_rim_sync_bass,
             logo_rim_mod_strength=logo_rim_mod_strength,
+            logo_rim_brightness_pct=logo_rim_brightness_pct,
+            logo_rim_halo_size_px=logo_rim_halo_size_px,
+            logo_rim_wave_shape=logo_rim_wave_shape,
             show_title=show_title,
             title_position=title_position,
             title_size=title_size,
@@ -532,6 +551,9 @@ def _run_render(
     logo_rim_sync_snare: bool,
     logo_rim_sync_bass: bool,
     logo_rim_mod_strength: float,
+    logo_rim_brightness_pct: float,
+    logo_rim_halo_size_px: float,
+    logo_rim_wave_shape: str,
     show_title: bool,
     title_position: str,
     title_size: str,
@@ -576,6 +598,9 @@ def _run_render(
             logo_rim_sync_snare=logo_rim_sync_snare,
             logo_rim_sync_bass=logo_rim_sync_bass,
             logo_rim_mod_strength=logo_rim_mod_strength,
+            logo_rim_brightness_pct=logo_rim_brightness_pct,
+            logo_rim_halo_size_px=logo_rim_halo_size_px,
+            logo_rim_wave_shape=logo_rim_wave_shape,
             show_title=show_title,
             title_position=title_position,
             title_size=title_size,
@@ -735,6 +760,19 @@ def _preview_reactive_frame(
             decay_sec=DEFAULT_SHADER_BASS_DECAY_SEC,
         )
         uniforms["bass_hit"] = float(_bt.value_at(0.0)) if _bt is not None else 0.0
+
+        # Match the compositor: inject band-transient + drop-hold signals at
+        # t=0 so the preview doesn't read zero for every new shader uniform
+        # that only exists on the per-frame injection path.
+        _lo = build_lo_transient_track(analysis)
+        _mid = build_mid_transient_track(analysis)
+        _hi = build_hi_transient_track(analysis)
+        uniforms["transient_lo"] = float(_lo.value_at(0.0)) if _lo is not None else 0.0
+        uniforms["transient_mid"] = float(_mid.value_at(0.0)) if _mid is not None else 0.0
+        uniforms["transient_hi"] = float(_hi.value_at(0.0)) if _hi is not None else 0.0
+        uniforms["drop_hold"] = float(
+            sample_drop_hold(0.0, (analysis.get("events") or {}).get("drops") or [])
+        )
 
         palette = _parse_palette_hex(palette_hex)
 
@@ -1039,12 +1077,12 @@ def build_ui() -> gr.Blocks:
                 logo_pulse_strength = gr.Slider(
                     label="Pulse strength",
                     minimum=0.0,
-                    maximum=2.0,
-                    value=1.0,
+                    maximum=4.0,
+                    value=2.0,
                     step=0.05,
                     info=(
                         "How big each bass hit reads (scale + brightness). "
-                        "At 2.0 the logo can grow roughly +20% on a full kick."
+                        "2.0 is the default; 4.0 is maximum punch for heavy drops."
                     ),
                 )
                 logo_snare_glow = gr.Checkbox(
@@ -1059,10 +1097,10 @@ def build_ui() -> gr.Blocks:
                 logo_glow_strength_pct = gr.Slider(
                     label="Neon glow strength",
                     minimum=0,
-                    maximum=200,
-                    value=100,
+                    maximum=400,
+                    value=200,
                     step=5,
-                    info="Percent · multiplied with the snare envelope (100% = default).",
+                    info="Percent · multiplied with the snare envelope (100% = base engine level; 200% = default).",
                 )
                 logo_snare_squeeze_pct = gr.Slider(
                     label="Snare squeeze (logo scale)",
@@ -1079,7 +1117,7 @@ def build_ui() -> gr.Blocks:
                     label="Drop / impact glitch",
                     minimum=0,
                     maximum=100,
-                    value=45,
+                    value=100,
                     step=5,
                     info=(
                         "RGB-split / tear on loudness jumps (build-up → drop). "
@@ -1096,13 +1134,13 @@ def build_ui() -> gr.Blocks:
                 )
                 with gr.Accordion(
                     "Traveling rim light (optional)",
-                    open=False,
+                    open=True,
                 ):
                     gr.Markdown(
                         "Adds a moving multi-colour rim behind the logo (see "
-                        "`docs/technical/logo-rim-compositing.md`). **Off** is the "
-                        "default. **Classic** keeps only the blurred snare neon. "
-                        "Rim settings do not change the song cache key."
+                        "`docs/technical/logo-rim-compositing.md`). **Traveling rim + "
+                        "neon** is the default. **Classic** keeps only the blurred snare "
+                        "neon. Rim settings do not change the song cache key."
                     )
                     logo_rim_mode = gr.Dropdown(
                         label="Rim mode",
@@ -1111,7 +1149,7 @@ def build_ui() -> gr.Blocks:
                             ("Classic neon only", "classic"),
                             ("Traveling rim + neon", "rim"),
                         ],
-                        value="off",
+                        value="rim",
                         info=(
                             "Classic maps to `LogoGlowMode.CLASSIC` (no traveling wave). "
                             "Traveling rim uses `AUTO` stacking with snare neon when both apply."
@@ -1121,9 +1159,14 @@ def build_ui() -> gr.Blocks:
                         label="Rim travel speed",
                         minimum=0.0,
                         maximum=2.0,
-                        value=0.25,
+                        value=0.5,
                         step=0.05,
-                        info="Wave phase speed in Hz (revolutions per second); 0 freezes the pattern.",
+                        info=(
+                            "Wave phase speed in Hz (revolutions per second); "
+                            "0 freezes the pattern. With the Traveling-comet "
+                            "shape, 0.25-0.5 Hz reads as a clearly moving "
+                            "bright spot orbiting the logo."
+                        ),
                     )
                     logo_rim_color_spread_deg = gr.Slider(
                         label="Rim colour spread",
@@ -1155,7 +1198,7 @@ def build_ui() -> gr.Blocks:
                     )
                     logo_rim_audio_reactive = gr.Checkbox(
                         label="Audio-reactive rim",
-                        value=False,
+                        value=True,
                         info=(
                             "When on, snare/bass envelopes from analysis.json modulate rim "
                             "intensity, phase, and inward spread (see logo-rim-audio-modulation.md)."
@@ -1179,6 +1222,47 @@ def build_ui() -> gr.Blocks:
                         value=100.0,
                         step=5.0,
                         info="Scales audio-driven rim modulation when “Audio-reactive rim” is on (100% = default).",
+                    )
+                    logo_rim_brightness_pct = gr.Slider(
+                        label="Rim brightness",
+                        minimum=0.0,
+                        maximum=500.0,
+                        value=300.0,
+                        step=5.0,
+                        info=(
+                            "Scales the rim's emissive gain (`intensity`) and, "
+                            "above 100%, the outer halo weight. 100% = engine "
+                            "default; 300% is the product default; use 400-500% on "
+                            "very bright or busy backgrounds where the rim needs to cut through."
+                        ),
+                    )
+                    logo_rim_halo_size_px = gr.Slider(
+                        label="Rim halo size",
+                        minimum=4.0,
+                        maximum=64.0,
+                        value=22.0,
+                        step=1.0,
+                        info=(
+                            "Outward halo falloff distance (`halo_spread_px`, "
+                            "in patch pixels). Larger = softer, wider glow "
+                            "around the logo silhouette."
+                        ),
+                    )
+                    logo_rim_wave_shape = gr.Dropdown(
+                        label="Rim wave shape",
+                        choices=[
+                            ("Traveling comet (1 bright spot)", "comet"),
+                            ("Twin comets (2 bright spots)", "twin"),
+                            ("Gentle lobes (2 soft)", "lobes"),
+                            ("Smooth ring (3 soft, legacy)", "ring"),
+                        ],
+                        value="comet",
+                        info=(
+                            "Picks `(waves, wave_sharpness)`. Comet = single "
+                            "distinctly travelling lobe (best when you want "
+                            "to *see* the light move). Ring = near-uniform "
+                            "glow, little perceptible motion."
+                        ),
                     )
                 btn_logo_preview = gr.Button("Preview logo on test frame")
                 logo_preview_image = gr.Image(
@@ -1298,7 +1382,7 @@ independently:
 
 **The six built-in presets**
 
-- **cosmic** — deep-space nebula + `nebula_drift` shader (FBM clouds, twinkling stars, bass-driven puffs).
+- **cosmic-flow** — deep-space nebula + `nebula_flow` shader (bar-synced drift, pre-drop build and drop bloom, Milkdrop-style dynamics).
 - **glitch-vhs** — 90s tube TV + `vhs_tracking` shader (scanlines, RGB split, onset-triggered tracking bursts).
 - **lofi-warm** — cozy study at golden hour + `paper_grain` shader (soft bokeh, film grain, warm vignette).
 - **minimal-mono** — Swiss brutalist + `geometry_pulse` shader (concentric rings, clean monochrome).
@@ -1427,6 +1511,9 @@ See `docs/technical/visual-style-presets.md` for the full schema and
             logo_rim_sync_snare,
             logo_rim_sync_bass,
             logo_rim_mod_strength,
+            logo_rim_brightness_pct,
+            logo_rim_halo_size_px,
+            logo_rim_wave_shape,
             show_title,
             title_position,
             title_size,

@@ -20,6 +20,7 @@ from pipeline.audio_analyzer import AnalysisResult, analyze_song
 from pipeline.audio_ingest import IngestResult, ingest_audio_file
 from pipeline.lyrics_aligner import AlignmentResult, align_lyrics
 from pipeline.metadata import write_metadata_txt
+from pipeline.preset_colors import resolve_text_colors
 from pipeline.preview import DEFAULT_PREVIEW_WINDOW_SEC
 
 if TYPE_CHECKING:  # pragma: no cover - imports used only for static typing
@@ -55,26 +56,38 @@ class OrchestratorInputs:
     # (kick / sub-bass hits). ``beats`` preserves the original grid-locked
     # behaviour for tracks / users who prefer an ``every beat`` kick.
     logo_pulse_mode: str = "bass"
-    logo_pulse_strength: float = 1.0
+    logo_pulse_strength: float = 2.0
     logo_pulse_sensitivity: float = 1.0
     # Mid-band (snare-ish) neon halo behind the logo; colour from preset shadow.
     logo_snare_glow: bool = True
-    logo_glow_strength: float = 1.0
+    logo_glow_strength: float = 2.0
     logo_glow_sensitivity: float = 1.0
     logo_snare_squeeze_strength: float = 0.40
-    logo_impact_glitch_strength: float = 0.45
+    logo_impact_glitch_strength: float = 1.0
     logo_impact_sensitivity: float = 1.0
     # Traveling-wave logo rim (``pipeline.logo_rim_lights``); cosmetic only.
     # ``logo_rim_mode``: ``off`` | ``classic`` | ``rim`` (Gradio maps labels).
-    logo_rim_mode: str = "off"
-    logo_rim_travel_speed: float = 0.25
+    logo_rim_mode: str = "rim"
+    logo_rim_travel_speed: float = 0.5
     logo_rim_color_spread_deg: float = 120.0
     logo_rim_inward_mix: float = 0.5
     logo_rim_direction: str = "cw"
-    logo_rim_audio_reactive: bool = False
+    logo_rim_audio_reactive: bool = True
     logo_rim_sync_snare: bool = True
     logo_rim_sync_bass: bool = True
     logo_rim_mod_strength: float = 1.0
+    # Rim emissive gain (1.0 = engine default; 3.0 = 300% product default).
+    # Drives ``RimLightConfig.intensity`` and also lifts ``halo_boost`` when > 1
+    # so the outer halo reads on screen.
+    logo_rim_brightness: float = 3.0
+    # Outer halo falloff radius in patch pixels; maps to ``halo_spread_px``.
+    logo_rim_halo_spread_px: float = 22.0
+    # Wave-shape preset keyword, resolved to ``(waves, wave_sharpness)``:
+    # ``comet`` → (1, 4.0) — single distinctly travelling bright spot;
+    # ``twin``  → (2, 4.0) — two tight comets;
+    # ``lobes`` → (2, 2.0) — gentle twin lobes;
+    # ``ring``  → (3, 1.5) — nearly uniform soft ring (previous engine default).
+    logo_rim_wave_shape: str = "comet"
     # Burned-in title card. ``show_title`` is the master switch; when the
     # orchestrator can't derive a non-empty ``Artist - Title`` from metadata
     # the overlay is skipped automatically regardless of the switch.
@@ -289,6 +302,23 @@ def _thumbnail_line_from_metadata(meta: Mapping[str, Any] | None) -> str | None:
     return title or artist or None
 
 
+# Rim wave-shape presets → ``(waves, wave_sharpness)``. Kept small & explicit
+# so the UI dropdown stays authoritative; unknown labels fall back to ``comet``
+# because a single distinct travelling lobe is the most visible motion cue.
+_RIM_WAVE_SHAPES: dict[str, tuple[int, float]] = {
+    "comet": (1, 4.0),
+    "twin": (2, 4.0),
+    "lobes": (2, 2.0),
+    "ring": (3, 1.5),
+}
+
+
+def _resolve_rim_wave_shape(raw: str | None) -> tuple[int, float]:
+    """Return ``(waves, wave_sharpness)`` for a UI wave-shape keyword."""
+    key = (raw or "").strip().lower()
+    return _RIM_WAVE_SHAPES.get(key, _RIM_WAVE_SHAPES["comet"])
+
+
 def resolve_logo_rim_compositor_fields(inputs: OrchestratorInputs) -> dict[str, Any]:
     """Map :class:`OrchestratorInputs` rim branding fields to :class:`CompositorConfig` kwargs.
 
@@ -332,11 +362,23 @@ def resolve_logo_rim_compositor_fields(inputs: OrchestratorInputs) -> dict[str, 
         spread_rad = spread_deg * (pi / 180.0)
         layers = 1 if spread_deg < 0.5 else 2
         inward = max(0.0, min(1.0, float(inputs.logo_rim_inward_mix)))
+        # Brightness ≥ 0 scales emissive gain directly; the outer halo weight
+        # only ever lifts above the engine default (never dimmed below 1.0) so
+        # the ring stays anchored to the alpha edge even at low brightness.
+        brightness = max(0.0, float(inputs.logo_rim_brightness))
+        halo_boost = max(1.0, brightness)
+        halo_spread_px = max(4.0, min(64.0, float(inputs.logo_rim_halo_spread_px)))
+        waves, wave_sharpness = _resolve_rim_wave_shape(inputs.logo_rim_wave_shape)
         rim_cfg = RimLightConfig(
             phase_hz=phase_hz,
             color_spread_rad=spread_rad,
             rim_color_layers=layers,
             inward_mix=inward,
+            intensity=brightness,
+            halo_boost=halo_boost,
+            halo_spread_px=halo_spread_px,
+            waves=waves,
+            wave_sharpness=wave_sharpness,
         )
 
     mod_strength = max(0.0, min(2.0, float(inputs.logo_rim_mod_strength)))
@@ -412,8 +454,12 @@ def _render_pipeline(
         else DEFAULT_MOTION
     )
     colors = list(preset.get("colors") or []) if preset else []
-    base_color = str(colors[0]) if colors else "#FFFFFF"
-    shadow_color = str(colors[1]) if len(colors) >= 2 else None
+    # Preset palettes are ordered dark -> bright for the shader (u_palette[5]).
+    # Text needs the opposite: the brightest entry for the fill and a
+    # saturated mid-tone for the glow. ``resolve_text_colors`` centralises
+    # that rule so title overlay, kinetic typography, and the thumbnail all
+    # agree on a single readable pair.
+    base_color, shadow_color = resolve_text_colors(colors)
     intensity = max(0.0, min(1.0, float(inputs.reactive_intensity_pct) / 100.0))
 
     logo_path_obj: Path | None = None

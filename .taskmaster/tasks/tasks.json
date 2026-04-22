@@ -525,13 +525,223 @@
         "recommendedSubtasks": 1,
         "expansionPrompt": "Comprehensive pytest coverage for 24-28 + technical documentation + index update.",
         "updatedAt": "2026-04-22T00:00:00.000Z"
+      },
+      {
+        "id": "31",
+        "title": "Analysis schema v2: bump version + cache invalidation",
+        "description": "Bump `ANALYSIS_SCHEMA_VERSION` in `pipeline/audio_analyzer.py` from 1 to 2 so the new `events` / extended signals block is always present. Cache hits with `schema_version < 2` must force a full re-analyze once and then cache the v2 payload.",
+        "details": "In `analyze_song`, after loading an existing `analysis.json`, compare `data.get('schema_version')` to `ANALYSIS_SCHEMA_VERSION`; on mismatch drop into the recompute path instead of returning the cached payload. Write `schema_version: 2` in the final dict. Do not rename existing keys (`beats`, `onsets`, `rms`, `spectrum`, `segments`); only *add* keys so old consumers keep working while the codebase is mid-migration. Keep the separate demucs-only refresh path (vocals upgrade on cache hit) intact for v2 caches.",
+        "testStrategy": "Unit: craft a fake cached JSON with `schema_version=1` and assert `analyze_song` re-runs the pipeline (mock the heavy steps). Confirm a freshly written JSON round-trips with `schema_version == 2`.",
+        "priority": "high",
+        "dependencies": [],
+        "status": "done",
+        "subtasks": [],
+        "complexity": 2,
+        "recommendedSubtasks": 0,
+        "expansionPrompt": "Trivial bump + cache-check branch; no expansion needed.",
+        "updatedAt": "2026-04-22T12:57:24.284Z"
+      },
+      {
+        "id": "32",
+        "title": "Generalized band pulse tracks (lo / mid / hi)",
+        "description": "Generalize `build_bass_pulse_track` in `pipeline/beat_pulse.py` into `build_band_pulse_track(*, band_lo, band_hi, decay_sec, sensitivity, norm_percentile)` and expose three convenience builders: `build_lo_transient_track`, `build_mid_transient_track`, `build_hi_transient_track`. These produce `PulseTrack` envelopes for kick/sub, snare/mids, and hats/sparkle respectively.",
+        "details": "Reuse the existing shape (positive diff of averaged bands → one-pole decay → percentile norm). Defaults: lo = bands [0,2) decay 0.34s; mid = bands [3,6) decay 0.12s; hi = bands [6,8) decay 0.06s; all 90th-percentile norm. Keep `build_bass_pulse_track` (used by logo) as a thin wrapper around `build_band_pulse_track`. Export new names from `__all__`. Covered by direct unit tests similar to `test_beat_pulse.py`.",
+        "testStrategy": "Unit: synthetic spectrum with a kick-only track produces a non-zero `lo` envelope and near-zero `mid`/`hi`; hat-only track does the inverse. Verify `value_at` matches interpolation of stored values.",
+        "priority": "high",
+        "dependencies": [
+          "31"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "complexity": 3,
+        "recommendedSubtasks": 0,
+        "expansionPrompt": "Small refactor; no expansion needed.",
+        "updatedAt": "2026-04-22T12:57:24.294Z"
+      },
+      {
+        "id": "33",
+        "title": "Continuous onset-strength sampler",
+        "description": "Add a time-domain sampler for the existing `onsets.strength` array in `analysis.json` so shaders get a continuous transient envelope alongside the discrete `onset_pulse`.",
+        "details": "Implement `_interp_onset_strength(analysis, t) -> float` in `pipeline/reactive_shader.py` (or a private helper next to `_interp_scalar_series`). The onsets block carries `frame_rate_hz` (not `fps`), so accept that key too. Normalise once (per-load) by the 95th percentile so the output is roughly [0,1] without a single outlier crushing everything. Cache the normalised array on the analysis dict under `analysis['_onset_env_cache']` keyed by id, or recompute cheaply each call — document the choice.",
+        "testStrategy": "Unit: known onset strength array interpolates linearly between frames; returns 0 for `t < 0` or when the block is missing; normalisation peaks near 1.0 on a flat synthetic array.",
+        "priority": "high",
+        "dependencies": [
+          "31"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "complexity": 2,
+        "recommendedSubtasks": 0,
+        "expansionPrompt": "Minor helper; no expansion needed.",
+        "updatedAt": "2026-04-22T13:07:08.129Z"
+      },
+      {
+        "id": "34",
+        "title": "Drop + build-up detector (`pipeline/musical_events.py`)",
+        "description": "New module that detects drop events and a build-up tension envelope from RMS + 8-band mel spectrum + segment boundaries already in `analysis.json`. Persist the output under a new `events` key so every render samples the same deterministic events.",
+        "details": "Algorithm (deterministic, no ML): (1) smooth RMS ~0.3s; (2) take positive RMS step over a ~0.5s lag window; (3) multiply by low-band energy step over the same lag (to gate mids-only false positives); (4) peak-pick above percentile + absolute floor; (5) snap to the nearest segment boundary within ±1.0s OR keep if the local jump is very strong; (6) de-dupe within a 5s window. For `build_tension(t)`: for each drop `t_d` with confidence `c`, rise linearly (or smoothstep) over [t_d - T_build, t_d] to `c`, snap back to 0 just after `t_d`; take max across overlapping build windows. Persist: `events = { 'drops': [{'t', 'confidence'}...], 'build_tension': {'fps': int, 'values': [float]}, 'build_window_sec': float }`. Call from `analyze_song` right after segments, before writing JSON.",
+        "testStrategy": "Unit: synthetic RMS with a flat section followed by a step produces exactly one drop near the step; build_tension rises to `confidence` at `t_d` and collapses to 0 immediately after. Degenerate inputs (no spectrum, no segments) return empty events without raising.",
+        "priority": "high",
+        "dependencies": [
+          "31"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "complexity": 6,
+        "recommendedSubtasks": 2,
+        "expansionPrompt": "Split into: 1) detect_drops() + segment snapping + de-dup; 2) build_tension per-frame series + drop_hold sampler + JSON serialisation.",
+        "updatedAt": "2026-04-22T12:57:24.297Z"
+      },
+      {
+        "id": "35",
+        "title": "Bar-phase helper (downbeat-aware)",
+        "description": "Add a `bar_phase_at(t, downbeats, beats_per_bar=4, bpm=None) -> float` helper that returns the [0,1) position within a 4-beat bar based on BeatNet downbeats, falling back to beat-grid + bpm when downbeats are absent.",
+        "details": "When downbeats exist, find the most recent downbeat `d_prev` and next `d_next`; return `(t - d_prev) / (d_next - d_prev)`. When only beats exist, group beats into bars of length `beats_per_bar` and return phase within the bar. Outside the grid, fall back to `beat_phase_at` behaviour extrapolated with `60/bpm * beats_per_bar` as the bar period. Lives in `pipeline/reactive_shader.py` near `_beat_phase_at`.",
+        "testStrategy": "Unit: downbeats at [0, 2, 4, 6] with `t=1.0` returns 0.5; `t=5.5` returns 0.75; empty downbeats + 120 bpm gives phase period 2.0s.",
+        "priority": "medium",
+        "dependencies": [
+          "31"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "complexity": 2,
+        "recommendedSubtasks": 0,
+        "expansionPrompt": "Small helper; no expansion needed.",
+        "updatedAt": "2026-04-22T13:07:08.140Z"
+      },
+      {
+        "id": "36",
+        "title": "Extend `uniforms_at_time` with new signals",
+        "description": "Add `onset_env`, `build_tension`, and `bar_phase` to the uniform dict returned by `uniforms_at_time` in `pipeline/reactive_shader.py`. `transient_lo/mid/hi` and `drop_hold` are still injected by the compositor (like today’s `bass_hit`) to avoid coupling the sampler to the `PulseTrack` machinery.",
+        "details": "Pull keys defensively with zero fallback on missing `events`. Extend `ShaderUniforms` to mirror the new keys so typed callers stay exhaustive. Update the Gradio one-frame reactive preview in `app.py` to also merge `transient_*` + `drop_hold` at `t=0` so the preview doesn’t read zero for every new signal.",
+        "testStrategy": "Unit: analysis dict with a fake `events` block returns non-zero `build_tension` at the peak of the build window; `bar_phase` returns expected values with synthetic downbeats; absent blocks return 0 without raising.",
+        "priority": "high",
+        "dependencies": [
+          "32",
+          "33",
+          "34",
+          "35"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "complexity": 3,
+        "recommendedSubtasks": 0,
+        "expansionPrompt": "Small integration; no expansion needed.",
+        "updatedAt": "2026-04-22T13:07:08.144Z"
+      },
+      {
+        "id": "37",
+        "title": "Compositor wiring for new pulse tracks + drop hold",
+        "description": "Build the three transient tracks (lo/mid/hi) plus a `drop_hold` sampler once per render in `pipeline/compositor.py`, and inject them into the per-frame uniform dict alongside the existing `bass_hit`.",
+        "details": "Add helpers analogous to `_shader_bass_track_for_analysis`: `_shader_transient_tracks_for_analysis` returns `(lo, mid, hi)` `PulseTrack | None`. Add a `_drop_hold_fn_for_analysis(analysis, decay_sec)` that closes over `events.drops` and returns `t -> float` (exp decay from the most recent drop). Pass into `_render_compositor_frame` and merge into `uniforms` after the existing `bass_hit` line. Expose decay + sensitivity knobs in `CompositorConfig` with sensible defaults; document in the dataclass docstring. Keep hot-path cost minimal: scalar lookups only.",
+        "testStrategy": "Unit: render one synthetic frame with a mock analysis containing a drop – the injected `drop_hold` is 1.0 at the drop time and decays within seconds. Existing compositor tests still pass.",
+        "priority": "high",
+        "dependencies": [
+          "32",
+          "34",
+          "36"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "complexity": 4,
+        "recommendedSubtasks": 0,
+        "expansionPrompt": "Straightforward wiring; no expansion needed.",
+        "updatedAt": "2026-04-22T13:25:24.682Z"
+      },
+      {
+        "id": "38",
+        "title": "Declare new uniforms in existing `.frag` files",
+        "description": "Add uniform declarations for `onset_env`, `transient_lo`, `transient_mid`, `transient_hi`, `build_tension`, `drop_hold`, `bar_phase` to every shader in `assets/shaders/` without changing their current visual behaviour. This is purely receiving – shaders can ignore the new signals until task 42.",
+        "details": "Unused uniforms are silently skipped by `ReactiveShader` (see `docs/technical/reactive-shader-layer.md`), so declaring them costs nothing. Keep existing math untouched. This step makes it obvious during review that every shader has access to the full signal vocabulary.",
+        "testStrategy": "Manual: render one frame per shader with the updated compositor; image hashes should be identical to pre-change for the same uniform inputs.",
+        "priority": "medium",
+        "dependencies": [
+          "36"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "complexity": 2,
+        "recommendedSubtasks": 0,
+        "expansionPrompt": "Trivial declaration sweep; no expansion needed.",
+        "updatedAt": "2026-04-22T13:25:24.686Z"
+      },
+      {
+        "id": "39",
+        "title": "Docs for new analysis + reactive signal vocabulary",
+        "description": "Document the new module + signals: update `docs/technical/audio-analyzer.md` (schema v2 + events block), update `docs/technical/reactive-shader-layer.md` (new uniforms contract), add `docs/technical/musical-events.md` (drop + build-up detection algorithm and tuning knobs), add one line to `docs/index.md`, and update `ai-context.md` “Where Things Live”.",
+        "details": "Explain the why (shaders want continuous signals for a Milkdrop feel), the algorithm (deterministic drop detection), the output shape, and how shaders should consume each signal (e.g. `transient_hi` for sparkle, `build_tension` to dampen motion pre-drop, `drop_hold` to bloom post-drop). Keep prose style consistent with existing technical docs.",
+        "testStrategy": "Doc-only change. Cross-ref links valid; examples compile under `python -m compileall`.",
+        "priority": "medium",
+        "dependencies": [
+          "37",
+          "38"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "complexity": 2,
+        "recommendedSubtasks": 0,
+        "expansionPrompt": "Docs sweep; no expansion needed.",
+        "updatedAt": "2026-04-22T13:25:24.689Z"
+      },
+      {
+        "id": "40",
+        "title": "Pilot shader: `nebula_flow` + `cosmic-flow` preset",
+        "description": "Ship a new shader stem `nebula_flow` that uses the full new signal vocabulary (lo/mid/hi transients, build_tension, drop_hold, onset_env, bar_phase) for a Milkdrop-style nebula. Add a `cosmic-flow.yaml` preset pointing at it. Keep the original `nebula_drift` + `cosmic` preset untouched so A/B is trivial.",
+        "details": "`transient_lo` drives nebula breathing with fast attack; `transient_hi` drives sparkle density; `build_tension` dampens drift and pushes toward the cold palette slots; `drop_hold` punches bloom via `palette[4]` and briefly increases FBM octave weights. `bar_phase` rotates the drift vector per bar so the look doesn’t feel looped. Add `nebula_flow` to `pipeline/builtin_shaders.py` allowlist. The preset stays on the existing 5-color palette contract.",
+        "testStrategy": "Manual A/B in the Gradio reactive preview: `cosmic` and `cosmic-flow` render cleanly; the flow variant visibly dampens during builds and bursts on detected drops.",
+        "priority": "medium",
+        "dependencies": [
+          "37",
+          "38"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "complexity": 5,
+        "recommendedSubtasks": 2,
+        "expansionPrompt": "Split into: 1) GLSL for nebula_flow (layered FBM + drift + sparkle); 2) allowlist + preset YAML + Gradio dropdown sanity check.",
+        "updatedAt": "2026-04-22T16:49:04.008Z"
+      },
+      {
+        "id": "41",
+        "title": "Feedback / warp framebuffer in `ReactiveShader`",
+        "description": "Add optional ping-pong FBO support to `ReactiveShader` so fragment shaders can sample the previous composited frame (`u_prev_frame` + `u_has_prev`). This is the Milkdrop engine core — it unlocks trails, tunnels, liquid smears.",
+        "details": "Allocate two framebuffers; swap roles each frame. Add a per-shader opt-in flag (e.g. presence of `u_prev_frame` uniform detected at link time, or an explicit constructor argument) so existing shaders pay zero cost. Bind the previous framebuffer’s color texture to a second texture unit; upload `u_has_prev = 1` only when a valid previous frame is available (i.e. not the first frame of a render). Reset state on re-use so the preview starts clean. Document VRAM cost (~16 MB at 1080p RGBA8).",
+        "testStrategy": "Unit: a pass-through shader that reads `u_prev_frame` produces the same output as the previous frame on frame N+1; `u_has_prev` is 0 on frame 0.",
+        "priority": "medium",
+        "dependencies": [
+          "37"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "complexity": 6,
+        "recommendedSubtasks": 2,
+        "expansionPrompt": "Split into: 1) ping-pong FBO allocation + swap lifecycle; 2) uniform bind path + first-frame handling + tests.",
+        "updatedAt": "2026-04-22T16:49:04.016Z"
+      },
+      {
+        "id": "42",
+        "title": "Propagate new signals to remaining 5 shaders",
+        "description": "Revisit each of `spectrum_bars`, `particles`, `geometry_pulse`, `liquid_chrome`, `vhs_tracking`, `paper_grain`, `synth_grid` and use `transient_hi`, `build_tension`, `drop_hold`, and `bar_phase` where it makes musical sense. Keep visual continuity with the original feel; this is a tasteful upgrade, not a rewrite.",
+        "details": "For each shader write a short design note (comment at the top of the frag) describing which signals drive which effect. Sanity-check the palette slot contract still reads sensibly. Do one shader per commit/PR so each change can be reviewed and reverted independently. Don’t use the feedback buffer here; that’s opt-in for flow-variants only.",
+        "testStrategy": "Manual A/B on a representative song across all presets; no crashes; CI runs existing tests.",
+        "priority": "low",
+        "dependencies": [
+          "40",
+          "41"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "complexity": 5,
+        "recommendedSubtasks": 5,
+        "expansionPrompt": "Split into one subtask per shader stem so each change is independently reviewable.",
+        "updatedAt": "2026-04-22T17:00:50.019Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T11:50:34.229Z",
-      "taskCount": 30,
-      "completedCount": 24,
+      "lastModified": "2026-04-22T17:00:50.019Z",
+      "taskCount": 42,
+      "completedCount": 36,
       "tags": [
         "master"
       ]

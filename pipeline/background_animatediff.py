@@ -74,7 +74,7 @@ ANIMATEDIFF_NEGATIVE_PROMPT = (
 # elements drift" phrasing far better than structural scene hints, so we
 # describe the *kind* of motion we want rather than the song position.
 MOTION_FLAVORS: Mapping[str, str] = {
-    "cosmic": (
+    "cosmic-flow": (
         "slow cosmic drift, subtle parallax between dust layers,"
         " shimmering distant stars, ethereal floating motion"
     ),

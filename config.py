@@ -28,7 +28,12 @@ FONTS_DIR = Path(os.environ.get("MUSICVIDS_FONTS_DIR", ASSETS_DIR / "fonts"))
 # Bundled UI fonts (SIL Open Font License 1.1); commit these files so renders
 # don't fall back to Arial when ``font_path`` is unset. See ``assets/fonts/``.
 DEFAULT_UI_FONT = FONTS_DIR / "Inter.ttf"
-DEFAULT_TITLE_FONT = FONTS_DIR / "Inter-SemiBold.ttf"
+# Display face for the burned-in title + thumbnail line. Space Grotesk is a
+# geometric neo-grotesque designed for display sizes, which reads more
+# "modern music video" than Inter at 1080p+. Inter-SemiBold is kept as a
+# fallback so renders never crash on hosts that haven't pulled the new font.
+DEFAULT_TITLE_FONT = FONTS_DIR / "SpaceGrotesk-SemiBold.ttf"
+FALLBACK_TITLE_FONT = FONTS_DIR / "Inter-SemiBold.ttf"
 PIPELINE_DIR = PROJECT_ROOT / "pipeline"
 
 
@@ -39,10 +44,19 @@ def default_ui_font_path() -> Path | None:
 
 
 def default_title_font_path() -> Path | None:
-    """Return bundled Inter SemiBold for title/thumbnail overlay, else body font."""
-    p = DEFAULT_TITLE_FONT
-    if p.is_file():
-        return p
+    """Return the preferred display font for title / thumbnail overlays.
+
+    Preference order:
+
+    1. ``SpaceGrotesk-SemiBold.ttf`` — the bundled display face.
+    2. ``Inter-SemiBold.ttf`` — carried over from the previous default so
+       repos that haven't pulled the new asset keep rendering.
+    3. The body font (Inter Regular) as a last resort.
+    4. ``None`` — Skia falls back to a system typeface.
+    """
+    for candidate in (DEFAULT_TITLE_FONT, FALLBACK_TITLE_FONT):
+        if candidate.is_file():
+            return candidate
     return default_ui_font_path()
 
 # Hugging Face / model caches (optional; libraries also respect HF_HOME, TORCH_HOME)

@@ -29,13 +29,17 @@ from pipeline.audio_ingest import (
     ANALYSIS_MONO_WAV_NAME,
     ORIGINAL_WAV_NAME,
 )
+from pipeline.musical_events import build_events_block
 
 LOGGER = logging.getLogger(__name__)
 
 ANALYSIS_JSON_NAME = "analysis.json"
 VOCALS_WAV_NAME = "vocals.wav"
 
-ANALYSIS_SCHEMA_VERSION = 1
+ANALYSIS_SCHEMA_VERSION = 2
+"""Bumped v1 -> v2 when the per-song ``events`` block (drops + build-up tension)
+was added. Older caches are re-analyzed once on first load; see ``analyze_song``.
+"""
 
 DEFAULT_FPS = 30
 DEFAULT_NUM_BANDS = 8
@@ -338,28 +342,38 @@ def analyze_song(
     if analysis_json_path.is_file() and not force:
         with analysis_json_path.open("r", encoding="utf-8") as f:
             data = json.load(f)
-        vocals_ref = data.get("vocals_wav")
-        vocals_present = isinstance(vocals_ref, str) and vocals_path.is_file()
-        # Earlier runs may have skipped demucs (not installed). Do not short-circuit
-        # forever: if vocals are still missing, try separation once and merge into cache.
-        if separate_vocals and not vocals_present:
-            _report(0.5, "Cached analysis; separating vocals (demucs)…")
-            src = original_wav if original_wav.is_file() else analysis_mono
-            if _separate_vocals_with_demucs(src, vocals_path):
-                data["vocals_wav"] = VOCALS_WAV_NAME
-                tmp_path = analysis_json_path.with_suffix(".json.tmp")
-                with tmp_path.open("w", encoding="utf-8") as f:
-                    json.dump(data, f, separators=(",", ":"))
-                tmp_path.replace(analysis_json_path)
-                vocals_present = True
-        _report(1.0, "Using cached analysis.json")
-        return AnalysisResult(
-            song_hash=song_hash,
-            cache_dir=cache,
-            analysis_json=analysis_json_path,
-            analysis=data,
-            vocals_wav=vocals_path if vocals_present else None,
-        )
+        cached_version = data.get("schema_version")
+        if cached_version != ANALYSIS_SCHEMA_VERSION:
+            LOGGER.info(
+                "Analysis schema mismatch (cached=%r, current=%r); re-running analyze_song for %s",
+                cached_version,
+                ANALYSIS_SCHEMA_VERSION,
+                song_hash,
+            )
+            # Fall through to the full recompute branch below by not returning here.
+        else:
+            vocals_ref = data.get("vocals_wav")
+            vocals_present = isinstance(vocals_ref, str) and vocals_path.is_file()
+            # Earlier runs may have skipped demucs (not installed). Do not short-circuit
+            # forever: if vocals are still missing, try separation once and merge into cache.
+            if separate_vocals and not vocals_present:
+                _report(0.5, "Cached analysis; separating vocals (demucs)…")
+                src = original_wav if original_wav.is_file() else analysis_mono
+                if _separate_vocals_with_demucs(src, vocals_path):
+                    data["vocals_wav"] = VOCALS_WAV_NAME
+                    tmp_path = analysis_json_path.with_suffix(".json.tmp")
+                    with tmp_path.open("w", encoding="utf-8") as f:
+                        json.dump(data, f, separators=(",", ":"))
+                    tmp_path.replace(analysis_json_path)
+                    vocals_present = True
+            _report(1.0, "Using cached analysis.json")
+            return AnalysisResult(
+                song_hash=song_hash,
+                cache_dir=cache,
+                analysis_json=analysis_json_path,
+                analysis=data,
+                vocals_wav=vocals_path if vocals_present else None,
+            )
 
     _report(0.05, "Loading audio…")
     y, sr = _load_analysis_mono(analysis_mono)
@@ -428,6 +442,12 @@ def analyze_song(
         "segments": segments,
         "vocals_wav": vocals_wav_name,
     }
+
+    # Schema v2: deterministic drop + build-up tension events derived from
+    # the rest of the analysis bundle. Cheap (tens of ms) so we always
+    # compute at analysis time and persist alongside everything else.
+    _report(0.95, "Detecting drops and build-ups…")
+    data["events"] = build_events_block(data)
 
     tmp_path = analysis_json_path.with_suffix(".json.tmp")
     with tmp_path.open("w", encoding="utf-8") as f:

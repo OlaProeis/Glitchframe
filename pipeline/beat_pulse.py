@@ -61,6 +61,29 @@ transient from squashing every other kick to near zero while still mapping
 typical kicks to ~1.0 on energetic tracks.
 """
 
+# ---------------------------------------------------------------------------
+# Generalised band-transient defaults (used by the reactive shader layer).
+#
+# The bass defaults above already carve out [0, 2) with a 0.18 s decay; these
+# pick sensible windows for the rest of the 8-band log-mel grid
+# (40 Hz – 16 kHz). Decays get progressively shorter: low-end wants to "sit"
+# for a bit, hats / cymbals want to snap.
+# ---------------------------------------------------------------------------
+
+DEFAULT_LO_BAND_LO = 0
+DEFAULT_LO_BAND_HI = 2  # ~40 – 300 Hz (kick / sub)
+DEFAULT_LO_DECAY_SEC = 0.34
+"""Shader-side low-transient decay. Deliberately longer than the logo bass
+pulse so backgrounds breathe on every kick instead of flickering."""
+
+DEFAULT_MID_BAND_LO = 3
+DEFAULT_MID_BAND_HI = 6  # ~800 Hz – 5 kHz (snare / mids)
+DEFAULT_MID_DECAY_SEC = 0.12
+
+DEFAULT_HI_BAND_LO = 6
+DEFAULT_HI_BAND_HI = 8  # ~5 – 16 kHz (hats / cymbals / air)
+DEFAULT_HI_DECAY_SEC = 0.06
+
 DEFAULT_LOGO_PULSE_DYN_HI_PCT = 99.5
 """Upper percentile for the high end of the logo envelope stretch range.
 
@@ -281,34 +304,35 @@ def build_rms_impact_pulse_track(
     return PulseTrack(values=scaled.astype(np.float32, copy=False), fps=fps)
 
 
-def build_bass_pulse_track(
+def build_band_pulse_track(
     analysis: Mapping[str, Any],
     *,
+    band_lo: int,
+    band_hi: int,
+    decay_sec: float,
     sensitivity: float = 1.0,
-    num_bass_bands: int = DEFAULT_BASS_BANDS,
-    decay_sec: float = DEFAULT_BASS_DECAY_SEC,
     norm_percentile: float = DEFAULT_BASS_NORM_PERCENTILE,
 ) -> PulseTrack | None:
-    """Build a :class:`PulseTrack` keyed off low-frequency spectrum energy.
+    """Generalised transient envelope for any contiguous slice of mel bands.
 
-    The envelope is shaped in four small steps so kicks / sub drops read
-    clearly but sustained bass doesn't leave the logo permanently inflated:
+    The shape is identical to :func:`build_bass_pulse_track` but keyed off
+    ``spectrum[:, band_lo:band_hi]`` instead of a fixed ``[0, num_bass_bands)``
+    prefix. Used by the reactive shader layer to carve out low / mid / high
+    transient envelopes the same way the logo already does for bass.
 
-    1. Average the first ``num_bass_bands`` log-mel bands per frame — the
-       analyzer's mel grid puts these roughly in the sub-bass / bass range.
-    2. Take the *positive* first difference so only rising bass (attacks)
-       contributes; flat or decaying bass collapses to 0.
-    3. Drive a one-pole exponential decay filter (fast attack, ``decay_sec``
-       tail) so every attack produces a clean, short pulse that doesn't
-       retrigger on every subdivision.
-    4. Normalise by the ``norm_percentile``-th value so energetic tracks
-       peak near 1.0 without letting a single outlier crush every other
-       kick. ``sensitivity`` then scales the final envelope (``> 1`` makes
-       weaker kicks read stronger, ``< 1`` tames a bass-heavy mix).
+    Steps (same as the existing bass builder so behaviour stays familiar):
 
-    Returns ``None`` when ``analysis`` lacks a usable spectrum; callers
-    should fall back to the beat-grid envelope (or disable the effect) in
-    that case.
+    1. Average the requested band slice per frame.
+    2. Take the *positive* first difference so only rising energy (attacks)
+       contributes; flat or decaying energy collapses to ``0``.
+    3. One-pole exponential decay with time constant ``decay_sec`` — short
+       values (~0.06 s) give hat-snappy envelopes, longer values (~0.34 s)
+       give breathing low-end.
+    4. Normalise by the ``norm_percentile``-th value and scale by
+       ``sensitivity``; clip to ``[0, 1]``.
+
+    Returns ``None`` when ``analysis`` lacks a usable spectrum or when the
+    requested slice is empty.
     """
     if sensitivity <= 0.0 or not math.isfinite(float(sensitivity)):
         return None
@@ -317,10 +341,13 @@ def build_bass_pulse_track(
         return None
     spectrum, fps = extracted
     total_bands = int(spectrum.shape[1])
-    bands = max(1, min(int(num_bass_bands), total_bands))
-    bass = spectrum[:, :bands].mean(axis=1).astype(np.float32, copy=False)
+    lo = max(0, min(int(band_lo), total_bands - 1))
+    hi = max(lo + 1, min(int(band_hi), total_bands))
+    if hi <= lo:
+        return None
+    avg = spectrum[:, lo:hi].mean(axis=1).astype(np.float32, copy=False)
 
-    diff = np.diff(bass, prepend=float(bass[0])).astype(np.float32, copy=False)
+    diff = np.diff(avg, prepend=float(avg[0])).astype(np.float32, copy=False)
     onsets = np.clip(diff, 0.0, None)
 
     tau = max(1e-3, float(decay_sec))
@@ -333,12 +360,94 @@ def build_bass_pulse_track(
 
     p = float(np.clip(float(norm_percentile), 1.0, 99.9))
     peak = float(np.percentile(env, p)) if env.size else 0.0
-    # Guard against near-silent tracks where the percentile collapses to
-    # zero (would divide into NaN) and against a single dominant transient
-    # hiding the rest of the track (use half the max as a sanity floor).
+    # Guard against near-silent tracks (percentile collapses to 0) and against
+    # a single dominant transient hiding the rest of the track (half-max floor).
     peak = max(peak, float(env.max()) * 0.5, 1e-3)
     scaled = np.clip(env * (float(sensitivity) / peak), 0.0, 1.0)
     return PulseTrack(values=scaled.astype(np.float32, copy=False), fps=fps)
+
+
+def build_bass_pulse_track(
+    analysis: Mapping[str, Any],
+    *,
+    sensitivity: float = 1.0,
+    num_bass_bands: int = DEFAULT_BASS_BANDS,
+    decay_sec: float = DEFAULT_BASS_DECAY_SEC,
+    norm_percentile: float = DEFAULT_BASS_NORM_PERCENTILE,
+) -> PulseTrack | None:
+    """Build a :class:`PulseTrack` keyed off low-frequency spectrum energy.
+
+    Thin wrapper over :func:`build_band_pulse_track` that preserves the
+    historical ``num_bass_bands`` parameter name used by the logo pulse. New
+    code (notably the reactive shader layer) should call
+    :func:`build_band_pulse_track` directly.
+    """
+    return build_band_pulse_track(
+        analysis,
+        band_lo=0,
+        band_hi=int(num_bass_bands),
+        decay_sec=decay_sec,
+        sensitivity=sensitivity,
+        norm_percentile=norm_percentile,
+    )
+
+
+def build_lo_transient_track(
+    analysis: Mapping[str, Any],
+    *,
+    sensitivity: float = 1.0,
+    decay_sec: float = DEFAULT_LO_DECAY_SEC,
+    norm_percentile: float = DEFAULT_BASS_NORM_PERCENTILE,
+) -> PulseTrack | None:
+    """Low-band (kick / sub) transient envelope for reactive shaders.
+
+    Longer decay than the logo bass pulse (~0.34 s) so background motion
+    breathes on every kick rather than flickering at spectrum frame rate.
+    """
+    return build_band_pulse_track(
+        analysis,
+        band_lo=DEFAULT_LO_BAND_LO,
+        band_hi=DEFAULT_LO_BAND_HI,
+        decay_sec=decay_sec,
+        sensitivity=sensitivity,
+        norm_percentile=norm_percentile,
+    )
+
+
+def build_mid_transient_track(
+    analysis: Mapping[str, Any],
+    *,
+    sensitivity: float = 1.0,
+    decay_sec: float = DEFAULT_MID_DECAY_SEC,
+    norm_percentile: float = DEFAULT_BASS_NORM_PERCENTILE,
+) -> PulseTrack | None:
+    """Mid-band (snare / clap / body) transient envelope for shaders."""
+    return build_band_pulse_track(
+        analysis,
+        band_lo=DEFAULT_MID_BAND_LO,
+        band_hi=DEFAULT_MID_BAND_HI,
+        decay_sec=decay_sec,
+        sensitivity=sensitivity,
+        norm_percentile=norm_percentile,
+    )
+
+
+def build_hi_transient_track(
+    analysis: Mapping[str, Any],
+    *,
+    sensitivity: float = 1.0,
+    decay_sec: float = DEFAULT_HI_DECAY_SEC,
+    norm_percentile: float = DEFAULT_BASS_NORM_PERCENTILE,
+) -> PulseTrack | None:
+    """High-band (hats / cymbals / air) transient envelope for shaders."""
+    return build_band_pulse_track(
+        analysis,
+        band_lo=DEFAULT_HI_BAND_LO,
+        band_hi=DEFAULT_HI_BAND_HI,
+        decay_sec=decay_sec,
+        sensitivity=sensitivity,
+        norm_percentile=norm_percentile,
+    )
 
 
 DEFAULT_LOGO_SUSTAIN_ATTACK_SEC = 0.022
@@ -491,14 +600,13 @@ def scale_and_opacity_for_pulse(
     strength: float = 1.0,
     max_scale_delta: float = 0.12,
     max_opacity_boost: float = 0.22,
-    max_scale_cap: float = 0.22,
-    max_opacity_cap: float = 0.38,
+    max_scale_cap: float = 0.45,
+    max_opacity_cap: float = 0.60,
 ) -> tuple[float, float]:
     """Turn a raw pulse value into ``(scale, opacity_multiplier)``.
 
-    ``strength`` above ``1.0`` (UI slider max 2) increases ``p`` past the
-    pulse peak so “full strength” reads as a **big** hit. Caps avoid extreme
-    resize artefacts on sub-pixel logos.
+    ``strength`` scales the pulse (UI default 2, max 4) so higher settings read
+    as a **bigger** hit. Caps avoid extreme resize artefacts on sub-pixel logos.
     """
     p = max(0.0, min(1.0, float(pulse))) * max(0.0, float(strength))
     scale = 1.0 + min(max_scale_delta * p, max_scale_cap)
@@ -511,20 +619,33 @@ __all__ = [
     "DEFAULT_BASS_DECAY_SEC",
     "DEFAULT_BASS_NORM_PERCENTILE",
     "DEFAULT_FALLBACK_BPM",
+    "DEFAULT_HI_BAND_HI",
+    "DEFAULT_HI_BAND_LO",
+    "DEFAULT_HI_DECAY_SEC",
     "DEFAULT_IMPACT_DECAY_SEC",
     "DEFAULT_IMPACT_LAG_SEC",
     "DEFAULT_IMPACT_NORM_PCT",
     "DEFAULT_IMPACT_SMOOTH_SEC",
+    "DEFAULT_LO_BAND_HI",
+    "DEFAULT_LO_BAND_LO",
+    "DEFAULT_LO_DECAY_SEC",
     "DEFAULT_LOGO_SUSTAIN_ATTACK_SEC",
     "DEFAULT_LOGO_SUSTAIN_RELEASE_SEC",
+    "DEFAULT_MID_BAND_HI",
+    "DEFAULT_MID_BAND_LO",
+    "DEFAULT_MID_DECAY_SEC",
     "DEFAULT_PULSE_TAU_FRACTION",
     "DEFAULT_SNARE_BAND_HI",
     "DEFAULT_SNARE_BAND_LO",
     "DEFAULT_SNARE_DECAY_SEC",
     "PulseTrack",
     "beat_pulse_envelope",
+    "build_band_pulse_track",
     "build_bass_pulse_track",
+    "build_hi_transient_track",
+    "build_lo_transient_track",
     "build_logo_bass_pulse_track",
+    "build_mid_transient_track",
     "build_rms_impact_pulse_track",
     "build_snare_glow_track",
     "scale_and_opacity_for_pulse",

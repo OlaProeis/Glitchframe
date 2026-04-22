@@ -30,11 +30,11 @@ persist everything as a single JSON cache the downstream stages can consume.
    `cache/<hash>/analysis.json` (a temporary `.json.tmp` is renamed over the final
    path so partial files can't surface).
 
-## analysis.json schema (v1)
+## analysis.json schema (v2)
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "song_hash": "<sha256>",
   "sample_rate": 44100,
   "duration_sec": 212.43,
@@ -57,9 +57,25 @@ persist everything as a single JSON cache the downstream stages can consume.
   },
   "rms":      { "fps": 30, "frames": F, "values": [float, ...] },
   "segments": [{ "t_start": 0.0, "t_end": 16.2, "label": 0 }, ...],
+  "events": {
+    "drops":              [{ "t": 48.733, "confidence": 0.91 }, ...],
+    "build_tension":      { "fps": 30, "frames": F, "values": [float, ...] },
+    "build_window_sec":   6.0,
+    "drop_hold_decay_sec": 2.0
+  },
   "vocals_wav": "vocals.wav" | null
 }
 ```
+
+### Schema version
+
+`ANALYSIS_SCHEMA_VERSION = 2`. `analyze_song` compares the on-disk
+`schema_version` against the module constant and triggers a full re-analyze
+when they differ, so caches written under v1 upgrade transparently on first
+load. The additive fields are all under `events` — see
+`docs/technical/musical-events.md` for the detector, build-up ramp, and
+`drop_hold` sampler (reactive shader layer consumes the block through
+`uniforms_at_time` + compositor-injected `drop_hold`).
 
 ## Caching
 
@@ -102,3 +118,5 @@ app interpreter; see `docs/technical/project-setup-and-config.md`.
 
 - Audio ingest and cache layout: `docs/technical/audio-ingest-and-cache.md`
 - UI wiring and progress panel: `docs/technical/gradio-ui.md`
+- Schema v2 `events` detector + samplers: `docs/technical/musical-events.md`
+- Reactive shader consumption of analysis: `docs/technical/reactive-shader-layer.md`

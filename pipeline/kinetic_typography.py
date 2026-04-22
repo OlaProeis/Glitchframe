@@ -700,13 +700,36 @@ class KineticTypographyLayer:
                 x0 = -word_width * 0.5
 
                 if self._shadow_rgb is not None:
-                    shadow_paint = skia.Paint(
-                        AntiAlias=True,
-                        Color=_argb_with_alpha(self._shadow_rgb, alpha * 0.6),
-                    )
-                    canvas.drawString(
-                        word.word, x0 + 2.0, 2.0, self._font, shadow_paint
-                    )
+                    # Layered outer bloom — same recipe as
+                    # :mod:`pipeline.title_overlay`, scaled to the per-word
+                    # font size. Three ``kOuter_BlurStyle`` passes produce a
+                    # smooth halo that keeps lyrics legible over busy
+                    # shader backgrounds without the hard-stamped look of
+                    # the previous 2 px offset shadow. ``MakeBlur`` /
+                    # ``kOuter_BlurStyle`` are looked up defensively so
+                    # older skia-python builds fall back to a plain tint.
+                    for sigma_factor, shadow_alpha in (
+                        (0.22, 0.18),
+                        (0.11, 0.32),
+                        (0.045, 0.55),
+                    ):
+                        sigma = max(0.6, self._font_size * sigma_factor)
+                        halo_paint = skia.Paint(
+                            AntiAlias=True,
+                            Color=_argb_with_alpha(
+                                self._shadow_rgb, alpha * shadow_alpha
+                            ),
+                        )
+                        style = getattr(
+                            skia, "kOuter_BlurStyle", None
+                        ) or getattr(skia, "kNormal_BlurStyle", None)
+                        if style is not None:
+                            halo_paint.setMaskFilter(
+                                skia.MaskFilter.MakeBlur(style, sigma)
+                            )
+                        canvas.drawString(
+                            word.word, x0, 0.0, self._font, halo_paint
+                        )
 
                 main_paint = skia.Paint(
                     AntiAlias=True,

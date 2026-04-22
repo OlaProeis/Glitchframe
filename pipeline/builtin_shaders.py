@@ -13,6 +13,7 @@ BUILTIN_SHADERS: tuple[str, ...] = (
     "particles",
     "geometry_pulse",
     "nebula_drift",
+    "nebula_flow",
     "liquid_chrome",
     "vhs_tracking",
     "synth_grid",

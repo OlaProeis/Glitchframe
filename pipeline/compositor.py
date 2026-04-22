@@ -48,13 +48,23 @@ from pipeline.kinetic_typography import (
     KineticTypographyLayer,
 )
 from pipeline.beat_pulse import (
+    DEFAULT_HI_DECAY_SEC,
+    DEFAULT_LO_DECAY_SEC,
+    DEFAULT_MID_DECAY_SEC,
     PulseTrack,
     beat_pulse_envelope,
     build_bass_pulse_track,
+    build_hi_transient_track,
+    build_lo_transient_track,
     build_logo_bass_pulse_track,
+    build_mid_transient_track,
     build_rms_impact_pulse_track,
     build_snare_glow_track,
     scale_and_opacity_for_pulse,
+)
+from pipeline.musical_events import (
+    DEFAULT_DROP_HOLD_DECAY_SEC,
+    sample_drop_hold,
 )
 from pipeline.logo_rim_lights import (
     RimAudioModulation,
@@ -124,6 +134,17 @@ class CompositorConfig:
     The defaults mirror the M1 spectrum renderer (1920×1080 @ 30 fps, NVENC)
     so switching from the spectrum path to the full compositor does not
     require re-tuning the encoder.
+
+    Reactive shader uniforms injected by this config (see
+    :func:`_render_compositor_frame`):
+
+    * ``bass_hit`` — ``shader_bass_*`` knobs → :func:`build_bass_pulse_track`.
+    * ``transient_lo`` / ``transient_mid`` / ``transient_hi`` —
+      ``shader_transient_*`` knobs → ``build_lo/mid/hi_transient_track`` in
+      :mod:`pipeline.beat_pulse`.
+    * ``drop_hold`` — ``shader_drop_hold_decay_sec`` →
+      :func:`pipeline.musical_events.sample_drop_hold` over
+      ``analysis["events"]["drops"]``.
     """
 
     fps: int = DEFAULT_FPS
@@ -150,30 +171,45 @@ class CompositorConfig:
     # ``pipeline.beat_pulse`` for the envelope math.
     logo_beat_pulse: bool = False
     logo_pulse_mode: str = "bass"
-    logo_pulse_strength: float = 1.0
+    logo_pulse_strength: float = 2.0
     logo_pulse_sensitivity: float = 1.0
     # Snare / mid-perc reactive neon halo behind the logo (see
     # :func:`pipeline.beat_pulse.build_snare_glow_track`).
     logo_snare_glow: bool = True
-    logo_glow_strength: float = 1.0
+    logo_glow_strength: float = 2.0
     logo_glow_sensitivity: float = 1.0
     # Mid-band envelope also drives a brief **scale contract** on snare hits
     # (independent of the neon glow toggle).
     logo_snare_squeeze_strength: float = 0.40
     # RMS jump envelope (drops / impacts) → RGB-split glitch on the logo.
-    logo_impact_glitch_strength: float = 0.45
+    logo_impact_glitch_strength: float = 1.0
     logo_impact_sensitivity: float = 1.0
     # Pre-shaped bass/kick curve for fragment shaders (``bass_hit`` uniform).
     # Longer decay than the logo defaults so backgrounds breathe instead of
     # jittering on every spectral frame.
     shader_bass_sensitivity: float = DEFAULT_SHADER_BASS_SENSITIVITY
     shader_bass_decay_sec: float = DEFAULT_SHADER_BASS_DECAY_SEC
+    # Low / mid / high band transient envelopes for fragment shaders
+    # (``transient_lo``, ``transient_mid``, ``transient_hi`` uniforms). Built
+    # once per render from :mod:`pipeline.beat_pulse` band-pulse helpers; the
+    # decay constants default to the shader-oriented presets documented on
+    # ``build_lo/mid/hi_transient_track`` (0.34 / 0.12 / 0.06 s).
+    # ``shader_transient_sensitivity`` scales all three bands together, like
+    # the existing ``shader_bass_sensitivity`` but applied post-rectification.
+    shader_transient_sensitivity: float = 1.0
+    shader_transient_lo_decay_sec: float = DEFAULT_LO_DECAY_SEC
+    shader_transient_mid_decay_sec: float = DEFAULT_MID_DECAY_SEC
+    shader_transient_hi_decay_sec: float = DEFAULT_HI_DECAY_SEC
+    # Post-drop afterglow time constant for the ``drop_hold`` shader uniform.
+    # Mirrors :data:`pipeline.musical_events.DEFAULT_DROP_HOLD_DECAY_SEC`
+    # (~8 bars @ 120 bpm); override for genre-specific feel.
+    shader_drop_hold_decay_sec: float = DEFAULT_DROP_HOLD_DECAY_SEC
     # Task 27--28: optional traveling-wave rim behind the logo; audio reactive
     # modulation when ``logo_rim_audio_reactive`` (same snare/bass tracks as neon).
-    logo_rim_enabled: bool = False
+    logo_rim_enabled: bool = True
     logo_rim_light_config: RimLightConfig | None = None
     logo_glow_mode: LogoGlowMode = LogoGlowMode.AUTO
-    logo_rim_audio_reactive: bool = False
+    logo_rim_audio_reactive: bool = True
     logo_rim_sync_snare: bool = True
     logo_rim_sync_bass: bool = True
     logo_rim_mod_strength: float = 1.0
@@ -250,6 +286,62 @@ def _shader_bass_track_for_analysis(
     )
 
 
+def _shader_transient_tracks_for_analysis(
+    analysis: Mapping[str, Any], cfg: CompositorConfig
+) -> tuple[PulseTrack | None, PulseTrack | None, PulseTrack | None]:
+    """Build the lo / mid / hi band transient envelopes for shader uniforms.
+
+    Counterpart of :func:`_shader_bass_track_for_analysis` — one call per
+    render, zero per-frame work. Each band shares ``shader_transient_sensitivity``
+    but gets its own decay constant so kicks linger while hats snap off.
+    Returns ``(None, None, None)`` when the analysis lacks the ``spectrum``
+    block the builders need; individual entries may still be ``None`` if a
+    band slice happens to be empty.
+    """
+    sensitivity = float(cfg.shader_transient_sensitivity)
+    lo = build_lo_transient_track(
+        analysis,
+        sensitivity=sensitivity,
+        decay_sec=float(cfg.shader_transient_lo_decay_sec),
+    )
+    mid = build_mid_transient_track(
+        analysis,
+        sensitivity=sensitivity,
+        decay_sec=float(cfg.shader_transient_mid_decay_sec),
+    )
+    hi = build_hi_transient_track(
+        analysis,
+        sensitivity=sensitivity,
+        decay_sec=float(cfg.shader_transient_hi_decay_sec),
+    )
+    return lo, mid, hi
+
+
+def _drop_hold_fn_for_analysis(
+    analysis: Mapping[str, Any], decay_sec: float
+) -> Callable[[float], float] | None:
+    """Return a scalar ``t -> drop_hold`` closure, or ``None`` when unused.
+
+    Closes over the drops list once so the hot path is a single
+    :func:`pipeline.musical_events.sample_drop_hold` call per frame with no
+    per-frame dict walks. Returns ``None`` when the analysis has no drops so
+    the compositor can skip the call entirely and fall back to ``0.0``.
+    """
+    events = analysis.get("events") or {}
+    raw = events.get("drops") or []
+    if not raw:
+        return None
+    drops: tuple[Mapping[str, Any], ...] = tuple(
+        d for d in raw if isinstance(d, Mapping)
+    )
+    if not drops:
+        return None
+    tau = float(decay_sec)
+    return lambda t, _d=drops, _tau=tau: sample_drop_hold(
+        float(t), _d, decay_sec=_tau
+    )
+
+
 def _active_layers_label(
     *,
     has_typography: bool,
@@ -318,6 +410,10 @@ def _render_compositor_frame(
     title_rgba: np.ndarray | None = None,
     pulse_fn: PulseFn | None = None,
     shader_bass_track: PulseTrack | None = None,
+    shader_transient_lo_track: PulseTrack | None = None,
+    shader_transient_mid_track: PulseTrack | None = None,
+    shader_transient_hi_track: PulseTrack | None = None,
+    drop_hold_fn: PulseFn | None = None,
     snare_fn: PulseFn | None = None,
     impact_fn: PulseFn | None = None,
     rim_mod_step: RimModStepFn | None = None,
@@ -345,6 +441,28 @@ def _render_compositor_frame(
         uniforms["bass_hit"] = float(shader_bass_track.value_at(float(t)))
     else:
         uniforms["bass_hit"] = 0.0
+    if shader_transient_lo_track is not None:
+        uniforms["transient_lo"] = float(
+            shader_transient_lo_track.value_at(float(t))
+        )
+    else:
+        uniforms["transient_lo"] = 0.0
+    if shader_transient_mid_track is not None:
+        uniforms["transient_mid"] = float(
+            shader_transient_mid_track.value_at(float(t))
+        )
+    else:
+        uniforms["transient_mid"] = 0.0
+    if shader_transient_hi_track is not None:
+        uniforms["transient_hi"] = float(
+            shader_transient_hi_track.value_at(float(t))
+        )
+    else:
+        uniforms["transient_hi"] = 0.0
+    if drop_hold_fn is not None:
+        uniforms["drop_hold"] = float(drop_hold_fn(float(t)))
+    else:
+        uniforms["drop_hold"] = 0.0
     composited = reactive.render_frame_composited_rgb(uniforms, bg_rgb)
     if typo_layer is not None:
         typo_rgba = typo_layer.render_frame(float(t), uniforms)
@@ -626,6 +744,14 @@ def render_single_frame(
     title_rgba = _prerender_title_layer(cfg)
     pulse_fn = _build_pulse_fn(cfg, analysis)
     shader_bass_track = _shader_bass_track_for_analysis(analysis, cfg)
+    (
+        shader_transient_lo_track,
+        shader_transient_mid_track,
+        shader_transient_hi_track,
+    ) = _shader_transient_tracks_for_analysis(analysis, cfg)
+    drop_hold_fn = _drop_hold_fn_for_analysis(
+        analysis, float(cfg.shader_drop_hold_decay_sec)
+    )
     snare_fn = _snare_envelope_fn(cfg, analysis)
     impact_fn = _impact_envelope_fn(cfg, analysis)
     rim_mod_step = _create_rim_modulation_stepper(cfg, analysis)
@@ -665,6 +791,10 @@ def render_single_frame(
                 title_rgba=title_rgba,
                 pulse_fn=pulse_fn,
                 shader_bass_track=shader_bass_track,
+                shader_transient_lo_track=shader_transient_lo_track,
+                shader_transient_mid_track=shader_transient_mid_track,
+                shader_transient_hi_track=shader_transient_hi_track,
+                drop_hold_fn=drop_hold_fn,
                 snare_fn=snare_fn,
                 impact_fn=impact_fn,
                 rim_mod_step=rim_mod_step,
@@ -798,6 +928,14 @@ def render_full_video(
     title_rgba = _prerender_title_layer(cfg)
     pulse_fn = _build_pulse_fn(cfg, analysis)
     shader_bass_track = _shader_bass_track_for_analysis(analysis, cfg)
+    (
+        shader_transient_lo_track,
+        shader_transient_mid_track,
+        shader_transient_hi_track,
+    ) = _shader_transient_tracks_for_analysis(analysis, cfg)
+    drop_hold_fn = _drop_hold_fn_for_analysis(
+        analysis, float(cfg.shader_drop_hold_decay_sec)
+    )
     snare_fn = _snare_envelope_fn(cfg, analysis)
     impact_fn = _impact_envelope_fn(cfg, analysis)
     rim_mod_step = _create_rim_modulation_stepper(cfg, analysis)
@@ -952,6 +1090,10 @@ def render_full_video(
                             title_rgba=title_rgba,
                             pulse_fn=pulse_fn,
                             shader_bass_track=shader_bass_track,
+                            shader_transient_lo_track=shader_transient_lo_track,
+                            shader_transient_mid_track=shader_transient_mid_track,
+                            shader_transient_hi_track=shader_transient_hi_track,
+                            drop_hold_fn=drop_hold_fn,
                             snare_fn=snare_fn,
                             impact_fn=impact_fn,
                             rim_mod_step=rim_mod_step,
