@@ -300,6 +300,15 @@ def _build_render_inputs(
     logo_snare_squeeze_pct: float,
     logo_impact_glitch_pct: float,
     logo_impact_sensitivity: float,
+    logo_rim_mode: str,
+    logo_rim_travel_speed: float,
+    logo_rim_color_spread_deg: float,
+    logo_rim_inward_mix_pct: float,
+    logo_rim_direction: str,
+    logo_rim_audio_reactive: bool,
+    logo_rim_sync_snare: bool,
+    logo_rim_sync_bass: bool,
+    logo_rim_mod_strength: float,
     show_title: bool,
     title_position: str,
     title_size: str,
@@ -350,6 +359,21 @@ def _build_render_inputs(
         logo_impact_glitch_strength=float(np.clip(logo_impact_glitch_pct, 0.0, 100.0))
         / 100.0,
         logo_impact_sensitivity=float(logo_impact_sensitivity),
+        logo_rim_mode=str(logo_rim_mode or "off").strip().lower(),
+        logo_rim_travel_speed=float(
+            np.clip(logo_rim_travel_speed, 0.0, 2.0)
+        ),
+        logo_rim_color_spread_deg=float(
+            np.clip(logo_rim_color_spread_deg, 0.0, 180.0)
+        ),
+        logo_rim_inward_mix=float(np.clip(logo_rim_inward_mix_pct, 0.0, 100.0))
+        / 100.0,
+        logo_rim_direction=str(logo_rim_direction or "cw").strip().lower(),
+        logo_rim_audio_reactive=bool(logo_rim_audio_reactive),
+        logo_rim_sync_snare=bool(logo_rim_sync_snare),
+        logo_rim_sync_bass=bool(logo_rim_sync_bass),
+        logo_rim_mod_strength=float(np.clip(logo_rim_mod_strength, 0.0, 200.0))
+        / 100.0,
         show_title=bool(show_title),
         title_position=str(title_position or "bottom-left"),
         title_size=str(title_size or "small"),
@@ -400,6 +424,15 @@ def _run_preview(
     logo_snare_squeeze_pct: float,
     logo_impact_glitch_pct: float,
     logo_impact_sensitivity: float,
+    logo_rim_mode: str,
+    logo_rim_travel_speed: float,
+    logo_rim_color_spread_deg: float,
+    logo_rim_inward_mix_pct: float,
+    logo_rim_direction: str,
+    logo_rim_audio_reactive: bool,
+    logo_rim_sync_snare: bool,
+    logo_rim_sync_bass: bool,
+    logo_rim_mod_strength: float,
     show_title: bool,
     title_position: str,
     title_size: str,
@@ -435,6 +468,15 @@ def _run_preview(
             logo_snare_squeeze_pct=logo_snare_squeeze_pct,
             logo_impact_glitch_pct=logo_impact_glitch_pct,
             logo_impact_sensitivity=logo_impact_sensitivity,
+            logo_rim_mode=logo_rim_mode,
+            logo_rim_travel_speed=logo_rim_travel_speed,
+            logo_rim_color_spread_deg=logo_rim_color_spread_deg,
+            logo_rim_inward_mix_pct=logo_rim_inward_mix_pct,
+            logo_rim_direction=logo_rim_direction,
+            logo_rim_audio_reactive=logo_rim_audio_reactive,
+            logo_rim_sync_snare=logo_rim_sync_snare,
+            logo_rim_sync_bass=logo_rim_sync_bass,
+            logo_rim_mod_strength=logo_rim_mod_strength,
             show_title=show_title,
             title_position=title_position,
             title_size=title_size,
@@ -481,6 +523,15 @@ def _run_render(
     logo_snare_squeeze_pct: float,
     logo_impact_glitch_pct: float,
     logo_impact_sensitivity: float,
+    logo_rim_mode: str,
+    logo_rim_travel_speed: float,
+    logo_rim_color_spread_deg: float,
+    logo_rim_inward_mix_pct: float,
+    logo_rim_direction: str,
+    logo_rim_audio_reactive: bool,
+    logo_rim_sync_snare: bool,
+    logo_rim_sync_bass: bool,
+    logo_rim_mod_strength: float,
     show_title: bool,
     title_position: str,
     title_size: str,
@@ -516,6 +567,15 @@ def _run_render(
             logo_snare_squeeze_pct=logo_snare_squeeze_pct,
             logo_impact_glitch_pct=logo_impact_glitch_pct,
             logo_impact_sensitivity=logo_impact_sensitivity,
+            logo_rim_mode=logo_rim_mode,
+            logo_rim_travel_speed=logo_rim_travel_speed,
+            logo_rim_color_spread_deg=logo_rim_color_spread_deg,
+            logo_rim_inward_mix_pct=logo_rim_inward_mix_pct,
+            logo_rim_direction=logo_rim_direction,
+            logo_rim_audio_reactive=logo_rim_audio_reactive,
+            logo_rim_sync_snare=logo_rim_sync_snare,
+            logo_rim_sync_bass=logo_rim_sync_bass,
+            logo_rim_mod_strength=logo_rim_mod_strength,
             show_title=show_title,
             title_position=title_position,
             title_size=title_size,
@@ -1034,6 +1094,92 @@ def build_ui() -> gr.Blocks:
                     step=0.05,
                     info="Boosts weaker drops so they still trigger glitch (when glitch > 0%).",
                 )
+                with gr.Accordion(
+                    "Traveling rim light (optional)",
+                    open=False,
+                ):
+                    gr.Markdown(
+                        "Adds a moving multi-colour rim behind the logo (see "
+                        "`docs/technical/logo-rim-compositing.md`). **Off** is the "
+                        "default. **Classic** keeps only the blurred snare neon. "
+                        "Rim settings do not change the song cache key."
+                    )
+                    logo_rim_mode = gr.Dropdown(
+                        label="Rim mode",
+                        choices=[
+                            ("Off (no traveling rim)", "off"),
+                            ("Classic neon only", "classic"),
+                            ("Traveling rim + neon", "rim"),
+                        ],
+                        value="off",
+                        info=(
+                            "Classic maps to `LogoGlowMode.CLASSIC` (no traveling wave). "
+                            "Traveling rim uses `AUTO` stacking with snare neon when both apply."
+                        ),
+                    )
+                    logo_rim_travel_speed = gr.Slider(
+                        label="Rim travel speed",
+                        minimum=0.0,
+                        maximum=2.0,
+                        value=0.25,
+                        step=0.05,
+                        info="Wave phase speed in Hz (revolutions per second); 0 freezes the pattern.",
+                    )
+                    logo_rim_color_spread_deg = gr.Slider(
+                        label="Rim colour spread",
+                        minimum=0.0,
+                        maximum=180.0,
+                        value=120.0,
+                        step=1.0,
+                        info=(
+                            "Hue separation between rim layers (degrees). "
+                            "0° uses a single tint; ≥~1° enables two layers."
+                        ),
+                    )
+                    logo_rim_inward_mix_pct = gr.Slider(
+                        label="Rim inward bleed",
+                        minimum=0.0,
+                        maximum=100.0,
+                        value=50.0,
+                        step=1.0,
+                        info="How much light bleeds inward from the edge (0 = halo only, 100 = full inward mix).",
+                    )
+                    logo_rim_direction = gr.Radio(
+                        label="Rim travel direction",
+                        choices=[
+                            ("Clockwise", "cw"),
+                            ("Counter-clockwise", "ccw"),
+                        ],
+                        value="cw",
+                        info="Flips the sign of travel speed (wave rotation around the logo centroid).",
+                    )
+                    logo_rim_audio_reactive = gr.Checkbox(
+                        label="Audio-reactive rim",
+                        value=False,
+                        info=(
+                            "When on, snare/bass envelopes from analysis.json modulate rim "
+                            "intensity, phase, and inward spread (see logo-rim-audio-modulation.md)."
+                        ),
+                    )
+                    with gr.Row():
+                        logo_rim_sync_snare = gr.Checkbox(
+                            label="Link rim to snare",
+                            value=True,
+                            info="Snare track drives rim glow multiplier and brief phase nudge.",
+                        )
+                        logo_rim_sync_bass = gr.Checkbox(
+                            label="Link rim to bass",
+                            value=True,
+                            info="Bass envelope modulates inward bleed strength.",
+                        )
+                    logo_rim_mod_strength = gr.Slider(
+                        label="Rim audio modulation strength",
+                        minimum=0.0,
+                        maximum=200.0,
+                        value=100.0,
+                        step=5.0,
+                        info="Scales audio-driven rim modulation when “Audio-reactive rim” is on (100% = default).",
+                    )
                 btn_logo_preview = gr.Button("Preview logo on test frame")
                 logo_preview_image = gr.Image(
                     label="Logo overlay (test gradient)",
@@ -1272,6 +1418,15 @@ See `docs/technical/visual-style-presets.md` for the full schema and
             logo_snare_squeeze_pct,
             logo_impact_glitch_pct,
             logo_impact_sensitivity,
+            logo_rim_mode,
+            logo_rim_travel_speed,
+            logo_rim_color_spread_deg,
+            logo_rim_inward_mix_pct,
+            logo_rim_direction,
+            logo_rim_audio_reactive,
+            logo_rim_sync_snare,
+            logo_rim_sync_bass,
+            logo_rim_mod_strength,
             show_title,
             title_position,
             title_size,

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from math import pi
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
@@ -63,6 +64,17 @@ class OrchestratorInputs:
     logo_snare_squeeze_strength: float = 0.40
     logo_impact_glitch_strength: float = 0.45
     logo_impact_sensitivity: float = 1.0
+    # Traveling-wave logo rim (``pipeline.logo_rim_lights``); cosmetic only.
+    # ``logo_rim_mode``: ``off`` | ``classic`` | ``rim`` (Gradio maps labels).
+    logo_rim_mode: str = "off"
+    logo_rim_travel_speed: float = 0.25
+    logo_rim_color_spread_deg: float = 120.0
+    logo_rim_inward_mix: float = 0.5
+    logo_rim_direction: str = "cw"
+    logo_rim_audio_reactive: bool = False
+    logo_rim_sync_snare: bool = True
+    logo_rim_sync_bass: bool = True
+    logo_rim_mod_strength: float = 1.0
     # Burned-in title card. ``show_title`` is the master switch; when the
     # orchestrator can't derive a non-empty ``Artist - Title`` from metadata
     # the overlay is skipped automatically regardless of the switch.
@@ -277,6 +289,69 @@ def _thumbnail_line_from_metadata(meta: Mapping[str, Any] | None) -> str | None:
     return title or artist or None
 
 
+def resolve_logo_rim_compositor_fields(inputs: OrchestratorInputs) -> dict[str, Any]:
+    """Map :class:`OrchestratorInputs` rim branding fields to :class:`CompositorConfig` kwargs.
+
+    Used by :func:`_render_pipeline` and unit tests. Does not depend on analysis
+    or preset colours (tint still comes from the compositor's shadow/base hex).
+    """
+    from pipeline.logo_composite import LogoGlowMode
+    from pipeline.logo_rim_lights import RimLightConfig
+
+    raw = (inputs.logo_rim_mode or "off").strip().lower()
+    if raw in ("rim", "new", "traveling", "travel", "on", "yes"):
+        mode = "rim"
+    elif raw in ("classic", "classic_neon", "neon_only"):
+        mode = "classic"
+    else:
+        mode = "off"
+
+    if mode == "off":
+        rim_enabled = False
+        glow_mode = LogoGlowMode.AUTO
+    elif mode == "classic":
+        rim_enabled = False
+        glow_mode = LogoGlowMode.CLASSIC
+    else:
+        rim_enabled = True
+        glow_mode = LogoGlowMode.AUTO
+
+    rim_cfg: RimLightConfig | None = None
+    if rim_enabled:
+        dirc = (inputs.logo_rim_direction or "cw").strip().lower()
+        ccw = dirc in (
+            "ccw",
+            "counterclockwise",
+            "counter-clockwise",
+            "anticlockwise",
+        )
+        sign = -1.0 if ccw else 1.0
+        speed = max(0.0, min(2.0, float(inputs.logo_rim_travel_speed)))
+        phase_hz = sign * speed
+        spread_deg = max(0.0, min(180.0, float(inputs.logo_rim_color_spread_deg)))
+        spread_rad = spread_deg * (pi / 180.0)
+        layers = 1 if spread_deg < 0.5 else 2
+        inward = max(0.0, min(1.0, float(inputs.logo_rim_inward_mix)))
+        rim_cfg = RimLightConfig(
+            phase_hz=phase_hz,
+            color_spread_rad=spread_rad,
+            rim_color_layers=layers,
+            inward_mix=inward,
+        )
+
+    mod_strength = max(0.0, min(2.0, float(inputs.logo_rim_mod_strength)))
+
+    return {
+        "logo_rim_enabled": rim_enabled,
+        "logo_glow_mode": glow_mode,
+        "logo_rim_light_config": rim_cfg,
+        "logo_rim_audio_reactive": bool(inputs.logo_rim_audio_reactive),
+        "logo_rim_sync_snare": bool(inputs.logo_rim_sync_snare),
+        "logo_rim_sync_bass": bool(inputs.logo_rim_sync_bass),
+        "logo_rim_mod_strength": mod_strength,
+    }
+
+
 def _render_pipeline(
     inputs: OrchestratorInputs,
     *,
@@ -372,6 +447,7 @@ def _render_pipeline(
         logo_snare_squeeze_strength=float(inputs.logo_snare_squeeze_strength),
         logo_impact_glitch_strength=float(inputs.logo_impact_glitch_strength),
         logo_impact_sensitivity=float(inputs.logo_impact_sensitivity),
+        **resolve_logo_rim_compositor_fields(inputs),
         title_text=title_line,
         title_position=str(inputs.title_position),
         title_size=str(inputs.title_size),

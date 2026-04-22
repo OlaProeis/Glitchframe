@@ -363,7 +363,7 @@ def build_logo_bass_pulse_track(
     attack_decay_sec: float = DEFAULT_BASS_DECAY_SEC,
     sustain_attack_sec: float = DEFAULT_LOGO_SUSTAIN_ATTACK_SEC,
     sustain_release_sec: float = DEFAULT_LOGO_SUSTAIN_RELEASE_SEC,
-    sustain_weight: float = 0.78,
+    sustain_weight: float = 0.30,
     attack_weight: float = 1.0,
     norm_percentile: float = DEFAULT_BASS_NORM_PERCENTILE,
 ) -> PulseTrack | None:
@@ -372,6 +372,12 @@ def build_logo_bass_pulse_track(
     Long 808s stay elevated while low-end energy holds, then release gently
     when the sub falls — unlike :func:`build_bass_pulse_track`, which only
     rewards positive *changes* in bass.
+
+    ``sustain_weight`` defaults to ``0.30`` (attack-dominant): the sustain
+    component keeps the logo from fully collapsing between kicks on long
+    bass plateaus, but attacks drive the visible motion. Higher values push
+    the envelope toward always-on (around ``0.78`` the mix saturates near
+    ``1.0`` on bass-heavy tracks and the logo stops bouncing).
     """
     if sensitivity <= 0.0 or not math.isfinite(float(sensitivity)):
         return None
@@ -483,8 +489,8 @@ def scale_and_opacity_for_pulse(
     pulse: float,
     *,
     strength: float = 1.0,
-    max_scale_delta: float = 0.085,
-    max_opacity_boost: float = 0.18,
+    max_scale_delta: float = 0.12,
+    max_opacity_boost: float = 0.22,
     max_scale_cap: float = 0.22,
     max_opacity_cap: float = 0.38,
 ) -> tuple[float, float]:

@@ -2,11 +2,44 @@
 
 from __future__ import annotations
 
+import enum
 import zlib
 from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageFilter
+
+from pipeline.logo_rim_lights import (
+    LogoRimPrep,
+    RimAudioModulation,
+    RimLightConfig,
+    compute_logo_rim_light_patch,
+    compute_logo_rim_prep,
+)
+
+class LogoGlowMode(str, enum.Enum):
+    """How classic neon blur and traveling-wave rim stack behind the logo.
+
+    **Call order** when both effects draw: rim premult patch first, then classic
+    Gaussian neon, then the logo. This keeps the snare-driven neon readable on
+    top of the rim field during transitions.
+
+    - **AUTO** — If :paramref:`~composite_logo_onto_frame.rim_light_config` is
+      active (non-``None`` and non-degenerate), composite the rim; if
+      ``glow_amount > 0``, composite classic neon after the rim. If rim is off,
+      behaviour matches the pre-rim pipeline (classic only).
+    - **CLASSIC** — Single-colour alpha blur only; rim kwargs are ignored.
+    - **RIM_ONLY** — Traveling rim only; ``glow_amount`` is ignored for the halo.
+    - **STACKED** — Same stacking as **AUTO** when both rim and classic apply;
+      use this when you want an explicit guarantee that both paths are allowed
+      (contrast: **RIM_ONLY** / **CLASSIC** enforce mutual exclusivity).
+    """
+
+    AUTO = "auto"
+    CLASSIC = "classic"
+    RIM_ONLY = "rim_only"
+    STACKED = "stacked"
+
 
 _LOGO_POSITION_ALIASES: dict[str, tuple[str, ...]] = {
     "top-left": ("top-left", "topleft", "tl"),
@@ -155,7 +188,7 @@ def _blend_premult_rgba_patch(
     )
 
 
-def _neon_glow_patch(
+def build_classic_neon_glow_patch(
     logo_rgba: np.ndarray,
     *,
     glow_rgb: tuple[int, int, int],
@@ -164,7 +197,12 @@ def _neon_glow_patch(
     pad: int,
     opacity_pct: float,
 ) -> tuple[np.ndarray, int] | None:
-    """Build a padded premultiplied RGBA halo from the logo alpha."""
+    """Classic single-colour neon: padded premultiplied RGBA halo from logo alpha.
+
+    Intended for one **render thread**; returns a new patch array each call
+    (no internal scratch reuse). Pair with :func:`_blend_premult_rgba_patch` at
+    ``(x0 - pad, y0 - pad)``.
+    """
     if amount <= 1e-5:
         return None
     lh, lw = int(logo_rgba.shape[0]), int(logo_rgba.shape[1])
@@ -184,6 +222,35 @@ def _neon_glow_patch(
     g = (gg * a_f).astype(np.uint8)
     b = (gb * a_f).astype(np.uint8)
     return np.stack([r, g, b, a_u8], axis=-1), p
+
+
+# Back-compat alias for internal/tests referencing the old name.
+_neon_glow_patch = build_classic_neon_glow_patch
+
+
+def build_rim_light_premult_patch(
+    prep: LogoRimPrep,
+    *,
+    t_sec: float,
+    config: RimLightConfig,
+    audio_mod: RimAudioModulation | None = None,
+) -> tuple[np.ndarray, int]:
+    """Premultiplied RGBA rim patch; same contract as :func:`build_classic_neon_glow_patch`.
+
+    Delegates to :func:`pipeline.logo_rim_lights.compute_logo_rim_light_patch`.
+    Single-threaded render use; each call may allocate patch buffers inside
+    ``logo_rim_lights``.
+    """
+    return compute_logo_rim_light_patch(
+        prep, t=float(t_sec), config=config, audio_mod=audio_mod
+    )
+
+
+def _rim_config_is_active(config: RimLightConfig | None) -> bool:
+    if config is None:
+        return False
+    op = float(np.clip(config.opacity_pct, 0.0, 100.0)) / 100.0
+    return float(max(0.0, config.intensity)) * op > 1e-6
 
 
 def _rgb_glitch_logo_rgba(
@@ -239,6 +306,12 @@ def composite_logo_onto_frame(
     glow_pad_px: int = 32,
     glitch_amount: float = 0.0,
     glitch_seed: int = 0,
+    t_sec: float | None = None,
+    song_hash: str | None = None,
+    logo_rim_prep: LogoRimPrep | None = None,
+    rim_light_config: RimLightConfig | None = None,
+    rim_audio_mod: RimAudioModulation | None = None,
+    logo_glow_mode: LogoGlowMode = LogoGlowMode.AUTO,
 ) -> np.ndarray:
     """
     Alpha-blend ``logo_rgba`` onto ``frame``.
@@ -254,6 +327,16 @@ def composite_logo_onto_frame(
 
     ``glitch_amount`` in ``[0, 1]`` applies a short RGB-split / tear distortion
     after scaling; ``glitch_seed`` makes the pattern deterministic per call.
+
+    **Rim lighting (task 28):** when ``rim_light_config`` is active
+    (non-``None`` and ``intensity * opacity`` > 0) and ``logo_glow_mode`` is not
+    :attr:`LogoGlowMode.CLASSIC`, a traveling-wave rim patch is blended **before**
+    the classic neon halo when stacking applies. Pass absolute ``t_sec`` (seconds)
+    for phase; ``song_hash`` is only used if you merge it into ``RimLightConfig``
+    yourself — the compositor sets ``song_hash`` on the config. If ``logo_rim_prep``
+    is ``None``, prep is computed each frame from the **scaled** logo (correct
+    under beat-pulse scale; heavier CPU). Callers may pass a cached prep only when
+    it matches the scaled logo exactly.
     """
     if frame.ndim != 3 or frame.shape[2] not in (3, 4):
         raise ValueError("frame must have shape (H, W, 3) or (H, W, 4)")
@@ -271,12 +354,39 @@ def composite_logo_onto_frame(
     x0, y0 = _origin_for_position(position, fh, fw, lh, lw)
     dst = frame if inplace else frame.copy()
 
+    mode = logo_glow_mode
+    if isinstance(mode, str):
+        mode = LogoGlowMode(mode)
+
+    use_rim = mode in (LogoGlowMode.AUTO, LogoGlowMode.RIM_ONLY, LogoGlowMode.STACKED)
+    use_rim = use_rim and _rim_config_is_active(rim_light_config)
+    use_classic = mode in (LogoGlowMode.AUTO, LogoGlowMode.CLASSIC, LogoGlowMode.STACKED)
+    if mode == LogoGlowMode.RIM_ONLY:
+        use_classic = False
+
+    t_draw = 0.0 if t_sec is None else float(t_sec)
+    _ = song_hash  # reserved for callers documenting timeline identity; config holds palette seed
+
+    if use_rim and dst.shape[2] == 3 and rim_light_config is not None:
+        prep = logo_rim_prep
+        if prep is None:
+            prep = compute_logo_rim_prep(logo)
+        rim_patch, rim_pad = build_rim_light_premult_patch(
+            prep,
+            t_sec=t_draw,
+            config=rim_light_config,
+            audio_mod=rim_audio_mod,
+        )
+        if int(rim_patch.shape[0]) > 0 and np.any(rim_patch[:, :, 3] > 0):
+            _blend_premult_rgba_patch(dst, rim_patch, x0 - rim_pad, y0 - rim_pad)
+
     if (
-        glow_amount > 1e-5
+        use_classic
+        and glow_amount > 1e-5
         and glow_rgb is not None
         and dst.shape[2] == 3
     ):
-        gp = _neon_glow_patch(
+        gp = build_classic_neon_glow_patch(
             logo,
             glow_rgb=glow_rgb,
             amount=float(glow_amount),
@@ -345,6 +455,12 @@ def composite_logo_from_path(
     glow_pad_px: int = 32,
     glitch_amount: float = 0.0,
     glitch_seed: int = 0,
+    t_sec: float | None = None,
+    song_hash: str | None = None,
+    logo_rim_prep: LogoRimPrep | None = None,
+    rim_light_config: RimLightConfig | None = None,
+    rim_audio_mod: RimAudioModulation | None = None,
+    logo_glow_mode: LogoGlowMode = LogoGlowMode.AUTO,
 ) -> np.ndarray:
     """Load logo from disk; no-op copy if path is missing."""
     if logo_path is None or not str(logo_path).strip():
@@ -363,4 +479,10 @@ def composite_logo_from_path(
         glow_pad_px=glow_pad_px,
         glitch_amount=glitch_amount,
         glitch_seed=glitch_seed,
+        t_sec=t_sec,
+        song_hash=song_hash,
+        logo_rim_prep=logo_rim_prep,
+        rim_light_config=rim_light_config,
+        rim_audio_mod=rim_audio_mod,
+        logo_glow_mode=logo_glow_mode,
     )

@@ -20,7 +20,7 @@ Feature doc for the browser UI entrypoint: tabbed layout, inputs, queued actions
 - **Preset** dropdown: `get_preset_ids()` from `config.py`; if `presets/` has no YAML yet, the six PRD default IDs are used.
 - Sliders: logo opacity and reactive intensity (0–100%).
 - Choices: logo position, background mode, resolution, FPS.
-- **Branding:** logo PNG upload, position dropdown, opacity slider; **Preview logo on test frame** runs `pipeline.logo_composite` on a built-in RGB gradient. **Preview reactive frame** also applies the same logo overlay when a file is uploaded (placement and opacity match the Branding tab).
+- **Branding:** logo PNG upload, position dropdown, opacity slider; beat pulse, snare neon, squeeze, and impact glitch sliders; **Traveling rim light (optional)** accordion — rim mode (`off` / classic neon only / traveling rim + neon), travel speed, colour spread, inward bleed %, CW/CCW direction, audio-reactive rim with snare/bass link toggles and modulation strength (wired to `OrchestratorInputs` → `CompositorConfig`, branding-only — no song cache impact). **Preview logo on test frame** runs `pipeline.logo_composite` on a built-in RGB gradient (rim settings apply on full **Preview 10 s** / **Render**, not this static preview). **Preview reactive frame** also applies the same logo overlay when a file is uploaded (placement and opacity match the Branding tab).
 
 ## Actions and progress
 

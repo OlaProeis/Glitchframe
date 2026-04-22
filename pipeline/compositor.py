@@ -25,7 +25,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -56,7 +56,16 @@ from pipeline.beat_pulse import (
     build_snare_glow_track,
     scale_and_opacity_for_pulse,
 )
+from pipeline.logo_rim_lights import (
+    RimAudioModulation,
+    RimAudioTuning,
+    RimLightConfig,
+    RimModulationState,
+    advance_rim_audio_modulation,
+    rim_base_rgb_from_preset,
+)
 from pipeline.logo_composite import (
+    LogoGlowMode,
     composite_logo_onto_frame,
     glitch_seed_for_time,
     load_logo_rgba,
@@ -159,6 +168,15 @@ class CompositorConfig:
     # jittering on every spectral frame.
     shader_bass_sensitivity: float = DEFAULT_SHADER_BASS_SENSITIVITY
     shader_bass_decay_sec: float = DEFAULT_SHADER_BASS_DECAY_SEC
+    # Task 27--28: optional traveling-wave rim behind the logo; audio reactive
+    # modulation when ``logo_rim_audio_reactive`` (same snare/bass tracks as neon).
+    logo_rim_enabled: bool = False
+    logo_rim_light_config: RimLightConfig | None = None
+    logo_glow_mode: LogoGlowMode = LogoGlowMode.AUTO
+    logo_rim_audio_reactive: bool = False
+    logo_rim_sync_snare: bool = True
+    logo_rim_sync_bass: bool = True
+    logo_rim_mod_strength: float = 1.0
     # Persistent title/artist overlay burned into every frame. When
     # ``title_text`` is empty / None the overlay pass is skipped entirely.
     title_text: str | None = None
@@ -269,6 +287,24 @@ def _format_render_fps(fps: float) -> str:
     return f"{fps:.0f} fps"
 
 
+def _effective_rim_light_config(
+    cfg: CompositorConfig, analysis: Mapping[str, Any]
+) -> RimLightConfig | None:
+    """Single per-render rim config (``song_hash`` from analysis when omitted)."""
+    if not bool(cfg.logo_rim_enabled):
+        return None
+    song_hash_raw = analysis.get("song_hash")
+    song_hash = str(song_hash_raw) if song_hash_raw is not None else ""
+    song_hash_opt: str | None = song_hash if song_hash else None
+    tint = rim_base_rgb_from_preset(cfg.shadow_color, cfg.base_color)
+    base = cfg.logo_rim_light_config
+    if base is None:
+        return RimLightConfig(rim_rgb=tint, song_hash=song_hash_opt)
+    if base.song_hash is not None:
+        return base
+    return replace(base, song_hash=song_hash_opt)
+
+
 def _render_compositor_frame(
     t: float,
     *,
@@ -284,6 +320,8 @@ def _render_compositor_frame(
     shader_bass_track: PulseTrack | None = None,
     snare_fn: PulseFn | None = None,
     impact_fn: PulseFn | None = None,
+    rim_mod_step: RimModStepFn | None = None,
+    resolved_rim_config: RimLightConfig | None = None,
 ) -> np.ndarray:
     """One RGB frame: background → reactive → typography → title → logo.
 
@@ -352,6 +390,16 @@ def _render_compositor_frame(
                 glitch_seed = glitch_seed_for_time(
                     str(analysis.get("song_hash") or ""), float(t)
                 )
+        rim_audio_mod: RimAudioModulation | None = None
+        if rim_mod_step is not None:
+            rim_audio_mod = rim_mod_step(float(t))
+            LOGGER.debug(
+                "Rim audio modulation t=%.4fs glow=%.3f phase=%.3frad inward=%.3f",
+                float(t),
+                rim_audio_mod.glow_strength_mul,
+                rim_audio_mod.phase_offset_rad,
+                rim_audio_mod.inward_strength_mul,
+            )
         composited = composite_logo_onto_frame(
             composited,
             logo_rgba_prepared,
@@ -363,6 +411,11 @@ def _render_compositor_frame(
             glow_rgb=glow_rgb if glow_amt > 1e-5 else None,
             glitch_amount=glitch_amt,
             glitch_seed=glitch_seed,
+            t_sec=float(t),
+            song_hash=str(analysis.get("song_hash") or "") or None,
+            rim_light_config=resolved_rim_config,
+            rim_audio_mod=rim_audio_mod,
+            logo_glow_mode=cfg.logo_glow_mode,
         )
     return composited
 
@@ -492,6 +545,47 @@ def _impact_envelope_fn(
     return track.value_at
 
 
+RimModStepFn = Callable[[float], RimAudioModulation]
+
+
+def _create_rim_modulation_stepper(
+    cfg: CompositorConfig, analysis: Mapping[str, Any]
+) -> RimModStepFn | None:
+    """Per-render closure: absolute ``t`` → rim scalers; mutates a single state.
+
+    When ``logo_rim_audio_reactive`` is false, returns ``None`` (compositor
+    skips; behaviour unchanged from before task 27).
+    """
+    if not bool(cfg.logo_rim_audio_reactive):
+        return None
+    state = RimModulationState()
+    snare_t: PulseTrack | None = None
+    if bool(cfg.logo_rim_sync_snare):
+        snare_t = _snare_track_for_logo(cfg, analysis)
+    bass_t: PulseTrack | None = None
+    if bool(cfg.logo_rim_sync_bass):
+        bt = build_logo_bass_pulse_track(
+            analysis, sensitivity=float(cfg.logo_pulse_sensitivity)
+        )
+        bass_t = bt
+    dt = 1.0 / max(1, float(cfg.fps))
+    strength = max(0.0, float(cfg.logo_rim_mod_strength))
+    tuning = RimAudioTuning(global_strength=strength)
+
+    def step(t: float) -> RimAudioModulation:
+        s = float(snare_t.value_at(t)) if snare_t is not None else 0.0
+        b = float(bass_t.value_at(t)) if bass_t is not None else 0.0
+        return advance_rim_audio_modulation(
+            state,
+            snare_env=s,
+            bass_env=b,
+            dt_sec=dt,
+            tuning=tuning,
+        )
+
+    return step
+
+
 def render_single_frame(
     t: float,
     *,
@@ -534,6 +628,8 @@ def render_single_frame(
     shader_bass_track = _shader_bass_track_for_analysis(analysis, cfg)
     snare_fn = _snare_envelope_fn(cfg, analysis)
     impact_fn = _impact_envelope_fn(cfg, analysis)
+    rim_mod_step = _create_rim_modulation_stepper(cfg, analysis)
+    resolved_rim_config = _effective_rim_light_config(cfg, analysis)
 
     has_typography = bool(aligned_words)
 
@@ -571,6 +667,8 @@ def render_single_frame(
                 shader_bass_track=shader_bass_track,
                 snare_fn=snare_fn,
                 impact_fn=impact_fn,
+                rim_mod_step=rim_mod_step,
+                resolved_rim_config=resolved_rim_config,
             )
         finally:
             if typo_layer is not None:
@@ -702,6 +800,8 @@ def render_full_video(
     shader_bass_track = _shader_bass_track_for_analysis(analysis, cfg)
     snare_fn = _snare_envelope_fn(cfg, analysis)
     impact_fn = _impact_envelope_fn(cfg, analysis)
+    rim_mod_step = _create_rim_modulation_stepper(cfg, analysis)
+    resolved_rim_config = _effective_rim_light_config(cfg, analysis)
 
     if start_sec < 0:
         raise ValueError(f"start_sec must be non-negative, got {start_sec!r}")
@@ -854,6 +954,8 @@ def render_full_video(
                             shader_bass_track=shader_bass_track,
                             snare_fn=snare_fn,
                             impact_fn=impact_fn,
+                            rim_mod_step=rim_mod_step,
+                            resolved_rim_config=resolved_rim_config,
                         )
 
                         bgr = np.ascontiguousarray(composited[:, :, ::-1])

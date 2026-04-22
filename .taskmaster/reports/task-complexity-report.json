@@ -1,9 +1,9 @@
 {
 	"meta": {
-		"generatedAt": "2026-04-17T16:27:45.486Z",
-		"tasksAnalyzed": 2,
-		"totalTasks": 20,
-		"analysisCount": 2,
+		"generatedAt": "2026-04-22T11:00:22.159Z",
+		"tasksAnalyzed": 12,
+		"totalTasks": 30,
+		"analysisCount": 12,
 		"thresholdScore": 5,
 		"projectName": "Task Master",
 		"usedResearch": true
@@ -13,17 +13,97 @@
 			"taskId": 19,
 			"taskTitle": "Scope Preview to 10s Window with Background Optimization",
 			"complexityScore": 8,
-			"recommendedSubtasks": 6,
-			"expansionPrompt": "Break down into subtasks: 1) Update orchestrator.py ensure_backgrounds function with preview_range logic and padding; 2) Modify BackgroundSource.ensure() for time-range aware cache keys; 3) Adapt SDXL generator (Task 14) for partial time-range keyframe generation; 4) Update AnimateDiff/KenBurns (Task 15) for range-limited loops/zooms; 5) Implement full render gap-filling with cache reuse and manifest.json tracking; 6) Update Gradio UI, docs, and test edge cases like track edges.",
-			"reasoning": "High complexity due to multi-module changes across orchestrator, multiple BackgroundSource generators (SDXL, AnimateDiff, KenBurns), precise cache key management to avoid quality issues or recomputation, integration with Task 18 preview logic, and comprehensive testing for partial/full renders including ffprobe A/V validation. Requires careful handling of time-range clamping, cache manifests, and dependencies on 4 prior tasks."
+			"recommendedSubtasks": 5,
+			"expansionPrompt": "Split into: 1) Orchestrator preview_range param + gen_range logic; 2) BackgroundSource time-range cache keys; 3) Update SDXL/AnimateDiff/KenBurns for partial generation; 4) Full render gap-filling + cache reuse; 5) Docs/Gradio updates + manifest.json.",
+			"reasoning": "High complexity due to multi-module changes (orchestrator, BackgroundSource, generators), precise cache key management to avoid quality regressions, dependencies on multiple prior tasks, and detailed testing for partial/full render consistency."
 		},
 		{
 			"taskId": 20,
 			"taskTitle": "Bass-Driven Logo Beat Pulse with Low-Frequency Energy",
 			"complexityScore": 7,
 			"recommendedSubtasks": 4,
-			"expansionPrompt": "Divide into subtasks: 1) Extend audio_analyzer.py to compute and cache bass_rms or low-freq spectrum_bands[0:2]; 2) Implement bass_envelope generator in beat_pulse.py with smoothing (scipy sosfilt) and alternatives like kick-onset detection; 3) Update CompositorConfig and Gradio UI for pulse_mode ('bass'|'beats'|'hybrid') and bass_sensitivity slider; 4) Add frame-wise pulse_cache, fallback logic, docs update, and correlation testing for bass-heavy tracks.",
-			"reasoning": "Moderate-high complexity involving audio signal processing (librosa RMS/STFT on low-freq bands, onset detection, envelope smoothing), integration with existing beat_grid fallback, new UI config parameters, cache per sensitivity/mode, and rigorous testing for energy correlation (>0.7) across genres. Dependencies on analysis (Task 4) and compositor (Tasks 5,13,18) add integration risk, but more contained to audio/compositor modules than Task 19."
+			"expansionPrompt": "Split into: 1) Audio analyzer bass energy extraction/envelope; 2) beat_pulse.py bass mode implementation + smoothing; 3) Config/UI sliders + fallback modes; 4) Cache + docs updates.",
+			"reasoning": "Involves audio signal processing (librosa RMS, filtering), real-time envelope computation, UI integration, and correlation testing; moderate due to potential audio analysis extensions but builds on existing beat grid."
+		},
+		{
+			"taskId": 21,
+			"taskTitle": "Overnight / multi-song render queue",
+			"complexityScore": 7,
+			"recommendedSubtasks": 4,
+			"expansionPrompt": "Split into: 1) Job spec schema + JSON/JSONL persistence; 2) CLI batch runner with orchestrate_full_render; 3) Asset copying + stable paths per job; 4) Gradio queue UI + background worker.",
+			"reasoning": "Requires robust job serialization, error isolation across jobs, file path stability, and optional async UI worker; testing multi-job failure recovery adds complexity beyond simple sequencing."
+		},
+		{
+			"taskId": 22,
+			"taskTitle": "Single primary export action in Gradio (full pipeline UX)",
+			"complexityScore": 3,
+			"recommendedSubtasks": 2,
+			"expansionPrompt": "Split into: 1) Gradio UI button + wiring to orchestrate_full_render; 2) Docs updates for one-button flow.",
+			"reasoning": "Primarily UI reorganization and documentation; leverages existing orchestrator chain with minimal code changes, low risk of regressions."
+		},
+		{
+			"taskId": 23,
+			"taskTitle": "Timestamped section headers for lyrics alignment",
+			"complexityScore": 6,
+			"recommendedSubtasks": 3,
+			"expansionPrompt": "Split into: 1) Parser enhancements for header grammar + section_labels; 2) Backward compatibility + cache key stability; 3) Integration with DP/forced_sec + JSON persistence.",
+			"reasoning": "Complex parsing with multiple input formats, strict backward compatibility requirements, cache hash stability, and integration into dynamic programming alignment logic."
+		},
+		{
+			"taskId": 24,
+			"taskTitle": "Logo rim lights: line mask, silhouette, and fallbacks",
+			"complexityScore": 6,
+			"recommendedSubtasks": 2,
+			"expansionPrompt": "Split into: 1) Line mask, silhouette, centroid computation utilities; 2) Confidence scoring + fallback logic + unit tests.",
+			"reasoning": "Image processing with edge detection (Sobel/Scharr), morphology, and geometric computations; requires deterministic cross-platform pixel tests."
+		},
+		{
+			"taskId": 25,
+			"taskTitle": "Logo rim lights: traveling wave, radial field, and inward mix",
+			"complexityScore": 8,
+			"recommendedSubtasks": 3,
+			"expansionPrompt": "Split into: 1) Polar coordinate transform + phase computation; 2) Radial falloff + line energy blending; 3) Distance transform inward weighting + premult output.",
+			"reasoning": "Advanced per-pixel shader-like computations (angular phase, distance transforms), multi-pass blending, performance-critical for video frames; high mathematical precision needed."
+		},
+		{
+			"taskId": 26,
+			"taskTitle": "Logo rim lights: multi-color layers and smooth color motion",
+			"complexityScore": 6,
+			"recommendedSubtasks": 2,
+			"expansionPrompt": "Split into: 1) Multi-layer colored emissive blending; 2) Hue rotation/drift + seeded variety + fallback halos.",
+			"reasoning": "Color space handling (linear/gamma), smooth temporal interpolation, determinism requirements; builds on prior geometry but adds hue math."
+		},
+		{
+			"taskId": 27,
+			"taskTitle": "Logo rim lights: beat, snare, and bass modulation",
+			"complexityScore": 5,
+			"recommendedSubtasks": 2,
+			"expansionPrompt": "Split into: 1) Modulation API integration with beat_pulse tracks; 2) Snare/bass envelope mapping + attack/release smoothing.",
+			"reasoning": "Audio-reactive parameter mapping with temporal smoothing; moderate as it leverages existing audio features but requires precise timing alignment."
+		},
+		{
+			"taskId": 28,
+			"taskTitle": "Logo rim lights: `composite_logo_onto_frame` and compositor wiring",
+			"complexityScore": 6,
+			"recommendedSubtasks": 2,
+			"expansionPrompt": "Split into: 1) Refactor + new rim patch builder API; 2) Compositor integration + mode exclusivity + regression tests.",
+			"reasoning": "API refactoring across modules, blend stack ordering, backward compatibility with classic glow; pixel-level regression testing essential."
+		},
+		{
+			"taskId": 29,
+			"taskTitle": "Logo rim lights: OrchestratorInputs + Gradio Branding UI",
+			"complexityScore": 4,
+			"recommendedSubtasks": 2,
+			"expansionPrompt": "Split into: 1) OrchestratorInputs/CompositorConfig extensions; 2) Gradio UI controls + tooltips.",
+			"reasoning": "Standard config/UI plumbing following existing patterns; low complexity but many parameters to expose correctly."
+		},
+		{
+			"taskId": 30,
+			"taskTitle": "Logo rim lights: tests, `docs/technical`, and `docs/index.md`",
+			"complexityScore": 4,
+			"recommendedSubtasks": 1,
+			"expansionPrompt": "Comprehensive pytest coverage for 24-28 + technical documentation + index update.",
+			"reasoning": "Documentation-heavy with test writing; complexity in ensuring full edge case coverage for prior visual effects tasks."
 		}
 	]
 }

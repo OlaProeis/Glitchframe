@@ -25,11 +25,17 @@
 - `docs/technical/visual-style-presets.md` - Preset YAML schema, `config` registry validation, `builtin_shaders` allowlist, and Gradio preset auto-fill.
 - `docs/technical/kinetic-typography.md` - Skia per-word typography layer, motion presets keyed by `typo_style`, and `lyrics.aligned.json`→RGBA frames.
 - `docs/technical/logo-composite.md` - Optional PNG logo load, resize, corner/center placement, and NumPy alpha blend onto RGB/RGBA frames; Gradio branding preview.
+- `docs/technical/logo-rim-lights-prep.md` - `compute_logo_rim_prep`: luma+edge line mask, alpha centroid, and stroke-vs-halo `use_line_features` fallback for future rim lighting.
+- `docs/technical/logo-rim-lights.md` - Rim field overview: `compute_logo_rim_light_patch` / `RimLightConfig`, mask fallback, multicolour and audio modulation (cross-ref prep/color/audio/compositing/UI docs).
+- `docs/technical/logo-rim-lights-color.md` - Multi-colour rim (`rim_color_layers` 2--3), HSV spread, per-layer phase offsets, `hue_drift_per_sec`, `song_hash` palette seed, and halo-only dual-tone behaviour.
+- `docs/technical/logo-rim-audio-modulation.md` - Snare/bass `RimAudioModulation` on `compute_logo_rim_light_patch`, compositor `logo_rim_audio_reactive` stepper and analysis tracks.
+- `docs/technical/logo-rim-compositing.md` - `LogoGlowMode`, rim vs classic neon blend order, `composite_logo_onto_frame` kwargs, and compositor `_effective_rim_light_config` / defaults.
+- `docs/technical/logo-rim-branding-ui.md` - Gradio Branding accordion → `OrchestratorInputs` → `resolve_logo_rim_compositor_fields` / `CompositorConfig`; cosmetic-only (no song cache impact).
 - `docs/technical/background-stills.md` - SDXL FP16 keyframe generator, section-aware prompts, cached PNGs under `cache/<hash>/background/`, and smoothstep-crossfade `background_frame(t)` API.
 - `docs/technical/background-modes.md` - `BackgroundSource` factory, Ken Burns + AnimateDiff caches, Gradio/orchestrator mode wiring (cross-ref SDXL stills doc).
 - `docs/technical/frame-compositor.md` - Per-frame compositor pipeline: bg + reactive + typography + logo, bounded queue producer/consumer, `bgr24` ffmpeg stdin.
 - `docs/technical/thumbnail-generator.md` - Chorus/RMS frame pick, `render_single_frame`, Skia title overlay, and `thumbnail.png` beside `output.mp4`.
 - `docs/technical/metadata-generator.md` - `metadata.txt` (title, description, chapters, tags) from analysis, lyrics, and preset; `write_run_metadata` in `orchestrator.py`.
 - `docs/technical/preview-and-render.md` - Preview 10 s (loudest RMS window), full render, progress/ETA mapping, and ffprobe A/V sync validation.
-- `docs/technical/title-and-beat-pulse.md` - Burned-in `Artist — Title` overlay (9-point grid, 3 sizes) and beat-synced logo pulse sharing the compositor's stacking order.
+- `docs/technical/title-and-beat-pulse.md` - Burned-in `Artist — Title` overlay (9-point grid, 3 sizes) and the logo-branding reactive stack: attack-dominant bass pulse, snare neon, snare squeeze, and RMS-jump impact glitch.
 - `docs/technical/gpu-memory.md` - Shared `release_cuda_memory` / `move_to_cpu` helpers used by demucs, WhisperX, SDXL, and AnimateDiff to hand off VRAM cleanly between pipeline stages.

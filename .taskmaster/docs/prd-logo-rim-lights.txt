@@ -1,0 +1,31 @@
+# PRD: Advanced logo rim lights (traveling, multi-color, beat-synced)
+
+## Summary
+Replace/extend the current single-tint alpha blur glow (`_neon_glow_patch` in `pipeline/logo_composite.py`) with a configurable **rim / traveling light** system: multiple colors, smooth motion around the mark, optional **bleed into** high-luma stroke regions (white lines on dark), beat-driven intensity and phase, and a clean fallback to **halo-only** when no strong line energy is detected.
+
+## Goals
+1. **Visual**: Read as unique neon rim lighting — not a flat static halo. Lights appear to run around the logo; colors shift or chase; “sometimes into the lines” for stroke-heavy marks (e.g. dark disc + white lines).
+2. **Motion**: Configurable **angular sweep** (direction, speed) and optional **radial** variation; smooth temporal filtering (no harsh stepping at 30 fps).
+3. **Audio**: **Pulse** with the beat: tie overall intensity to existing snare-glow and/or bass pulse tracks where applicable; do not desync the rest of the compositor.
+4. **Configurability**: User-facing controls (Gradio) for at least: mode (outline / inward bleed / combined), travel speed, color spread, inward-mix amount, and toggles to preserve “classic” static glow for comparison.
+5. **Robustness**: If line-like energy is low (flat logos, solid glyphs), **automatically** fall back to a smooth outer halo (current behavior class) so any logo still looks good.
+6. **Determinism**: Reproducible full renders: derive seeds from `song_hash` + time where randomness is needed (align with existing `glitch_seed_for_time` pattern).
+7. **Performance**: Target real-time batch compositor paths; use NumPy/SciPy/Pillow as needed — **hardware is strong**; avoid unnecessary per-frame huge allocations (reuse buffers where possible).
+
+## Non-goals
+- True vector “stroke following” (SVG path parameterization) for arbitrary PNGs in v1.
+- Moving the effect into the reactive GL shader (unless a later follow-up); **Pillow/NumPy** in the logo composite path is sufficient.
+
+## Implementation notes (for tasks)
+- **Line mask**: From logo RGB: high luminance + optional edge emphasis (Sobel/Scharr on gray); combine with alpha. Morphological cleanup if needed.
+- **Silhouette / centroid**: For polar phase “around” the mark; use alpha centroid or image moments.
+- **Inward mix**: Use distance-to-edge (or distance transform) to weight glow that sits on strokes vs only outside the alpha.
+- **Multi-color**: Stack 2–3 modulated layers (e.g. hue-rotated, phase-offset) with soft blending.
+- **API**: Extend `composite_logo_onto_frame` and compositor call sites with a structured config object or named optional params; extend `OrchestratorInputs` + `app.py` branding section.
+- **Tests**: Mask extraction (synthetic small RGBA), determinism, monotonicity of phase over time, fallback when line mask is empty.
+- **Docs**: New `docs/technical/logo-rim-lights.md` + one-line in `docs/index.md`.
+
+## Success criteria
+- Full render with branding shows the new effect when enabled; toggling “inward” visibly changes whether light occupies stroke interiors.
+- Disabling the new system restores prior single-color blur behavior (or explicit “classic glow” mode).
+- No regression in existing logo tests; new tests pass.

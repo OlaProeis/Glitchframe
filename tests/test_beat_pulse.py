@@ -306,9 +306,15 @@ class TestLogoBassPulseTrack(unittest.TestCase):
         plain = build_bass_pulse_track(analysis)
         assert logo is not None and plain is not None
         mid = logo.value_at(2.0)
+        plain_mid = plain.value_at(2.0)
         # Attack-only curve collapses toward 0 on flat sustained bass.
-        self.assertLess(plain.value_at(2.0), 0.15)
-        self.assertGreater(mid, 0.35)
+        self.assertLess(plain_mid, 0.15)
+        # Sustain-aware curve must stay meaningfully above the attack-only
+        # floor (the exact level depends on ``sustain_weight``; attack-dominant
+        # defaults deliberately leave less tail than older sustain-heavy ones
+        # so the logo still bounces on kicks — see 2026-04 regression probe).
+        self.assertGreater(mid, 0.20)
+        self.assertGreater(mid, plain_mid * 1.8)
 
 
 class TestRmsImpactPulseTrack(unittest.TestCase):
