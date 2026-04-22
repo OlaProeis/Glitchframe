@@ -1,0 +1,11 @@
+prompt: >-
+  Neon 1980s retrowave skyline, chrome perspective grid, palm silhouettes,
+  magenta and cyan rim light, subtle film grain, cinematic wide shot, ultra sharp
+shader: synth_grid
+typo_style: beat-shake
+colors:
+  - "#1A0A2E"
+  - "#16213E"
+  - "#00F5FF"
+  - "#FF2EE6"
+  - "#E8F7FF"

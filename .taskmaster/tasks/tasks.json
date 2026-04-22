@@ -1,0 +1,420 @@
+{
+  "master": {
+    "tasks": [
+      {
+        "id": 1,
+        "title": "Project Setup and Directory Structure",
+        "description": "Initialize Python 3.11 project with uv/pip, create directory layout, requirements.txt, and basic config.py with paths and presets registry.",
+        "details": "Use `uv init musicvids`; create folders: pipeline/, presets/, assets/shaders/, assets/fonts/, cache/, outputs/; generate requirements.txt with gradio==4.x, torch==2.x (cuda12), diffusers, librosa, soundfile, moderngl, skia-python, pillow, numpy; config.py with default paths, preset dict loading YAMLs.",
+        "testStrategy": "Verify dir structure exists, `uv sync` installs without errors, `python config.py` loads without ImportError.",
+        "priority": "high",
+        "dependencies": [],
+        "status": "done",
+        "subtasks": [],
+        "complexity": 2,
+        "recommendedSubtasks": 0,
+        "expansionPrompt": "No expansion needed; straightforward setup.",
+        "updatedAt": "2026-04-16T21:05:06.262Z"
+      },
+      {
+        "id": 2,
+        "title": "Gradio UI Skeleton Implementation",
+        "description": "Build single-page Gradio layout with all input sections: Audio, Metadata, Branding, Lyrics, Visual style, Output settings, Actions buttons.",
+        "details": "In app.py: gr.Interface or Blocks with Tabs/Rows for sections; file uploads for audio/logo; Textboxes for metadata/lyrics/prompt; Dropdown for presets; Sliders for opacity/intensity; Buttons for Analyze/Preview/Render; Progress panel with gr.Progress.",
+        "testStrategy": "Launch `python app.py`, verify all UI elements render, uploads/inputs accept data, buttons clickable without crash.",
+        "priority": "high",
+        "dependencies": [
+          "1"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "complexity": 4,
+        "recommendedSubtasks": 3,
+        "expansionPrompt": "Break into: 1) Define Gradio Blocks layout and tabs; 2) Implement input components (uploads, textboxes, sliders, dropdown); 3) Add action buttons and progress panel with event handlers.",
+        "updatedAt": "2026-04-16T21:12:10.100Z"
+      },
+      {
+        "id": 3,
+        "title": "Audio Loading and Waveform Preview",
+        "description": "Implement audio file upload handling, 44.1kHz mono mixdown for analysis, stereo original preservation, waveform preview/play/scrub in Gradio.",
+        "details": "Use soundfile/librosa to load MP3/WAV/FLAC; resample to 44100Hz mono; generate numpy waveform; Gradio Audio component for preview, custom JS for scrub if needed; hash song for cache dir.",
+        "testStrategy": "Upload sample audio, verify waveform displays, play/scrub works, cache/<hash>/original.wav saved.",
+        "priority": "high",
+        "dependencies": [
+          "2"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "complexity": 5,
+        "recommendedSubtasks": 2,
+        "expansionPrompt": "Split into: 1) Audio loading, resampling, and caching with hashing; 2) Waveform generation and Gradio Audio component integration with preview/playback.",
+        "updatedAt": "2026-04-16T21:16:02.118Z"
+      },
+      {
+        "id": 4,
+        "title": "Audio Analyzer with BeatNet and Features",
+        "description": "Implement Analyze button: tempo/beats (BeatNet/madmom), onsets (librosa), spectral bands (8 log-mel), RMS, structural segments; cache analysis.json.",
+        "details": "pipeline/audio_analyzer.py: load vocals via demucs('htdemucs_ft'); BeatNet for beats; librosa.onset.onset_strength.peaks; librosa.feature.melspectrogram(8 bands); librosa.rms; librosa.segment; save json with beats/onsets/spectrum/rms/segments.",
+        "testStrategy": "Run Analyze on sample, verify analysis.json fields populated accurately vs librosa docs, BPM matches known tracks.",
+        "priority": "high",
+        "dependencies": [
+          "3"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "complexity": 8,
+        "recommendedSubtasks": 4,
+        "expansionPrompt": "Divide into: 1) Demucs vocal separation; 2) Beat/tempo detection with BeatNet/madmom; 3) Onset, spectral, RMS feature extraction with librosa; 4) Structural segmentation and JSON caching.",
+        "updatedAt": "2026-04-16T21:24:09.143Z"
+      },
+      {
+        "id": 5,
+        "title": "Orchestrator Core with Song Hashing and Caching",
+        "description": "Create orchestrator.py to coordinate pipeline stages, compute song_hash from audio+metadata, manage cache/<hash>/, skip re-analysis if exists.",
+        "details": "Hash = hashlib.sha256(audio_bytes + metadata_str); mkdir cache/<hash>; load/save analysis.json/stems; orchestrate stages sequentially with progress callbacks to Gradio.",
+        "testStrategy": "Simulate re-run with existing cache, verify skips analysis, progress updates correctly.",
+        "priority": "high",
+        "dependencies": [
+          "1",
+          "4"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "complexity": 6,
+        "recommendedSubtasks": 3,
+        "expansionPrompt": "Break down to: 1) Implement song hashing from audio/metadata; 2) Cache directory management and JSON/stems persistence; 3) Sequential pipeline orchestration with Gradio progress callbacks and skip logic.",
+        "updatedAt": "2026-04-16T21:35:33.030Z"
+      },
+      {
+        "id": 6,
+        "title": "Preset System and YAML Loading",
+        "description": "Define presets/neon-synthwave.yaml etc. with SD prompt/shader/typography/color; load in config.py; populate Gradio dropdown.",
+        "details": "YAML schema: {prompt: str, shader: str, typo_style: str, colors: list}; config.py registry[list]; Gradio dropdown onchange loads fields; create 6 presets as specified.",
+        "testStrategy": "Select preset, verify fields auto-fill (prompt/shader), yaml parse without error.",
+        "priority": "medium",
+        "dependencies": [
+          "2"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "complexity": 3,
+        "recommendedSubtasks": 1,
+        "expansionPrompt": "Split into: 1) YAML schema definition, 6 preset files creation, and config.py registry; 2) Gradio dropdown integration with auto-fill onchange.",
+        "updatedAt": "2026-04-17T07:14:22.654Z"
+      },
+      {
+        "id": 7,
+        "title": "Simple Spectrum Visualizer Renderer (M1)",
+        "description": "For M1: render plain 1080p video with solid color bg + spectrum overlay from analysis, pipe raw BGR to ffmpeg NVENC, mux audio.",
+        "details": "pipeline/renderer.py: loop over frames at 30fps, interpolate spectrum[frame], draw bars with numpy/Pillow; ffmpeg cmd as spec'd: rawvideo bgr24 stdin -> h264_nvenc cq19; test end-to-end.",
+        "testStrategy": "Render full song, ffprobe output.mp4: 1080p30, no A/V drift >50ms, spectrum syncs to beats.",
+        "priority": "high",
+        "dependencies": [
+          "4",
+          "5"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "complexity": 7,
+        "recommendedSubtasks": 4,
+        "expansionPrompt": "Decompose into: 1) Frame loop with spectrum interpolation; 2) Numpy/Pillow bar drawing on solid BG; 3) Raw BGR piping to ffmpeg NVENC; 4) Audio muxing and A/V sync validation.",
+        "updatedAt": "2026-04-16T21:38:48.098Z"
+      },
+      {
+        "id": 8,
+        "title": "Moderngl Reactive Shader Layer",
+        "description": "Implement GPU shader pass with moderngl offscreen FBO for reactive overlays driven by beat_phase, band_energies[8], rms, onset_pulse.",
+        "details": "assets/shaders/: glsl files for spectrum/particles/geometry (e.g. #version 330; uniforms vec4 band_energies; frag: color based on sin(time)*rms); moderngl.Context offscreen 1920x1080 RGBA; render_frame(uniforms_dict) -> np.array alpha.",
+        "testStrategy": "Render 10s clip, verify shader responds to mock audio features (visual pulses on beats), no GL errors.",
+        "priority": "high",
+        "dependencies": [
+          "7"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "complexity": 9,
+        "recommendedSubtasks": 5,
+        "expansionPrompt": "Break into: 1) GLSL shader files for spectrum/particles/geometry; 2) Moderngl Context/FBO offscreen setup; 3) Uniforms integration (beat_phase, bands, rms); 4) Frame rendering to numpy RGBA; 5) GL error handling and testing.",
+        "updatedAt": "2026-04-16T21:48:27.899Z"
+      },
+      {
+        "id": 9,
+        "title": "Preset Shader Selection and Reactive Intensity",
+        "description": "Integrate presets to select shader, apply intensity slider (0-100%) scaling uniforms, composite reactive RGBA onto bg.",
+        "details": "In reactive_layer.py: load preset.shader glsl; uniforms['intensity'] = slider/100; gl.teximage background_rgb; render -> alpha_blend.",
+        "testStrategy": "Vary intensity 0/50/100, verify visual strength scales linearly in output frames.",
+        "priority": "medium",
+        "dependencies": [
+          "6",
+          "8"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "complexity": 5,
+        "recommendedSubtasks": 2,
+        "expansionPrompt": "Divide into: 1) Preset-based GLSL loading and uniforms scaling by intensity slider; 2) Background texture compositing and alpha blending.",
+        "updatedAt": "2026-04-17T07:56:02.450Z"
+      },
+      {
+        "id": 10,
+        "title": "Logo Compositing",
+        "description": "Load optional logo PNG, apply position (corners/center), opacity slider, blend RGBA fixed per frame.",
+        "details": "Pillow: Image.open(logo).resize; position mapping dict; alpha = opacity/100; np blend logo_rgba onto frame.",
+        "testStrategy": "Upload logo, set pos/opacity, render frame extract verifies positioned/transparent correctly.",
+        "priority": "medium",
+        "dependencies": [
+          "2",
+          "9"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "complexity": 3,
+        "recommendedSubtasks": 1,
+        "expansionPrompt": "Split into: 1) PNG loading/resizing/positioning with Pillow; 2) Opacity blending onto frames with numpy.",
+        "updatedAt": "2026-04-17T07:57:27.116Z"
+      },
+      {
+        "id": 11,
+        "title": "Lyrics Alignment with WhisperX",
+        "description": "Implement lyrics_aligner.py: demucs vocals, WhisperX large-v3 word timestamps, Needleman-Wunsch align user lyrics to tokens.",
+        "details": "whisperx.load_model('large-v3'); transcribe(vocals.wav, word_timestamps=True); dtw_align(user_lines, whisper_words) -> [{'word':str, 'line_idx':int, 't_start':float, 't_end':float}]; save lyrics.aligned.json.",
+        "testStrategy": "Input known lyrics+vocal stem, verify aligned timings match whisper output \u00b10.2s, preserves user text.",
+        "priority": "high",
+        "dependencies": [
+          "4"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "complexity": 8,
+        "recommendedSubtasks": 3,
+        "expansionPrompt": "Decompose to: 1) Demucs vocals extraction; 2) WhisperX large-v3 transcription with word timestamps; 3) Needleman-Wunsch/DTW alignment to user lyrics and JSON output.",
+        "updatedAt": "2026-04-16T21:31:08.223Z"
+      },
+      {
+        "id": 12,
+        "title": "Skia Kinetic Typography Layer",
+        "description": "Render typography with skia-python: per-word motions (pop-in/beat-shake etc.), lower-third layout, fonts from assets/, driven by aligned.json.",
+        "details": "skia.Canvas RGBA; load preset font (TTF); for frame t: active_words = [w for w in lyrics if t in [w.t_start, w.t_end]]; animate pos/scale/alpha per preset motion curves; prev line fade.",
+        "testStrategy": "Render lyrics clip, verify words appear/disappear at aligned times, motions smooth, text crisp.",
+        "priority": "high",
+        "dependencies": [
+          "6",
+          "11"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "complexity": 9,
+        "recommendedSubtasks": 4,
+        "expansionPrompt": "Break into: 1) Skia Canvas setup and font loading; 2) Per-frame active words filtering from aligned.json; 3) Motion curves (pop-in/shake) implementation; 4) Lower-third layout and fade effects.",
+        "updatedAt": "2026-04-17T07:21:51.924Z"
+      },
+      {
+        "id": 13,
+        "title": "Frame Compositor Pipeline",
+        "description": "Integrate bg + reactive + typo + logo: per-frame loop pull/interpolate, blend RGBA layers, write BGR to ffmpeg stdin.",
+        "details": "pipeline/compositor.py: queue.Queue bounded; for i in range(total_frames): bg = interp_bg(i/fps); reactive=render_reactive(i); typo=render_typo(i); logo_blend; pipe bgr24 bytes to ffmpeg.proc.stdin.",
+        "testStrategy": "Full render, verify layers visible/composited correctly in random frames via cv2 read.",
+        "priority": "high",
+        "dependencies": [
+          "7",
+          "9",
+          "10",
+          "12"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "complexity": 8,
+        "recommendedSubtasks": 4,
+        "expansionPrompt": "Divide into: 1) Per-frame layer pulling/interpolation (bg/reactive/typo/logo); 2) RGBA alpha blending sequence; 3) BGR byte queue to ffmpeg stdin; 4) Threading/bounded queue for performance.",
+        "updatedAt": "2026-04-17T08:03:23.343Z"
+      },
+      {
+        "id": 14,
+        "title": "SDXL Background Stills Generator",
+        "description": "AI stills mode: diffusers SDXL FP16, generate N=ceil(dur/8s) keyframes from sections+preset prompt, FILM interpolate/crossfade.",
+        "details": "from diffusers import StableDiffusionXLPipeline; pipe=...to('cuda:0', torch.float16); prompts=[preset+section_desc]; images=pipe(prompts).images; resize 1920x1080; save cache/background/keyframe_{i}.png; interp func.",
+        "testStrategy": "Generate for 30s song, verify N=4 images gen'd <60s total, interp smooth between keyframes.",
+        "priority": "high",
+        "dependencies": [
+          "4",
+          "6"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "complexity": 8,
+        "recommendedSubtasks": 3,
+        "expansionPrompt": "Split into: 1) Diffusers SDXL FP16 pipeline setup on CUDA; 2) Keyframe generation from sections/prompts; 3) FILM interpolation and crossfade between keyframes.",
+        "updatedAt": "2026-04-17T07:29:59.440Z"
+      },
+      {
+        "id": 15,
+        "title": "Background Modes Integration",
+        "description": "Add AnimateDiff (stretch), static image upload/KenBurns; select mode in UI, feed to compositor.",
+        "details": "If static: upload img, KenBurns zoom/pan on RMS; AnimateDiff: short loops per section (use diffusers AnimateDiffPipeline if avail); cache/background/.",
+        "testStrategy": "Test each mode renders without crash, backgrounds match mode (motion/static).",
+        "priority": "medium",
+        "dependencies": [
+          "14"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "complexity": 6,
+        "recommendedSubtasks": 3,
+        "expansionPrompt": "Break down to: 1) Static image upload and KenBurns (zoom/pan on RMS); 2) AnimateDiff pipeline short loops; 3) UI mode selector and compositor integration.",
+        "updatedAt": "2026-04-17T07:50:57.753Z"
+      },
+      {
+        "id": 16,
+        "title": "Thumbnail Generator",
+        "description": "Pick frame at first chorus downbeat/loudest 1s, overlay Artist\u2014Title big text with preset typo, save 1920x1080 PNG.",
+        "details": "pipeline/thumbnail.py: chorus_t = segments[1] or argmax(rms); frame = compositor.get_frame(chorus_t); skia overlay title_text; PIL save.",
+        "testStrategy": "After render, verify thumbnail.png exists, shows title overlay on video frame.",
+        "priority": "medium",
+        "dependencies": [
+          "12",
+          "13"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "complexity": 4,
+        "recommendedSubtasks": 2,
+        "expansionPrompt": "Divide into: 1) Frame selection at chorus/loudest RMS; 2) Skia text overlay and PIL PNG save.",
+        "updatedAt": "2026-04-17T08:06:16.989Z"
+      },
+      {
+        "id": 17,
+        "title": "Metadata Generator",
+        "description": "Generate metadata.txt: title, desc w/lyrics/chapters, tags from genre/preset.",
+        "details": "pipeline/metadata.py: title=f'{artist} \u2014 {title} [Official Visualizer]'; chapters=[f'{t//60:02d}:{t%60:02d} {seg}' for seg,t in segments]; tags=list; write file.",
+        "testStrategy": "Verify txt parses correctly, chapters match segments.",
+        "priority": "medium",
+        "dependencies": [
+          "4",
+          "6"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "complexity": 2,
+        "recommendedSubtasks": 0,
+        "expansionPrompt": "No expansion needed; basic text generation.",
+        "updatedAt": "2026-04-17T08:09:27.884Z"
+      },
+      {
+        "id": 18,
+        "title": "Progress, Preview 10s, Polish and Error Handling",
+        "description": "Add live progress/ETA/log to Gradio; Preview 10s from loudest section; 4K/fps options; resumable renders; validate A/V sync.",
+        "details": "Gradio queue+progressbar; preview: slice analysis[loudest_10s]; try/except per stage w/ resume from cache; post-render ffprobe check drift<50ms; outputs/<run_id=hash>/.",
+        "testStrategy": "Full render progress updates, preview <30s, ffprobe no drift, error recovery works.",
+        "priority": "medium",
+        "dependencies": [
+          "5",
+          "13",
+          "15",
+          "16",
+          "17"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "complexity": 7,
+        "recommendedSubtasks": 5,
+        "expansionPrompt": "Decompose into: 1) Gradio progress/ETA/log updates; 2) 10s preview from loudest section; 3) 4K/fps options; 4) Resumable rendering from cache; 5) A/V sync validation with ffprobe.",
+        "updatedAt": "2026-04-17T08:21:51.079Z"
+      },
+      {
+        "id": 19,
+        "title": "Scope Preview to 10s Window with Background Optimization",
+        "description": "Modify orchestrator to pass preview time range to BackgroundSource generators (SDXL, AnimateDiff, Ken Burns) for partial asset generation only within loudest 10s + padding; ensure full render completes missing assets with proper cache keys for unchanged quality.",
+        "details": "1. In orchestrator.py (from Task 5), add preview_start/end params from Task 18 loudest_10s analysis: def ensure_backgrounds(hash, preview_range=None, full_duration=None): if preview_range: t_start, t_end = preview_range; padding=1.0s; gen_range=(max(0,t_start-padding), min(full_duration, t_end+padding)) else: gen_range=(0,full_duration)\n2. Update BackgroundSource.ensure(mode, song_hash, time_range=gen_range): cache_key=f'{hash}_{mode}_{gen_range[0]:.1f}_{gen_range[1]:.1f}' to distinguish partial/full caches in cache/<hash>/backgrounds/\n3. Modify Task14 SDXL: pipe(prompts_for_range=[section_desc for t in np.arange(gen_range[0],gen_range[1],8)]).images \u2192 keyframe_{t:.1f}.png\n4. Task15 AnimateDiff/KenBurns: generate loops/zooms only for gen_range, save with time-specific keys\n5. Full render: call ensure_backgrounds(hash, full_duration=analysis['duration']) to fill gaps, using existing partial cache\n6. Update docs/preview-and-render.md: explain partial caching; background-modes.md: time-range param; Gradio: 'Preview generates backgrounds for 10s window only (~2min vs 25min)'\n7. Cache manifest.json: track generated ranges per mode for resume logic.",
+        "testStrategy": "1. Preview 30s song: verify BackgroundSource cache keys contain 'X.X_Y.Y' (10s range), SDXL generates ~2 keyframes (<30s total), preview completes <3min\n2. Full render same song: new cache keys for full range, uses partial cache (no re-gen for preview range), ffprobe full video complete/quality matches non-preview baseline\n3. Check cache/<hash>/backgrounds/: partial files from preview, complete after full render; manifest.json lists ranges\n4. Gradio: progress shows 'Backgrounds (10s preview)' vs 'Backgrounds (full 180s)'; docs updated verifiable\n5. Edge: preview at track edge \u2192 padding clamps 0/duration; no A/V issues ffprobe drift<50ms.",
+        "status": "pending",
+        "dependencies": [
+          5,
+          14,
+          15,
+          18
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 20,
+        "title": "Bass-Driven Logo Beat Pulse with Low-Frequency Energy",
+        "description": "Replace generic beat pulse with bass/kick-driven animation using low-frequency energy from analysis.json; add tunable sensitivity in CompositorConfig and preserve optional 'every beat' mode.",
+        "details": "**Core Changes in compositor/beat_pulse.py:**\n1. Load analysis.json: extract **low-freq energy** - use `spectrum_bands[0:2]` (bass ~20-250Hz, 8 log-mel bands from Task 4) or compute `librosa.feature.rms(y=librosa.stft(analysis['audio'], n_fft=2048)[:,:,:2])` for sub-bass.\n2. **Bass envelope generator**: `def bass_envelope(analysis, frame_time, sensitivity=1.0): bass_energy = np.mean(spectrum_bands[frame_time*sr//hop:frame_time*sr//hop+frame_len, 0:2]); return np.clip(bass_energy*sensitivity, 0, 1)`\n3. **Alternative signals**: kick-detect = `onset_strength[beats] > threshold` filtered to bass band, or `librosa.onset.onset_strength(analysis['audio'].lowpass(250))` peaks.\n4. **Logo params**: `scale = 1.0 + 0.3*bass_envelope; opacity = 0.7 + 0.3*bass_envelope` (smooth with `scipy.signal.sosfilt` 0.1s attack/decay).\n5. **Config**: In `CompositorConfig`: `pulse_mode='bass' | 'beats' | 'hybrid'; bass_sensitivity=Slider(0.1-3.0, default=1.0)`; Gradio slider in UI.\n6. **Fallback**: If `pulse_mode='beats'`, use existing `beat_grid` interpolation.\n7. **Docs**: Update `title-and-beat-pulse.md`: explain bass vs beats modes, sensitivity tuning, freq ranges used.\n**Extend audio_analyzer.py if needed**: Add `bass_rms = librosa.rms(librosa.stft(audio)[:,:,:2])` to analysis.json.\n**Cache**: `pulse_cache/{song_hash}_{mode}_{sensitivity:.1f}.npy` for envelope per frame.",
+        "testStrategy": "1. **Analysis verify**: `python -m pipeline.audio_analyzer sample_bassheavy.mp3` \u2192 check `analysis.json` has `spectrum_bands.shape[1]>=2`, `bass_rms` if added.\n2. **Pulse render test**: Mock 10s analysis slice \u2192 render logo-only frames, verify **scale/opacity** peaks align with kick hits (visualize matplotlib subplot(energy, pulse)) not every hi-hat.\n3. **UI test**: Gradio \u2192 Analyze bass-heavy track (e.g. EDM), slider bass_sensitivity=0.5/1.0/2.0 \u2192 Preview: logo **pulsing cleanly on kicks** (no jitter on snares), mode='beats' falls back to grid.\n4. **Full render**: EDM track \u2192 ffprobe video, extract logo frames \u2192 **energy correlation**: `np.corrcoef(bass_rms[::30], logo_scales)>0.7`; weak-beat track (acoustic) \u2192 minimal/no jitter.\n5. **Docs**: Verify `title-and-beat-pulse.md` explains tuning/modes.",
+        "status": "pending",
+        "dependencies": [
+          4,
+          5,
+          "13",
+          "18"
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 21,
+        "title": "Overnight / multi-song render queue",
+        "description": "Allow queuing multiple full-pipeline jobs (ingest + analysis + background + compositor) so batches can run unattended, with stable file paths for uploads and clear per-job success/failure handling.",
+        "details": "Define a durable job spec (serialize OrchestratorInputs or equivalent: song_hash or audio path, background mode, preset, lyrics toggle/text, resolution/fps, metadata, paths to copied logo/static assets). Prefer phased delivery: (A) CLI or script that reads JSON/JSONL and calls orchestrate_full_render sequentially; (B) optional Gradio: Add to queue, list/clear, background worker thread or subprocess so the UI stays responsive. Copy Gradio temp uploads into per-job folders when enqueueing. Between jobs, rely on existing GPU memory teardown patterns. Document in docs/technical/ or handover: queue file format, overnight usage.",
+        "testStrategy": "Enqueue2+ jobs with different hashes; verify outputs land in distinct outputs/<run_id>/; failure in job 2 does not corrupt job 1 artifacts; optional: restart mid-queue resumes from remaining entries if persistence implemented.",
+        "priority": "medium",
+        "dependencies": [
+          "5",
+          "18"
+        ],
+        "status": "pending",
+        "subtasks": [],
+        "complexity": 7,
+        "recommendedSubtasks": 4,
+        "expansionPrompt": "Split into: 1) Job spec schema + file persistence; 2) CLI batch runner calling orchestrate_full_render; 3) Stable copy of upload paths per job; 4) Optional Gradio queue UI + worker.",
+        "updatedAt": "2026-04-17T23:30:00.000Z"
+      },
+      {
+        "id": 22,
+        "title": "Single primary export action in Gradio (full pipeline UX)",
+        "description": "Reduce perceived multi-step friction: one clear control that runs the same chain as Render full video today (analysis + optional lyrics alignment + background ensure + compositor + metadata), with advanced actions still available.",
+        "details": "orchestrate_full_render already chains stages; the gap is UX/documentation. Add a prominent Export / Run full pipeline button (or rename and group) that uses the same code path as btn_render. Clarify in UI copy that Analyze / Align are optional precache/debug; when typography is enabled, render includes alignment if lyrics text present. Update docs/technical/gradio-ui.md and preview-and-render.md to describe the one-button story. Do not change stage order in orchestrator unless product requires it.",
+        "testStrategy": "From cold state: ingest audio, fill metadata/preset, single export click produces output.mp4 + metadata.txt without requiring separate Analyze/Align clicks when lyrics+typography on.",
+        "priority": "low",
+        "dependencies": [
+          "2",
+          "18"
+        ],
+        "status": "pending",
+        "subtasks": [],
+        "complexity": 3,
+        "recommendedSubtasks": 2,
+        "expansionPrompt": "Split into: 1) Gradio layout + button wiring mirroring full render; 2) Doc updates for user-facing flow.",
+        "updatedAt": "2026-04-17T23:30:00.000Z"
+      },
+      {
+        "id": 23,
+        "title": "Timestamped section headers for lyrics alignment",
+        "description": "Allow the user to mark section boundaries with a single line that carries both a human-readable label (Verse 1, Chorus, Pre-chorus, Bridge, Outro, ...) AND a [m:ss] timestamp. The header produces both a section break (equivalent to today's `---`) and an immovable line anchor on the first lyric line of that section, eliminating the need to stack `---` with an inline `[m:ss]` on every section start. This becomes the ergonomic primary input channel for coarse section-level timing.",
+        "details": "Extend `pipeline/lyrics_aligner.py` parser in `_split_user_lyrics`:\n\n1. Recognise a new header line form. Canonical examples (support all so users can paste whatever is natural):\n   * `[Verse 1 0:12]`\n   * `[Chorus 1:00]`\n   * `[Pre-chorus 0:42.5]`\n   * `[0:12 Verse 1]` (time before label)\n   * `[Outro 2:55]`\n   Accept either a `[m:ss]` / `[m:ss.mmm]` / `[h:mm:ss]` token inside the brackets (order-insensitive relative to the label). The header is matched on the ENTIRE trimmed line; lines that start with `[` but don't match the header grammar fall through to `_parse_anchor_prefix` (legacy bare-anchor lines) unchanged.\n2. On match: emit both a section break (append to `section_starts`) AND record the timestamp in `line_anchors` keyed to the NEXT real lyric line emitted after the header. Collapse consecutive headers the same way consecutive `---` markers are collapsed.\n3. Preserve the label text on the output so downstream logging and the editor can surface it (e.g. the Section-fingerprint log line can print `chosen=[Verse 1: 12.00s, Chorus: 42.50s, ...]`). This requires a small widening of the tuple returned by `_split_user_lyrics` or a sibling dict `section_labels: dict[int, str]` keyed by section index.\n4. Backward compatibility: `---`, `--- <tag>`, bare `[m:ss]` prefixes on lyric lines, and bare `[m:ss]` on a standalone line must continue to work with identical semantics. Cache hashes for existing songs that use only legacy forms must not change (fold labels into `_lyrics_cache_key` canonical form only when labels/header-timestamps are actually present).\n5. Wire the header timestamps into the existing `forced_sec` dict that feeds `_assign_sections_via_temporal_dp` \u2014 they should behave identically to today's inline `[m:ss]` anchors (score 2.0, dominates fingerprint match scores capped at 1.0).\n6. Optional polish: surface `section_labels` in the persisted `lyrics.aligned.json` payload so the visual editor can display section badges on the waveform.",
+        "testStrategy": "Unit tests in `tests/test_lyrics_aligner.py`:\n  * `TestSplitUserLyricsTimestampedHeaders` \u2014 parse each canonical header form; verify section_starts, line_anchors, and section_labels are populated; verify labels don't leak into lyric text; verify mixed documents with both `---` and timestamped headers work.\n  * Backward-compat: re-run `TestSplitUserLyrics*` existing cases and assert outputs unchanged.\n  * Cache-key stability: `_lyrics_cache_key` for a document using only `---` must hash identically before/after this change.\n  * `TestSectionFingerprintEndToEnd` \u2014 add a case where the user provides headers on every section and verify the DP picks the header times verbatim (score 2.0 wins).\nEnd-to-end: load one real song with 5-8 labeled section headers and confirm the `Section-fingerprint placement:` log line shows every section `chosen_starts[i]` equal to the header time (within 5 ms).",
+        "priority": "high",
+        "dependencies": [],
+        "status": "pending",
+        "subtasks": [],
+        "complexity": 5,
+        "recommendedSubtasks": 3,
+        "expansionPrompt": "Split into: 1) Parser grammar + `_split_user_lyrics` changes with section_labels output; 2) Cache-key canonicalisation and backward-compat guard; 3) Wire into forced_sec/DP path + persist labels in lyrics.aligned.json for the editor.",
+        "updatedAt": "2026-04-20T17:31:26.000Z"
+      }
+    ],
+    "metadata": {
+      "version": "1.0.0",
+      "lastModified": "2026-04-20T17:31:26.000Z",
+      "taskCount": 23,
+      "completedCount": 18,
+      "tags": [
+        "master"
+      ],
+      "created": "2026-04-17T13:52:02.933Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-20T17:31:26.000Z"
+    }
+  }
+}

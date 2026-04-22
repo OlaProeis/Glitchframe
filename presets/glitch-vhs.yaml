@@ -1,0 +1,11 @@
+prompt: >-
+  Distorted analog VHS still, tracking errors, RGB split, noise bands,
+  desaturated urban night, harsh tube bloom, raw 90s camcorder aesthetic
+shader: vhs_tracking
+typo_style: flicker
+colors:
+  - "#1A1A1A"
+  - "#FF3355"
+  - "#33CCFF"
+  - "#F0E6D2"
+  - "#2B2B2B"

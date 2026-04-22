@@ -1,0 +1,64 @@
+[project]
+name = "musicvids"
+version = "0.1.0"
+description = "Local music video generator (MusicVids)"
+requires-python = ">=3.11"
+dependencies = [
+    "gradio>=4.0,<5",
+    "torch>=2.0.0",
+    "diffusers>=0.27.0",
+    "librosa>=0.10.0",
+    "soundfile>=0.12.0",
+    "moderngl>=5.10.0",
+    "skia-python>=87.0",
+    "pillow>=10.0.0",
+    "numpy>=1.26.0",
+    "pyyaml>=6.0.0",
+    "scipy>=1.11.0",
+]
+
+[project.optional-dependencies]
+# --- "Cargo-style" one-shot for this repo: core app + vocal stem + lyrics align (no BeatNet/madmom). ---
+#   .venv\Scripts\python.exe -m pip install -e ".[all]"
+# Same dependency set as `analysis` (kept for backwards compatibility).
+all = [
+    "demucs>=4.0.0",
+    "torchaudio>=2.0.0",
+    "whisperx>=3.1.0",
+    "silero-vad>=5.1",
+]
+# demucs + torchaudio: vocal stem only (Analyze).
+vocals = [
+    "demucs>=4.0.0",
+    "torchaudio>=2.0.0",
+]
+# WhisperX alignment ("Align lyrics") only. silero-vad tightens whisper's
+# VAD on vocal stems; it's tiny (~1 MB ONNX, no GPU) and the aligner falls
+# back cleanly when absent, so including it here is a quality win.
+lyrics = [
+    "whisperx>=3.1.0",
+    "silero-vad>=5.1",
+]
+# Optional beat detectors (BeatNet → madmom). madmom often needs Cython / wheels and may not build on every Python (e.g. 3.13). Analyzer falls back to librosa without these.
+beats = [
+    "BeatNet>=1.1.0",
+    "madmom>=0.16",
+]
+# Full ML stack for Analyze + Align lyrics (same as `all`).
+analysis = [
+    "demucs>=4.0.0",
+    "torchaudio>=2.0.0",
+    "whisperx>=3.1.0",
+    "silero-vad>=5.1",
+]
+# Tests / tooling (not required to run the app).
+dev = [
+    "pytest>=8.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pipeline"]

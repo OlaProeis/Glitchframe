@@ -1,0 +1,56 @@
+# MusicVids — install PyTorch with CUDA 12.x from PyTorch index, then the rest:
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+#   pip install -r requirements.txt
+#
+# If you installed whisperx / `.[all]` and AnimateDiff or SDXL suddenly says "CUDA not
+# available", pip likely pulled torch-*+cpu from PyPI. Force CUDA wheels again (same venv):
+#   .venv\Scripts\python.exe -m pip install --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+# Then fix Gradio pins the index may have upgraded:
+#   .venv\Scripts\python.exe -m pip install "markupsafe>=2.0,<3" "pillow>=10,<11"
+# If `pip` and `uv` are not on PATH (common on Windows), use the Python launcher:
+#   py -m pip install -r requirements.txt
+# "Everything optional" from pyproject.toml (demucs + whisperx + deps), like Cargo extras:
+#   .venv\Scripts\python.exe -m pip install -e ".[all]"
+# Tests:  .venv\Scripts\python.exe -m pip install -e ".[dev]"
+
+gradio>=4.0,<5
+# gradio 4.x imports HfFolder from huggingface_hub, removed in hub >=1.0.
+huggingface_hub>=0.23,<1.0
+# gradio_client 1.3 can't parse pydantic>=2.10 schemas (additionalProperties: bool).
+pydantic>=2.7,<2.10
+# gradio 4.x is incompatible with starlette 1.0 / fastapi >= 0.116 (template API change).
+fastapi>=0.110,<0.116
+starlette>=0.40,<1.0
+torch>=2.0.0
+diffusers>=0.27.0
+# SDXL pipeline in diffusers requires transformers + accelerate + sentencepiece.
+# transformers 5.x pins huggingface_hub>=1.0, which conflicts with gradio 4.x; pin 4.x.
+transformers>=4.45,<5.0
+accelerate>=0.30
+sentencepiece>=0.2.0
+librosa>=0.10.0
+soundfile>=0.12.0
+moderngl>=5.10.0
+skia-python>=87.0
+pillow>=10.0.0
+numpy>=1.26.0
+pyyaml>=6.0.0
+scipy>=1.11.0
+
+# Audio analyzer stack (optional, install on demand):
+#   demucs + torchaudio — vocal stem (see pyproject optional extra `vocals`).
+#   BeatNet/madmom — optional beat detectors (`extras beats`); madmom may need
+#   Cython build; analyzer falls back to librosa without them.
+# BeatNet>=1.1.0
+# madmom>=0.16
+# demucs>=4.0.0
+# torchaudio>=2.0.0
+
+# Lyrics alignment (optional, install on demand):
+#   whisperx pulls faster-whisper + pyannote-audio + torchaudio; needs the same
+#   CUDA 12.x PyTorch wheel as the rest of the stack. Skipped cleanly until the
+#   "Align lyrics" action is used. silero-vad tightens whisper's VAD on vocal
+#   stems (tiny ONNX model, no GPU); aligner falls back to whisper-only VAD
+#   when it isn't importable.
+# whisperx>=3.1.0
+# silero-vad>=5.1

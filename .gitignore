@@ -1,0 +1,40 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+dev-debug.log
+
+# Dependency directories
+node_modules/
+
+# Environment variables
+.env
+
+# Editor directories and files
+.idea
+.vscode
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS specific
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+
+# MusicVids runtime (directories kept via .gitkeep)
+cache/*
+!cache/.gitkeep
+outputs/*
+!outputs/.gitkeep
+.cache/
+
+# Local scratch / throwaway preview dumps
+tmp_*/
+tmp_*.py

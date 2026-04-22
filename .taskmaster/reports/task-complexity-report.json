@@ -1,0 +1,29 @@
+{
+	"meta": {
+		"generatedAt": "2026-04-17T16:27:45.486Z",
+		"tasksAnalyzed": 2,
+		"totalTasks": 20,
+		"analysisCount": 2,
+		"thresholdScore": 5,
+		"projectName": "Task Master",
+		"usedResearch": true
+	},
+	"complexityAnalysis": [
+		{
+			"taskId": 19,
+			"taskTitle": "Scope Preview to 10s Window with Background Optimization",
+			"complexityScore": 8,
+			"recommendedSubtasks": 6,
+			"expansionPrompt": "Break down into subtasks: 1) Update orchestrator.py ensure_backgrounds function with preview_range logic and padding; 2) Modify BackgroundSource.ensure() for time-range aware cache keys; 3) Adapt SDXL generator (Task 14) for partial time-range keyframe generation; 4) Update AnimateDiff/KenBurns (Task 15) for range-limited loops/zooms; 5) Implement full render gap-filling with cache reuse and manifest.json tracking; 6) Update Gradio UI, docs, and test edge cases like track edges.",
+			"reasoning": "High complexity due to multi-module changes across orchestrator, multiple BackgroundSource generators (SDXL, AnimateDiff, KenBurns), precise cache key management to avoid quality issues or recomputation, integration with Task 18 preview logic, and comprehensive testing for partial/full renders including ffprobe A/V validation. Requires careful handling of time-range clamping, cache manifests, and dependencies on 4 prior tasks."
+		},
+		{
+			"taskId": 20,
+			"taskTitle": "Bass-Driven Logo Beat Pulse with Low-Frequency Energy",
+			"complexityScore": 7,
+			"recommendedSubtasks": 4,
+			"expansionPrompt": "Divide into subtasks: 1) Extend audio_analyzer.py to compute and cache bass_rms or low-freq spectrum_bands[0:2]; 2) Implement bass_envelope generator in beat_pulse.py with smoothing (scipy sosfilt) and alternatives like kick-onset detection; 3) Update CompositorConfig and Gradio UI for pulse_mode ('bass'|'beats'|'hybrid') and bass_sensitivity slider; 4) Add frame-wise pulse_cache, fallback logic, docs update, and correlation testing for bass-heavy tracks.",
+			"reasoning": "Moderate-high complexity involving audio signal processing (librosa RMS/STFT on low-freq bands, onset detection, envelope smoothing), integration with existing beat_grid fallback, new UI config parameters, cache per sensitivity/mode, and rigorous testing for energy correlation (>0.7) across genres. Dependencies on analysis (Task 4) and compositor (Tasks 5,13,18) add integration risk, but more contained to audio/compositor modules than Task 19."
+		}
+	]
+}
