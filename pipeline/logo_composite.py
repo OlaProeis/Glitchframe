@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import zlib
 from pathlib import Path
 
 import numpy as np
@@ -185,6 +186,45 @@ def _neon_glow_patch(
     return np.stack([r, g, b, a_u8], axis=-1), p
 
 
+def _rgb_glitch_logo_rgba(
+    logo_rgba: np.ndarray,
+    amount: float,
+    seed: int,
+) -> np.ndarray:
+    """Cheap RGB-split + horizontal tear glitch; ``amount`` in ``[0, 1]`` typical."""
+    a = float(np.clip(amount, 0.0, 1.5))
+    if a < 1e-4:
+        return logo_rgba
+    rng = np.random.default_rng(int(seed) & 0x7FFFFFFF)
+    out = np.array(logo_rgba, dtype=np.uint8, copy=True)
+    h, w = int(out.shape[0]), int(out.shape[1])
+    if h < 2 or w < 4:
+        return out
+    t = min(1.0, a)
+    mx = max(1, int(round(1.0 + 5.0 * t)))
+    sr = int(rng.integers(-mx, mx + 1))
+    sg = int(rng.integers(-max(1, mx // 2), max(1, mx // 2) + 1))
+    sb = int(rng.integers(-mx, mx + 1))
+    out[:, :, 0] = np.roll(out[:, :, 0], sr, axis=1)
+    out[:, :, 1] = np.roll(out[:, :, 1], sg, axis=1)
+    out[:, :, 2] = np.roll(out[:, :, 2], sb, axis=1)
+    n_tears = int(rng.integers(0, 1 + int(3 * t)))
+    for _ in range(n_tears):
+        ry = int(rng.integers(0, h))
+        dx = int(rng.integers(-mx, mx + 1))
+        row = out[ry, :, :].copy()
+        out[ry, :, 0] = np.roll(row[:, 0], dx)
+        out[ry, :, 1] = np.roll(row[:, 1], dx)
+        out[ry, :, 2] = np.roll(row[:, 2], dx)
+    return out
+
+
+def glitch_seed_for_time(song_hash: str, t: float) -> int:
+    """Stable per-frame seed from cache id + time (for reproducible renders)."""
+    h = (song_hash or "").strip()
+    return zlib.adler32(f"{h}:{t:.5f}".encode("utf-8", errors="ignore")) & 0xFFFFFFFF
+
+
 def composite_logo_onto_frame(
     frame: np.ndarray,
     logo_rgba: np.ndarray,
@@ -197,6 +237,8 @@ def composite_logo_onto_frame(
     glow_rgb: tuple[int, int, int] | None = None,
     glow_blur_radius: float = 5.0,
     glow_pad_px: int = 32,
+    glitch_amount: float = 0.0,
+    glitch_seed: int = 0,
 ) -> np.ndarray:
     """
     Alpha-blend ``logo_rgba`` onto ``frame``.
@@ -209,12 +251,17 @@ def composite_logo_onto_frame(
 
     ``glow_amount`` in ``[0, 1]`` (can slightly exceed 1 for peaks) drives a
     blurred neon halo **behind** the logo using ``glow_rgb``.
+
+    ``glitch_amount`` in ``[0, 1]`` applies a short RGB-split / tear distortion
+    after scaling; ``glitch_seed`` makes the pattern deterministic per call.
     """
     if frame.ndim != 3 or frame.shape[2] not in (3, 4):
         raise ValueError("frame must have shape (H, W, 3) or (H, W, 4)")
     fh, fw = int(frame.shape[0]), int(frame.shape[1])
     logo = prepare_logo_rgba(logo_rgba, fh, fw)
     logo = _scale_logo_rgba(logo, float(scale))
+    if float(glitch_amount) > 1e-4:
+        logo = _rgb_glitch_logo_rgba(logo, float(glitch_amount), int(glitch_seed))
     lh, lw = int(logo.shape[0]), int(logo.shape[1])
 
     op = float(np.clip(opacity_pct, 0.0, 100.0)) / 100.0
@@ -296,6 +343,8 @@ def composite_logo_from_path(
     glow_rgb: tuple[int, int, int] | None = None,
     glow_blur_radius: float = 5.0,
     glow_pad_px: int = 32,
+    glitch_amount: float = 0.0,
+    glitch_seed: int = 0,
 ) -> np.ndarray:
     """Load logo from disk; no-op copy if path is missing."""
     if logo_path is None or not str(logo_path).strip():
@@ -312,4 +361,6 @@ def composite_logo_from_path(
         glow_rgb=glow_rgb,
         glow_blur_radius=glow_blur_radius,
         glow_pad_px=glow_pad_px,
+        glitch_amount=glitch_amount,
+        glitch_seed=glitch_seed,
     )

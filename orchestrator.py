@@ -60,6 +60,9 @@ class OrchestratorInputs:
     logo_snare_glow: bool = True
     logo_glow_strength: float = 1.0
     logo_glow_sensitivity: float = 1.0
+    logo_snare_squeeze_strength: float = 0.40
+    logo_impact_glitch_strength: float = 0.45
+    logo_impact_sensitivity: float = 1.0
     # Burned-in title card. ``show_title`` is the master switch; when the
     # orchestrator can't derive a non-empty ``Artist - Title`` from metadata
     # the overlay is skipped automatically regardless of the switch.
@@ -366,6 +369,9 @@ def _render_pipeline(
         logo_snare_glow=bool(inputs.logo_snare_glow),
         logo_glow_strength=float(inputs.logo_glow_strength),
         logo_glow_sensitivity=float(inputs.logo_glow_sensitivity),
+        logo_snare_squeeze_strength=float(inputs.logo_snare_squeeze_strength),
+        logo_impact_glitch_strength=float(inputs.logo_impact_glitch_strength),
+        logo_impact_sensitivity=float(inputs.logo_impact_sensitivity),
         title_text=title_line,
         title_position=str(inputs.title_position),
         title_size=str(inputs.title_size),

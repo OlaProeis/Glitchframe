@@ -52,11 +52,13 @@ from pipeline.beat_pulse import (
     beat_pulse_envelope,
     build_bass_pulse_track,
     build_logo_bass_pulse_track,
+    build_rms_impact_pulse_track,
     build_snare_glow_track,
     scale_and_opacity_for_pulse,
 )
 from pipeline.logo_composite import (
     composite_logo_onto_frame,
+    glitch_seed_for_time,
     load_logo_rgba,
     normalize_logo_position,
     prepare_logo_rgba,
@@ -146,6 +148,12 @@ class CompositorConfig:
     logo_snare_glow: bool = True
     logo_glow_strength: float = 1.0
     logo_glow_sensitivity: float = 1.0
+    # Mid-band envelope also drives a brief **scale contract** on snare hits
+    # (independent of the neon glow toggle).
+    logo_snare_squeeze_strength: float = 0.40
+    # RMS jump envelope (drops / impacts) → RGB-split glitch on the logo.
+    logo_impact_glitch_strength: float = 0.45
+    logo_impact_sensitivity: float = 1.0
     # Pre-shaped bass/kick curve for fragment shaders (``bass_hit`` uniform).
     # Longer decay than the logo defaults so backgrounds breathe instead of
     # jittering on every spectral frame.
@@ -274,7 +282,8 @@ def _render_compositor_frame(
     title_rgba: np.ndarray | None = None,
     pulse_fn: PulseFn | None = None,
     shader_bass_track: PulseTrack | None = None,
-    snare_glow_fn: PulseFn | None = None,
+    snare_fn: PulseFn | None = None,
+    impact_fn: PulseFn | None = None,
 ) -> np.ndarray:
     """One RGB frame: background → reactive → typography → title → logo.
 
@@ -318,14 +327,31 @@ def _render_compositor_frame(
             logo_opacity_pct = max(
                 0.0, min(100.0, float(cfg.logo_opacity_pct) * opacity_mul)
             )
+        snare_val = 0.0
+        if snare_fn is not None:
+            snare_val = float(snare_fn(float(t)))
+        if snare_fn is not None and float(cfg.logo_snare_squeeze_strength) > 1e-6:
+            sq = float(cfg.logo_snare_squeeze_strength)
+            sv = max(0.0, min(1.0, snare_val))
+            logo_scale *= max(0.68, 1.0 - sq * sv * 0.42)
         glow_amt = 0.0
         if (
             cfg.logo_snare_glow
-            and snare_glow_fn is not None
+            and snare_fn is not None
             and float(cfg.logo_glow_strength) > 1e-6
         ):
-            glow_amt = float(snare_glow_fn(float(t))) * float(cfg.logo_glow_strength)
+            glow_amt = snare_val * float(cfg.logo_glow_strength)
         glow_rgb = resolve_logo_glow_rgb(cfg.shadow_color, cfg.base_color)
+        glitch_amt = 0.0
+        glitch_seed = 0
+        if impact_fn is not None and float(cfg.logo_impact_glitch_strength) > 1e-6:
+            imp = float(impact_fn(float(t)))
+            g = max(0.0, min(1.0, imp)) * float(cfg.logo_impact_glitch_strength)
+            if g > 1e-4:
+                glitch_amt = g
+                glitch_seed = glitch_seed_for_time(
+                    str(analysis.get("song_hash") or ""), float(t)
+                )
         composited = composite_logo_onto_frame(
             composited,
             logo_rgba_prepared,
@@ -335,6 +361,8 @@ def _render_compositor_frame(
             scale=logo_scale,
             glow_amount=glow_amt,
             glow_rgb=glow_rgb if glow_amt > 1e-5 else None,
+            glitch_amount=glitch_amt,
+            glitch_seed=glitch_seed,
         )
     return composited
 
@@ -430,13 +458,34 @@ def _build_pulse_fn(
     )
 
 
-def _build_snare_glow_fn(
+def _snare_track_for_logo(
+    cfg: CompositorConfig, analysis: Mapping[str, Any]
+) -> PulseTrack | None:
+    need_glow = bool(cfg.logo_snare_glow) and float(cfg.logo_glow_strength) > 1e-6
+    need_squeeze = float(cfg.logo_snare_squeeze_strength) > 1e-6
+    if not need_glow and not need_squeeze:
+        return None
+    return build_snare_glow_track(
+        analysis, sensitivity=float(cfg.logo_glow_sensitivity)
+    )
+
+
+def _snare_envelope_fn(
     cfg: CompositorConfig, analysis: Mapping[str, Any]
 ) -> PulseFn | None:
-    if not cfg.logo_snare_glow:
+    track = _snare_track_for_logo(cfg, analysis)
+    if track is None:
         return None
-    track = build_snare_glow_track(
-        analysis, sensitivity=float(cfg.logo_glow_sensitivity)
+    return track.value_at
+
+
+def _impact_envelope_fn(
+    cfg: CompositorConfig, analysis: Mapping[str, Any]
+) -> PulseFn | None:
+    if float(cfg.logo_impact_glitch_strength) <= 1e-6:
+        return None
+    track = build_rms_impact_pulse_track(
+        analysis, sensitivity=float(cfg.logo_impact_sensitivity)
     )
     if track is None:
         return None
@@ -483,7 +532,8 @@ def render_single_frame(
     title_rgba = _prerender_title_layer(cfg)
     pulse_fn = _build_pulse_fn(cfg, analysis)
     shader_bass_track = _shader_bass_track_for_analysis(analysis, cfg)
-    snare_glow_fn = _build_snare_glow_fn(cfg, analysis)
+    snare_fn = _snare_envelope_fn(cfg, analysis)
+    impact_fn = _impact_envelope_fn(cfg, analysis)
 
     has_typography = bool(aligned_words)
 
@@ -519,7 +569,8 @@ def render_single_frame(
                 title_rgba=title_rgba,
                 pulse_fn=pulse_fn,
                 shader_bass_track=shader_bass_track,
-                snare_glow_fn=snare_glow_fn,
+                snare_fn=snare_fn,
+                impact_fn=impact_fn,
             )
         finally:
             if typo_layer is not None:
@@ -649,7 +700,8 @@ def render_full_video(
     title_rgba = _prerender_title_layer(cfg)
     pulse_fn = _build_pulse_fn(cfg, analysis)
     shader_bass_track = _shader_bass_track_for_analysis(analysis, cfg)
-    snare_glow_fn = _build_snare_glow_fn(cfg, analysis)
+    snare_fn = _snare_envelope_fn(cfg, analysis)
+    impact_fn = _impact_envelope_fn(cfg, analysis)
 
     if start_sec < 0:
         raise ValueError(f"start_sec must be non-negative, got {start_sec!r}")
@@ -800,7 +852,8 @@ def render_full_video(
                             title_rgba=title_rgba,
                             pulse_fn=pulse_fn,
                             shader_bass_track=shader_bass_track,
-                            snare_glow_fn=snare_glow_fn,
+                            snare_fn=snare_fn,
+                            impact_fn=impact_fn,
                         )
 
                         bgr = np.ascontiguousarray(composited[:, :, ::-1])

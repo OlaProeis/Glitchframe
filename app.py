@@ -297,6 +297,9 @@ def _build_render_inputs(
     logo_pulse_sensitivity: float,
     logo_snare_glow: bool,
     logo_glow_strength_pct: float,
+    logo_snare_squeeze_pct: float,
+    logo_impact_glitch_pct: float,
+    logo_impact_sensitivity: float,
     show_title: bool,
     title_position: str,
     title_size: str,
@@ -342,6 +345,11 @@ def _build_render_inputs(
         logo_pulse_sensitivity=float(logo_pulse_sensitivity),
         logo_snare_glow=bool(logo_snare_glow),
         logo_glow_strength=float(np.clip(logo_glow_strength_pct, 0.0, 200.0)) / 100.0,
+        logo_snare_squeeze_strength=float(np.clip(logo_snare_squeeze_pct, 0.0, 100.0))
+        / 100.0,
+        logo_impact_glitch_strength=float(np.clip(logo_impact_glitch_pct, 0.0, 100.0))
+        / 100.0,
+        logo_impact_sensitivity=float(logo_impact_sensitivity),
         show_title=bool(show_title),
         title_position=str(title_position or "bottom-left"),
         title_size=str(title_size or "small"),
@@ -389,6 +397,9 @@ def _run_preview(
     logo_pulse_sensitivity: float,
     logo_snare_glow: bool,
     logo_glow_strength_pct: float,
+    logo_snare_squeeze_pct: float,
+    logo_impact_glitch_pct: float,
+    logo_impact_sensitivity: float,
     show_title: bool,
     title_position: str,
     title_size: str,
@@ -421,6 +432,9 @@ def _run_preview(
             logo_pulse_sensitivity=logo_pulse_sensitivity,
             logo_snare_glow=logo_snare_glow,
             logo_glow_strength_pct=logo_glow_strength_pct,
+            logo_snare_squeeze_pct=logo_snare_squeeze_pct,
+            logo_impact_glitch_pct=logo_impact_glitch_pct,
+            logo_impact_sensitivity=logo_impact_sensitivity,
             show_title=show_title,
             title_position=title_position,
             title_size=title_size,
@@ -464,6 +478,9 @@ def _run_render(
     logo_pulse_sensitivity: float,
     logo_snare_glow: bool,
     logo_glow_strength_pct: float,
+    logo_snare_squeeze_pct: float,
+    logo_impact_glitch_pct: float,
+    logo_impact_sensitivity: float,
     show_title: bool,
     title_position: str,
     title_size: str,
@@ -496,6 +513,9 @@ def _run_render(
             logo_pulse_sensitivity=logo_pulse_sensitivity,
             logo_snare_glow=logo_snare_glow,
             logo_glow_strength_pct=logo_glow_strength_pct,
+            logo_snare_squeeze_pct=logo_snare_squeeze_pct,
+            logo_impact_glitch_pct=logo_impact_glitch_pct,
+            logo_impact_sensitivity=logo_impact_sensitivity,
             show_title=show_title,
             title_position=title_position,
             title_size=title_size,
@@ -984,6 +1004,36 @@ def build_ui() -> gr.Blocks:
                     step=5,
                     info="Percent · multiplied with the snare envelope (100% = default).",
                 )
+                logo_snare_squeeze_pct = gr.Slider(
+                    label="Snare squeeze (logo scale)",
+                    minimum=0,
+                    maximum=100,
+                    value=40,
+                    step=5,
+                    info=(
+                        "Briefly shrinks the logo on mid-band (snare/clap) hits. "
+                        "Uses the same detector as neon glow; 0% = off."
+                    ),
+                )
+                logo_impact_glitch_pct = gr.Slider(
+                    label="Drop / impact glitch",
+                    minimum=0,
+                    maximum=100,
+                    value=45,
+                    step=5,
+                    info=(
+                        "RGB-split / tear on loudness jumps (build-up → drop). "
+                        "From RMS in analysis.json; 0% = off."
+                    ),
+                )
+                logo_impact_sensitivity = gr.Slider(
+                    label="Impact sensitivity",
+                    minimum=0.25,
+                    maximum=3.0,
+                    value=1.0,
+                    step=0.05,
+                    info="Boosts weaker drops so they still trigger glitch (when glitch > 0%).",
+                )
                 btn_logo_preview = gr.Button("Preview logo on test frame")
                 logo_preview_image = gr.Image(
                     label="Logo overlay (test gradient)",
@@ -1219,6 +1269,9 @@ See `docs/technical/visual-style-presets.md` for the full schema and
             logo_pulse_sensitivity,
             logo_snare_glow,
             logo_glow_strength_pct,
+            logo_snare_squeeze_pct,
+            logo_impact_glitch_pct,
+            logo_impact_sensitivity,
             show_title,
             title_position,
             title_size,

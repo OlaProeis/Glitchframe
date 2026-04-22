@@ -13,6 +13,7 @@ from pipeline.beat_pulse import (
     beat_pulse_envelope,
     build_bass_pulse_track,
     build_logo_bass_pulse_track,
+    build_rms_impact_pulse_track,
     build_snare_glow_track,
     scale_and_opacity_for_pulse,
 )
@@ -308,6 +309,29 @@ class TestLogoBassPulseTrack(unittest.TestCase):
         # Attack-only curve collapses toward 0 on flat sustained bass.
         self.assertLess(plain.value_at(2.0), 0.15)
         self.assertGreater(mid, 0.35)
+
+
+class TestRmsImpactPulseTrack(unittest.TestCase):
+    def test_returns_none_without_rms(self) -> None:
+        self.assertIsNone(build_rms_impact_pulse_track({}))
+        self.assertIsNone(build_rms_impact_pulse_track({"rms": {}}))
+
+    def test_drop_creates_pulse(self) -> None:
+        fps = 30.0
+        n = 300
+        rms = np.zeros(n, dtype=np.float32)
+        rms[150:] = 0.85
+        analysis = {
+            "song_hash": "test",
+            "fps": fps,
+            "rms": {"fps": fps, "frames": n, "values": rms.tolist()},
+        }
+        track = build_rms_impact_pulse_track(analysis)
+        assert track is not None
+        # Shortly after the step, impact envelope should rise
+        self.assertGreater(track.value_at(5.05), 0.25)
+        # Long before the jump, near silence
+        self.assertLess(track.value_at(2.0), 0.15)
 
 
 class TestSnareGlowTrack(unittest.TestCase):

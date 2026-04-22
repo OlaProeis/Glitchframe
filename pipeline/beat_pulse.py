@@ -192,6 +192,95 @@ def _extract_spectrum_frames(
     return arr, fps
 
 
+def _extract_rms_frames(
+    analysis: Mapping[str, Any],
+) -> tuple[np.ndarray, float] | None:
+    """Return ``(1-D rms samples, fps)`` from ``analysis.json`` or ``None``."""
+    rms = analysis.get("rms") if isinstance(analysis, Mapping) else None
+    if not isinstance(rms, Mapping):
+        return None
+    values = rms.get("values")
+    if values is None:
+        return None
+    try:
+        arr = np.asarray(values, dtype=np.float32)
+    except (TypeError, ValueError):
+        return None
+    if arr.ndim != 1 or arr.size < 4:
+        return None
+    fps_raw = rms.get("fps")
+    if fps_raw is None:
+        fps_raw = analysis.get("fps")
+    try:
+        fps = float(fps_raw) if fps_raw is not None else 0.0
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(fps) or fps <= 0.0:
+        return None
+    return arr.astype(np.float32, copy=False), fps
+
+
+DEFAULT_IMPACT_SMOOTH_SEC = 0.11
+"""Moving-average window on RMS before differencing (seconds)."""
+
+DEFAULT_IMPACT_LAG_SEC = 0.19
+"""Look-back horizon for positive RMS jumps — build-ups vs drops (seconds)."""
+
+DEFAULT_IMPACT_DECAY_SEC = 0.15
+"""Envelope decay after a detected impact (seconds)."""
+
+DEFAULT_IMPACT_NORM_PCT = 87.0
+"""Percentile normalisation on the impact envelope (``[0, 1]`` mapping)."""
+
+
+def build_rms_impact_pulse_track(
+    analysis: Mapping[str, Any],
+    *,
+    sensitivity: float = 1.0,
+    smooth_sec: float = DEFAULT_IMPACT_SMOOTH_SEC,
+    lag_sec: float = DEFAULT_IMPACT_LAG_SEC,
+    decay_sec: float = DEFAULT_IMPACT_DECAY_SEC,
+    norm_percentile: float = DEFAULT_IMPACT_NORM_PCT,
+) -> PulseTrack | None:
+    """Per-frame ``[0, 1]`` envelope for loudness **jumps** (drops, impacts).
+
+    Smooths RMS, takes positive differences versus a lagged copy (energy ramp),
+    then peak-picks through a short decay — similar shaping to the snare glow
+    track but keyed off overall level instead of mid mel bands.
+    """
+    if sensitivity <= 0.0 or not math.isfinite(float(sensitivity)):
+        return None
+    extracted = _extract_rms_frames(analysis)
+    if extracted is None:
+        return None
+    rms, fps = extracted
+    n = int(rms.shape[0])
+    win = max(1, int(round(float(smooth_sec) * fps)))
+    if win > 1:
+        k = np.ones(win, dtype=np.float32) / float(win)
+        smooth = np.convolve(rms, k, mode="same").astype(np.float32, copy=False)
+    else:
+        smooth = rms
+    lag = max(1, int(round(float(lag_sec) * fps)))
+    jump = np.zeros(n, dtype=np.float32)
+    for i in range(lag, n):
+        d = float(smooth[i]) - float(smooth[i - lag])
+        if d > 0.0:
+            jump[i] = d
+    tau = max(1e-3, float(decay_sec))
+    decay = math.exp(-1.0 / (tau * fps))
+    env = np.empty_like(jump)
+    acc = 0.0
+    for i in range(n):
+        acc = max(acc * decay, float(jump[i]))
+        env[i] = acc
+    p = float(np.clip(float(norm_percentile), 1.0, 99.9))
+    peak = float(np.percentile(env, p)) if env.size else 0.0
+    peak = max(peak, float(env.max()) * 0.5, 1e-3)
+    scaled = np.clip(env * (float(sensitivity) / peak), 0.0, 1.0)
+    return PulseTrack(values=scaled.astype(np.float32, copy=False), fps=fps)
+
+
 def build_bass_pulse_track(
     analysis: Mapping[str, Any],
     *,
@@ -416,6 +505,10 @@ __all__ = [
     "DEFAULT_BASS_DECAY_SEC",
     "DEFAULT_BASS_NORM_PERCENTILE",
     "DEFAULT_FALLBACK_BPM",
+    "DEFAULT_IMPACT_DECAY_SEC",
+    "DEFAULT_IMPACT_LAG_SEC",
+    "DEFAULT_IMPACT_NORM_PCT",
+    "DEFAULT_IMPACT_SMOOTH_SEC",
     "DEFAULT_LOGO_SUSTAIN_ATTACK_SEC",
     "DEFAULT_LOGO_SUSTAIN_RELEASE_SEC",
     "DEFAULT_PULSE_TAU_FRACTION",
@@ -426,6 +519,7 @@ __all__ = [
     "beat_pulse_envelope",
     "build_bass_pulse_track",
     "build_logo_bass_pulse_track",
+    "build_rms_impact_pulse_track",
     "build_snare_glow_track",
     "scale_and_opacity_for_pulse",
 ]
