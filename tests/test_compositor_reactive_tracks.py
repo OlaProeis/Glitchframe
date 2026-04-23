@@ -19,6 +19,7 @@ import numpy as np
 
 from pipeline.compositor import (
     CompositorConfig,
+    _build_beam_render_context,
     _drop_hold_fn_for_analysis,
     _shader_transient_tracks_for_analysis,
 )
@@ -153,6 +154,65 @@ class TestShaderTransientTracksForAnalysis(unittest.TestCase):
         self.assertLess(lo.value_at(3.9), 0.05)
         self.assertLess(mid.value_at(3.9), 0.05)
         self.assertLess(hi.value_at(3.9), 0.05)
+
+
+def _dummy_logo_rgba(size: int = 48) -> np.ndarray:
+    """Opaque square PNG in RGBA shape expected by ``_build_beam_render_context``."""
+    rgba = np.zeros((size, size, 4), dtype=np.uint8)
+    rgba[..., :3] = 200
+    rgba[..., 3] = 255
+    return rgba
+
+
+class TestBuildBeamRenderContext(unittest.TestCase):
+    def test_returns_none_when_beams_disabled(self) -> None:
+        analysis = {"events": {"drops": [{"t": 2.0}]}, "song_hash": "h"}
+        cfg = CompositorConfig(rim_beams_enabled=False)
+        ctx = _build_beam_render_context(
+            cfg,
+            analysis,
+            logo_rgba_prepared=_dummy_logo_rgba(),
+            resolved_rim_config=None,
+        )
+        self.assertIsNone(ctx)
+
+    def test_returns_none_when_no_logo(self) -> None:
+        analysis = {"events": {"drops": [{"t": 2.0}]}, "song_hash": "h"}
+        cfg = CompositorConfig(rim_beams_enabled=True)
+        ctx = _build_beam_render_context(
+            cfg, analysis, logo_rgba_prepared=None, resolved_rim_config=None
+        )
+        self.assertIsNone(ctx)
+
+    def test_returns_none_when_schedule_empty(self) -> None:
+        # No drops, no impacts → nothing to schedule, short-circuit.
+        analysis = {"events": {"drops": []}, "song_hash": "h"}
+        cfg = CompositorConfig(rim_beams_enabled=True)
+        ctx = _build_beam_render_context(
+            cfg,
+            analysis,
+            logo_rgba_prepared=_dummy_logo_rgba(),
+            resolved_rim_config=None,
+        )
+        self.assertIsNone(ctx)
+
+    def test_populated_context_for_drop(self) -> None:
+        analysis = {
+            "events": {"drops": [{"t": 2.0}]},
+            "song_hash": "hash123",
+        }
+        cfg = CompositorConfig(rim_beams_enabled=True)
+        ctx = _build_beam_render_context(
+            cfg,
+            analysis,
+            logo_rgba_prepared=_dummy_logo_rgba(),
+            resolved_rim_config=None,
+        )
+        self.assertIsNotNone(ctx)
+        assert ctx is not None
+        self.assertGreater(len(ctx.schedule), 0)
+        self.assertEqual(ctx.logo_base_hw, (48, 48))
+        self.assertEqual(ctx.song_hash, "hash123")
 
 
 if __name__ == "__main__":  # pragma: no cover

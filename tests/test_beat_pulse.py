@@ -10,6 +10,7 @@ import numpy as np
 from pipeline.beat_pulse import (
     DEFAULT_BASS_BANDS,
     PulseTrack,
+    apply_pulse_deadzone,
     beat_pulse_envelope,
     build_bass_pulse_track,
     build_logo_bass_pulse_track,
@@ -94,6 +95,65 @@ class TestScaleAndOpacityForPulse(unittest.TestCase):
         s2, o2 = scale_and_opacity_for_pulse(10.0)
         self.assertAlmostEqual(s1, s2)
         self.assertAlmostEqual(o1, o2)
+
+    def test_micro_pulse_collapses_to_identity_with_default_deadzone(self) -> None:
+        # Chill-part fluctuation: bass envelope ~0.05 inside the deadzone.
+        s, o = scale_and_opacity_for_pulse(0.05, strength=2.0)
+        self.assertAlmostEqual(s, 1.0)
+        self.assertAlmostEqual(o, 1.0)
+
+    def test_peak_pulse_matches_legacy_with_default_deadzone(self) -> None:
+        # Values at 1.0 should still produce the same output as the old
+        # linear path (deadzone=0.0) for the peak, so real kicks aren't dimmed.
+        legacy = scale_and_opacity_for_pulse(1.0, strength=2.0, deadzone=0.0)
+        current = scale_and_opacity_for_pulse(1.0, strength=2.0)
+        self.assertAlmostEqual(legacy[0], current[0], places=4)
+        self.assertAlmostEqual(legacy[1], current[1], places=4)
+
+    def test_deadzone_zero_preserves_legacy_behaviour(self) -> None:
+        # Small pulse, legacy path: any non-zero pulse must lift scale.
+        s_linear, _ = scale_and_opacity_for_pulse(0.05, strength=2.0, deadzone=0.0)
+        s_damped, _ = scale_and_opacity_for_pulse(0.05, strength=2.0)
+        self.assertGreater(s_linear, 1.0)
+        self.assertAlmostEqual(s_damped, 1.0)
+
+    def test_soft_shoulder_is_monotonic_in_range(self) -> None:
+        # Values rising through the smoothstep shoulder must produce a
+        # monotonically non-decreasing scale.
+        scales = [
+            scale_and_opacity_for_pulse(p, strength=1.0)[0]
+            for p in np.linspace(0.0, 0.25, 12)
+        ]
+        for a, b in zip(scales, scales[1:]):
+            self.assertLessEqual(a, b + 1e-6)
+
+
+class TestApplyPulseDeadzone(unittest.TestCase):
+    def test_below_deadzone_collapses_to_zero(self) -> None:
+        self.assertEqual(apply_pulse_deadzone(0.0), 0.0)
+        self.assertEqual(apply_pulse_deadzone(0.10), 0.0)
+
+    def test_peak_preserved(self) -> None:
+        # Without a deadzone offset the peak stays at 1.0 so real kicks aren't
+        # clipped by the transform.
+        self.assertAlmostEqual(apply_pulse_deadzone(1.0), 1.0, places=5)
+
+    def test_disabled_when_deadzone_zero(self) -> None:
+        for p in (0.0, 0.05, 0.5, 1.0):
+            self.assertAlmostEqual(apply_pulse_deadzone(p, deadzone=0.0), p)
+
+    def test_monotonic_in_range(self) -> None:
+        vals = [apply_pulse_deadzone(p) for p in np.linspace(0.0, 1.0, 50)]
+        for a, b in zip(vals, vals[1:]):
+            self.assertLessEqual(a, b + 1e-7)
+
+    def test_knee_is_continuous(self) -> None:
+        # The smoothstep shoulder should meet the linear tail at the knee.
+        dz = 0.12
+        sw = 0.08
+        left = apply_pulse_deadzone(dz + sw - 1e-6, deadzone=dz, soft_width=sw)
+        right = apply_pulse_deadzone(dz + sw + 1e-6, deadzone=dz, soft_width=sw)
+        self.assertAlmostEqual(left, right, places=3)
 
 
 class TestPulseTrack(unittest.TestCase):

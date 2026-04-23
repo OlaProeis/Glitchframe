@@ -32,6 +32,7 @@
 - `docs/technical/logo-rim-audio-modulation.md` - Snare/bass `RimAudioModulation` on `compute_logo_rim_light_patch`, compositor `logo_rim_audio_reactive` stepper and analysis tracks.
 - `docs/technical/logo-rim-compositing.md` - `LogoGlowMode`, rim vs classic neon blend order, `composite_logo_onto_frame` kwargs, and compositor `_effective_rim_light_config` / defaults.
 - `docs/technical/logo-rim-branding-ui.md` - Gradio Branding accordion → `OrchestratorInputs` → `resolve_logo_rim_compositor_fields` / `CompositorConfig`; cosmetic-only (no song cache impact).
+- `docs/technical/logo-rim-beams.md` - Pre-choreographed rim beams on drops + snare lead-ins: schedule algorithm, 10 s group gating, per-frame premultiplied RGBA patch, and `BeamConfig` tuning.
 - `docs/technical/background-stills.md` - SDXL FP16 keyframe generator, section-aware prompts, cached PNGs under `cache/<hash>/background/`, and smoothstep-crossfade `background_frame(t)` API.
 - `docs/technical/background-modes.md` - `BackgroundSource` factory, Ken Burns + AnimateDiff caches, Gradio/orchestrator mode wiring (cross-ref SDXL stills doc).
 - `docs/technical/frame-compositor.md` - Per-frame compositor pipeline: bg + reactive + typography + logo, compositor-scope shader uniforms (`bass_hit`, `transient_lo/mid/hi`, `drop_hold`) built once per render, bounded queue producer/consumer, `bgr24` ffmpeg stdin.

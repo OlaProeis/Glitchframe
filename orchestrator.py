@@ -76,6 +76,14 @@ class OrchestratorInputs:
     logo_rim_sync_snare: bool = True
     logo_rim_sync_bass: bool = True
     logo_rim_mod_strength: float = 1.0
+    # Pre-choreographed rim-light beams on drops + snare lead-ins. One
+    # UI-surfaced switch (no fine-grained tuning); beat tracking / thresholds
+    # live in :class:`pipeline.logo_rim_beams.BeamConfig` defaults.
+    rim_beams_enabled: bool = True
+    # Logo motion stability deadzone for the beat pulse + snare squeeze.
+    # ``0`` = legacy linear (noisy during chill sections); ``1`` = default
+    # soft deadzone; ``2`` = extra stable (snare squeeze barely moves).
+    logo_motion_stability: float = 1.0
     # Rim emissive gain (1.0 = engine default; 3.0 = 300% product default).
     # Drives ``RimLightConfig.intensity`` and also lifts ``halo_boost`` when > 1
     # so the outer halo reads on screen.
@@ -494,6 +502,8 @@ def _render_pipeline(
         logo_impact_glitch_strength=float(inputs.logo_impact_glitch_strength),
         logo_impact_sensitivity=float(inputs.logo_impact_sensitivity),
         **resolve_logo_rim_compositor_fields(inputs),
+        rim_beams_enabled=bool(inputs.rim_beams_enabled),
+        logo_motion_stability=max(0.0, float(inputs.logo_motion_stability)),
         title_text=title_line,
         title_position=str(inputs.title_position),
         title_size=str(inputs.title_size),

@@ -229,27 +229,19 @@ def render_title_rgba(
 
     x0, y_base = _text_anchor(position_key, width, height, text_w, text_h)
 
-    # --- Layered bloom recipe -----------------------------------------------
-    # Three stacked Gaussian passes approximate a soft neon / display glow.
-    # Each uses ``kOuter_BlurStyle`` so the blur only bleeds *outside* the
-    # glyph — the fill stays crisp instead of being washed out by the wide
-    # pass. Wide-to-narrow sigmas with decreasing alpha give a smooth
-    # falloff (bright edge, soft halo, distant wash) rather than the hard
-    # "stamped blob" a single-pass normal blur produces.
-    #
-    # Followed by a thin outline for edge contrast on similar-luminance
-    # backgrounds, and finally the crisp fill on top.
-    wide_sigma = max(1.6, size_px * 0.22)
-    mid_sigma = max(1.0, size_px * 0.11)
-    tight_sigma = max(0.6, size_px * 0.045)
+    # --- Minimal tight edge bloom + stroke + fill ---------------------------
+    # A single tight outer-blur pass gives just enough edge contrast to keep
+    # the title legible on busy or similar-luminance backgrounds without the
+    # wide "stamped" halo that the previous three-pass recipe produced. Wide
+    # / mid passes were dominant when presets used bright shadow colours
+    # (yellow, cyan) and made the text feel splotchy rather than sharp.
+    tight_sigma = max(0.45, size_px * 0.022)
 
     has_shadow = shadow_hex is not None
-    wide_alpha = (0.18 if has_shadow else 0.14) * alpha
-    mid_alpha = (0.30 if has_shadow else 0.24) * alpha
-    tight_alpha = (0.55 if has_shadow else 0.42) * alpha
+    tight_alpha = (0.24 if has_shadow else 0.18) * alpha
 
-    stroke_width = max(0.5, size_px * 0.010)
-    stroke_alpha = 0.26 * alpha
+    stroke_width = max(0.5, size_px * 0.008)
+    stroke_alpha = 0.18 * alpha
 
     # ``kOuter_BlurStyle`` / ``MakeBlur`` aren't part of every skia-python
     # build — detect at runtime so CI / older wheels still get the old
@@ -265,14 +257,9 @@ def render_title_rgba(
         return paint
 
     with surface as canvas:
-        for sigma, halo_alpha in (
-            (wide_sigma, wide_alpha),
-            (mid_sigma, mid_alpha),
-            (tight_sigma, tight_alpha),
-        ):
-            canvas.drawString(
-                line, x0, y_base, font, _blur_paint(shadow_rgb, sigma, halo_alpha)
-            )
+        canvas.drawString(
+            line, x0, y_base, font, _blur_paint(shadow_rgb, tight_sigma, tight_alpha)
+        )
 
         stroke_paint = skia.Paint(
             AntiAlias=True,

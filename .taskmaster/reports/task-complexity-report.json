@@ -1,9 +1,9 @@
 {
 	"meta": {
-		"generatedAt": "2026-04-22T11:00:22.159Z",
-		"tasksAnalyzed": 12,
-		"totalTasks": 30,
-		"analysisCount": 12,
+		"generatedAt": "2026-04-23T11:21:26.061Z",
+		"tasksAnalyzed": 17,
+		"totalTasks": 53,
+		"analysisCount": 17,
 		"thresholdScore": 5,
 		"projectName": "Task Master",
 		"usedResearch": true
@@ -14,96 +14,136 @@
 			"taskTitle": "Scope Preview to 10s Window with Background Optimization",
 			"complexityScore": 8,
 			"recommendedSubtasks": 5,
-			"expansionPrompt": "Split into: 1) Orchestrator preview_range param + gen_range logic; 2) BackgroundSource time-range cache keys; 3) Update SDXL/AnimateDiff/KenBurns for partial generation; 4) Full render gap-filling + cache reuse; 5) Docs/Gradio updates + manifest.json.",
-			"reasoning": "High complexity due to multi-module changes (orchestrator, BackgroundSource, generators), precise cache key management to avoid quality regressions, dependencies on multiple prior tasks, and detailed testing for partial/full render consistency."
+			"expansionPrompt": "Split into: 1) Orchestrator preview_range param + gen_range logic with padding; 2) BackgroundSource time-range cache keys and manifest tracking; 3) Update SDXL/AnimateDiff/Ken Burns for partial generation with time-specific keys; 4) Full render gap-filling + cache reuse logic; 5) Gradio progress updates, docs, and edge case handling.",
+			"reasoning": "High complexity due to multiple cross-cutting changes across orchestrator, BackgroundSource implementations (SDXL/AnimateDiff/KenBurns), cache key design for partial/full distinction, and ensuring seamless preview-to-full transition without quality loss or A/V sync issues. Dependencies on 4 prior tasks increase integration risk."
 		},
 		{
 			"taskId": 20,
 			"taskTitle": "Bass-Driven Logo Beat Pulse with Low-Frequency Energy",
 			"complexityScore": 7,
 			"recommendedSubtasks": 4,
-			"expansionPrompt": "Split into: 1) Audio analyzer bass energy extraction/envelope; 2) beat_pulse.py bass mode implementation + smoothing; 3) Config/UI sliders + fallback modes; 4) Cache + docs updates.",
-			"reasoning": "Involves audio signal processing (librosa RMS, filtering), real-time envelope computation, UI integration, and correlation testing; moderate due to potential audio analysis extensions but builds on existing beat grid."
+			"expansionPrompt": "Split into: 1) Extend audio_analyzer for bass RMS/envelope extraction to analysis.json; 2) Implement beat_pulse.py bass mode with smoothing and fallback to beats; 3) Add CompositorConfig pulse_mode/bass_sensitivity + Gradio UI sliders; 4) Cache implementation + docs for tuning.",
+			"reasoning": "Moderate-high complexity from audio signal processing (librosa RMS, low-freq filtering, envelope smoothing), integration with existing beat grid fallback, UI config exposure, and perceptual validation (kick alignment vs hi-hat jitter). Requires precise energy correlation testing."
 		},
 		{
 			"taskId": 21,
 			"taskTitle": "Overnight / multi-song render queue",
 			"complexityScore": 7,
 			"recommendedSubtasks": 4,
-			"expansionPrompt": "Split into: 1) Job spec schema + JSON/JSONL persistence; 2) CLI batch runner with orchestrate_full_render; 3) Asset copying + stable paths per job; 4) Gradio queue UI + background worker.",
-			"reasoning": "Requires robust job serialization, error isolation across jobs, file path stability, and optional async UI worker; testing multi-job failure recovery adds complexity beyond simple sequencing."
+			"expansionPrompt": "Split into: 1) Define durable job spec schema + JSON/JSONL serialization from OrchestratorInputs; 2) CLI batch runner with sequential orchestrate_full_render and error isolation; 3) Per-job asset copying + stable output paths; 4) Gradio queue UI with background worker/threading.",
+			"reasoning": "Moderate-high due to robust job persistence, error recovery (job N failure doesn't corrupt N-1), stable paths for uploads, Gradio threading for UI responsiveness, and overnight reliability. Balances CLI simplicity with optional UI complexity."
 		},
 		{
 			"taskId": 22,
 			"taskTitle": "Single primary export action in Gradio (full pipeline UX)",
 			"complexityScore": 3,
 			"recommendedSubtasks": 2,
-			"expansionPrompt": "Split into: 1) Gradio UI button + wiring to orchestrate_full_render; 2) Docs updates for one-button flow.",
-			"reasoning": "Primarily UI reorganization and documentation; leverages existing orchestrator chain with minimal code changes, low risk of regressions."
+			"expansionPrompt": "Split into: 1) Add prominent Gradio Export button wired to orchestrate_full_render with conditional lyrics alignment; 2) Update UI copy/docs to emphasize one-button flow vs optional precache steps.",
+			"reasoning": "Low complexity as it leverages existing orchestrate_full_render chain. Primarily UI reorganization and documentation clarity rather than new logic. Minimal risk of breaking existing multi-step flows."
 		},
 		{
 			"taskId": 23,
 			"taskTitle": "Timestamped section headers for lyrics alignment",
 			"complexityScore": 6,
 			"recommendedSubtasks": 3,
-			"expansionPrompt": "Split into: 1) Parser enhancements for header grammar + section_labels; 2) Backward compatibility + cache key stability; 3) Integration with DP/forced_sec + JSON persistence.",
-			"reasoning": "Complex parsing with multiple input formats, strict backward compatibility requirements, cache hash stability, and integration into dynamic programming alignment logic."
-		},
-		{
-			"taskId": 24,
-			"taskTitle": "Logo rim lights: line mask, silhouette, and fallbacks",
-			"complexityScore": 6,
-			"recommendedSubtasks": 2,
-			"expansionPrompt": "Split into: 1) Line mask, silhouette, centroid computation utilities; 2) Confidence scoring + fallback logic + unit tests.",
-			"reasoning": "Image processing with edge detection (Sobel/Scharr), morphology, and geometric computations; requires deterministic cross-platform pixel tests."
-		},
-		{
-			"taskId": 25,
-			"taskTitle": "Logo rim lights: traveling wave, radial field, and inward mix",
-			"complexityScore": 8,
-			"recommendedSubtasks": 3,
-			"expansionPrompt": "Split into: 1) Polar coordinate transform + phase computation; 2) Radial falloff + line energy blending; 3) Distance transform inward weighting + premult output.",
-			"reasoning": "Advanced per-pixel shader-like computations (angular phase, distance transforms), multi-pass blending, performance-critical for video frames; high mathematical precision needed."
-		},
-		{
-			"taskId": 26,
-			"taskTitle": "Logo rim lights: multi-color layers and smooth color motion",
-			"complexityScore": 6,
-			"recommendedSubtasks": 2,
-			"expansionPrompt": "Split into: 1) Multi-layer colored emissive blending; 2) Hue rotation/drift + seeded variety + fallback halos.",
-			"reasoning": "Color space handling (linear/gamma), smooth temporal interpolation, determinism requirements; builds on prior geometry but adds hue math."
-		},
-		{
-			"taskId": 27,
-			"taskTitle": "Logo rim lights: beat, snare, and bass modulation",
-			"complexityScore": 5,
-			"recommendedSubtasks": 2,
-			"expansionPrompt": "Split into: 1) Modulation API integration with beat_pulse tracks; 2) Snare/bass envelope mapping + attack/release smoothing.",
-			"reasoning": "Audio-reactive parameter mapping with temporal smoothing; moderate as it leverages existing audio features but requires precise timing alignment."
-		},
-		{
-			"taskId": 28,
-			"taskTitle": "Logo rim lights: `composite_logo_onto_frame` and compositor wiring",
-			"complexityScore": 6,
-			"recommendedSubtasks": 2,
-			"expansionPrompt": "Split into: 1) Refactor + new rim patch builder API; 2) Compositor integration + mode exclusivity + regression tests.",
-			"reasoning": "API refactoring across modules, blend stack ordering, backward compatibility with classic glow; pixel-level regression testing essential."
-		},
-		{
-			"taskId": 29,
-			"taskTitle": "Logo rim lights: OrchestratorInputs + Gradio Branding UI",
-			"complexityScore": 4,
-			"recommendedSubtasks": 2,
-			"expansionPrompt": "Split into: 1) OrchestratorInputs/CompositorConfig extensions; 2) Gradio UI controls + tooltips.",
-			"reasoning": "Standard config/UI plumbing following existing patterns; low complexity but many parameters to expose correctly."
+			"expansionPrompt": "Split into: 1) Enhance lyrics_aligner parser for timestamped header grammar + section_labels dict; 2) Ensure backward compatibility, cache key stability for legacy formats; 3) Integrate header timestamps into forced_sec/DP scoring + optional JSON persistence.",
+			"reasoning": "Moderate complexity from regex/time parsing for flexible header formats ([Verse 1: 0:12] vs [0:12 Verse 1]), maintaining full backward compatibility, cache hash stability, and precise DP integration (score 2.0 dominance). Strong test coverage mitigates parser risks."
 		},
 		{
 			"taskId": 30,
 			"taskTitle": "Logo rim lights: tests, `docs/technical`, and `docs/index.md`",
 			"complexityScore": 4,
 			"recommendedSubtasks": 1,
-			"expansionPrompt": "Comprehensive pytest coverage for 24-28 + technical documentation + index update.",
-			"reasoning": "Documentation-heavy with test writing; complexity in ensuring full edge case coverage for prior visual effects tasks."
+			"expansionPrompt": "Create comprehensive pytest coverage for Tasks 24-28 (masks, multi-color, beat modulation, determinism, A/B testing) + technical documentation on behavior/controls + index.md entry.",
+			"reasoning": "Low-moderate as documentation/testing tasks have predictable scope. Complexity from ensuring complete coverage of prior rim lights implementation details and prose consistency with existing technical docs."
+		},
+		{
+			"taskId": 43,
+			"taskTitle": "Create EffectsTimeline data model",
+			"complexityScore": 5,
+			"recommendedSubtasks": 2,
+			"expansionPrompt": "Split into: 1) Define EffectKind Enum, EffectClip dataclass, EffectsTimeline class; 2) Implement load/save with atomic writes, pydantic/manual validation, and JSON roundtrip.",
+			"reasoning": "Moderate from establishing foundational data model with validation, atomic file ops, and strict schema enforcement. Sets up correctness for entire effects system but straightforward dataclass/Enum implementation."
+		},
+		{
+			"taskId": 44,
+			"taskTitle": "Extract shared waveform peaks helper",
+			"complexityScore": 2,
+			"recommendedSubtasks": 0,
+			"expansionPrompt": "",
+			"reasoning": "Low complexity: simple function extraction/refactoring with type hints/docstrings. Primarily mechanical changes with clear identical-output testing."
+		},
+		{
+			"taskId": 45,
+			"taskTitle": "Implement screen_shake renderer",
+			"complexityScore": 4,
+			"recommendedSubtasks": 1,
+			"expansionPrompt": "Implement deterministic shake_offset(t) using glitch_seed_for_time pattern, active clip detection, settings scaling.",
+			"reasoning": "Low-moderate: straightforward time-based offset generation with deterministic seeding and clip interval logic. Matches established patterns."
+		},
+		{
+			"taskId": 46,
+			"taskTitle": "Implement color_invert renderer",
+			"complexityScore": 3,
+			"recommendedSubtasks": 0,
+			"expansionPrompt": "",
+			"reasoning": "Low: simple interpolation-based mix factor over active clips. Minimal logic beyond interval weighting."
+		},
+		{
+			"taskId": 47,
+			"taskTitle": "Implement zoom_punch renderer",
+			"complexityScore": 4,
+			"recommendedSubtasks": 1,
+			"expansionPrompt": "Implement ease-in-out zoom curve peaking during clip intervals per settings.",
+			"reasoning": "Low-moderate: requires smooth curve math (ease functions) and bilinear resize compatibility."
+		},
+		{
+			"taskId": 48,
+			"taskTitle": "Implement effects_editor backend handlers",
+			"complexityScore": 6,
+			"recommendedSubtasks": 2,
+			"expansionPrompt": "Split into: 1) load_editor_state with peaks/duration/ghost_events; save_edited_timeline validation; 2) bake_auto_schedule with deduping vs existing clips.",
+			"reasoning": "Moderate from state orchestration (peaks from shared helper), validation, dir-based song_hash extraction, and deduping logic (±20ms tolerance)."
+		},
+		{
+			"taskId": 49,
+			"taskTitle": "Integrate effects into compositor",
+			"complexityScore": 8,
+			"recommendedSubtasks": 3,
+			"expansionPrompt": "Split into: 1) CompositorConfig effects_timeline + _build_frame_effects_context; 2) Define fixed effect application order in _render_compositor_frame; 3) Master auto_reactivity scaling + main branch compatibility.",
+			"reasoning": "High complexity from frame pipeline integration, maintaining identical output for empty timelines (regression risk), fixed effect ordering, and fast per-frame callables."
+		},
+		{
+			"taskId": 50,
+			"taskTitle": "Create effects timeline HTML/JS editor",
+			"complexityScore": 9,
+			"recommendedSubtasks": 4,
+			"expansionPrompt": "Split into: 1) build_editor_html scaffolding mirroring lyrics editor; 2) Waveform canvas + 7 effect rows with color-coding; 3) Drag/resize/multi-select/rubber-band/zoom JS; 4) Per-clip settings panels + ghost markers/master slider.",
+			"reasoning": "Very high complexity for custom vanilla JS timeline UI (waveform, drag/resize, multi-select, settings binding). Mirrors proven lyrics editor but 7x complexity from multiple rows + ghosts."
+		},
+		{
+			"taskId": 51,
+			"taskTitle": "Add Effects timeline Gradio tab",
+			"complexityScore": 4,
+			"recommendedSubtasks": 1,
+			"expansionPrompt": "Add gr.Tab with HTML editor, hidden state Textbox, Load/Save/Bake/Clear buttons wired to handlers mirroring lyrics tab.",
+			"reasoning": "Low-moderate: standard Gradio tab wiring following exact lyrics editor pattern."
+		},
+		{
+			"taskId": 52,
+			"taskTitle": "Wire orchestrator integration",
+			"complexityScore": 4,
+			"recommendedSubtasks": 1,
+			"expansionPrompt": "Update OrchestratorInputs with effects_timeline_enabled/auto_reactivity_master defaults; load effects_timeline.json; pass to CompositorConfig.",
+			"reasoning": "Low-moderate integration task with clear defaults and testing for value flow-through."
+		},
+		{
+			"taskId": 53,
+			"taskTitle": "Add comprehensive tests and docs",
+			"complexityScore": 6,
+			"recommendedSubtasks": 2,
+			"expansionPrompt": "Split into: 1) All pytest files (timeline, editor, renderers, compositor integration); 2) Technical docs (editor/renderers) + index/ai-context updates.",
+			"reasoning": "Moderate from broad test coverage across 10+ components plus multi-doc creation. Ensures regression protection for complex effects system."
 		}
 	]
 }

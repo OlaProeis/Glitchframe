@@ -171,13 +171,14 @@ def _overlay_title_line_skia(
     # the glyph edges without bleeding into the fill. ``setMaskFilter`` is
     # guarded so older skia-python wheels that don't expose ``MakeBlur`` /
     # ``kOuter_BlurStyle`` still render a plain fill instead of crashing.
-    wide_sigma = max(1.6, size_px * 0.22)
-    mid_sigma = max(1.0, size_px * 0.11)
-    tight_sigma = max(0.6, size_px * 0.045)
+    # Match :mod:`pipeline.title_overlay` halos (smaller, softer bloom).
+    wide_sigma = max(1.2, size_px * 0.14)
+    mid_sigma = max(0.75, size_px * 0.07)
+    tight_sigma = max(0.45, size_px * 0.03)
     has_shadow = shadow_hex is not None
-    wide_alpha = 0.20 if has_shadow else 0.15
-    mid_alpha = 0.34 if has_shadow else 0.26
-    tight_alpha = 0.60 if has_shadow else 0.46
+    wide_alpha = 0.10 if has_shadow else 0.08
+    mid_alpha = 0.18 if has_shadow else 0.14
+    tight_alpha = 0.36 if has_shadow else 0.28
 
     outer_style = getattr(skia, "kOuter_BlurStyle", None)
     normal_style = getattr(skia, "kNormal_BlurStyle", None)
@@ -189,10 +190,10 @@ def _overlay_title_line_skia(
             paint.setMaskFilter(skia.MaskFilter.MakeBlur(style, sigma))
         return paint
 
-    stroke_width = max(0.6, size_px * 0.010)
+    stroke_width = max(0.5, size_px * 0.008)
     stroke_paint = skia.Paint(
         AntiAlias=True,
-        Color=_argb_color(shadow_rgb, 0.28),
+        Color=_argb_color(shadow_rgb, 0.18),
         Style=skia.Paint.kStroke_Style,
         StrokeWidth=stroke_width,
         StrokeJoin=skia.Paint.kRound_Join,

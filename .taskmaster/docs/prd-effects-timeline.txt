@@ -1,0 +1,214 @@
+# PRD: Effects timeline editor
+
+## Summary
+
+Add a new **Effects timeline** tab modeled on the existing **Lyrics timeline**
+editor (`pipeline/lyrics_editor.py`). It lets the user manually place clips on
+a per-effect timeline that trigger visual effects at specific times --
+beams, logo glitch, screen shake, color invert, chromatic aberration,
+scanline tear, zoom punch. Each clip has a start time, a drag-resizable
+duration, and a per-clip settings panel (gear icon) exposing the
+effect's tunable parameters. A top-of-panel master slider scales the
+auto-scheduler's reactivity so the user can either tame or exaggerate
+the automatic analysis-driven triggers (bass pulse, snare glow, rim
+beams, impact glitch) without silencing them.
+
+The new timeline **coexists** with today's automatic scheduler: analysis-
+driven rim beams and impact glitches keep firing, and the editor draws
+them as faint ghost markers so the user sees what the analyzer is going
+to do at any `t`. A **Bake auto events into clips** button copies the
+current auto schedule into real clips the user can edit or delete -- a
+low-friction way to start from "what the machine would do" and
+hand-polish from there.
+
+## Goals
+
+1. **Manual control on top of auto**: User clips add to (don't replace)
+   the analysis-driven auto-schedule for beams + impact glitch; baked
+   clips can be trimmed/deleted freely.
+2. **Seven clip types in v1**: beam, logo_glitch, screen_shake,
+   color_invert, chromatic_aberration, scanline_tear, zoom_punch.
+3. **Per-clip settings**: A gear icon on each clip opens a floating panel
+   bound to that clip's typed settings dict (e.g. beam: color_hex,
+   strength, thickness_px; shake: amplitude_px, frequency_hz).
+4. **Reuse the Lyrics-timeline pattern**: Single `gr.HTML` + inline
+   vanilla JS + hidden `gr.Textbox` round-trip for state. No new build
+   tooling, no Gradio custom components.
+5. **Master auto-reactivity slider**: One knob scales the amplitude of
+   all analysis-driven reactivity (bass, snare, rim audio modulation,
+   impact glitch) so chill sections stay quiet and drops stay loud
+   without touching per-effect sliders.
+6. **Determinism**: Per-frame renderer seeds derive from `song_hash + t`
+   exactly like the existing `glitch_seed_for_time` pattern. Same song,
+   same clips, same frames.
+7. **Persistence**: Timeline persists to `cache/<song_hash>/effects_timeline.json`
+   with atomic write + strict validation, the same safety rails as the
+   lyrics editor.
+
+## Non-goals (v2 parks)
+
+- Automation curves (draw a bezier that drives a scalar over time).
+- Per-clip fade-in / fade-out envelope shaping.
+- Full-frame LUT / color-grade clip type.
+- Copy/paste and undo/redo inside the editor.
+- Audio preview of an isolated clip in the editor (the waveform + the
+  existing `<audio controls>` scrubber are enough for v1).
+
+## User stories
+
+- **As a producer** I want to drop a beam exactly on a bar downbeat the
+  analyzer missed, so the video hits where my ear hits.
+- **As a producer** I want to delete a baked rim beam that landed on a
+  vocal ad-lib instead of a drum hit, so the choreography reads cleaner.
+- **As a producer** I want to slide a zoom-punch clip by 80 ms to
+  pre-empt the drop slightly, so the video feels musical, not reactive.
+- **As a producer** I want one master knob that damps everything the
+  analyzer does on a lo-fi track, without having to tune every
+  per-effect slider.
+
+## Implementation notes
+
+### Data model (new file `pipeline/effects_timeline.py`)
+
+- `EffectKind(Enum)`: BEAM, LOGO_GLITCH, SCREEN_SHAKE, COLOR_INVERT,
+  CHROMATIC_ABERRATION, SCANLINE_TEAR, ZOOM_PUNCH.
+- `EffectClip`: `id` (uuid4 hex, stable), `kind`, `t_start`,
+  `duration_s`, `settings` (dict), `auto_source` (bool, True for baked).
+- `EffectsTimeline`: list of clips + per-kind `auto_enabled` toggles +
+  `auto_reactivity_master` float.
+- `load(cache_dir)` / `save(cache_dir, timeline)` with atomic
+  `.json.tmp` + `replace()` + strict validation. Per-kind settings
+  schema validation (unknown keys raise `ValueError`).
+
+### Renderer modules (one feature per file)
+
+- `pipeline/screen_shake.py` -- `shake_offset(t, clips, song_hash) ->
+  (dx, dy)`; compositor applies with a whole-frame roll after all
+  layers are stacked.
+- `pipeline/color_invert.py` -- `invert_mix(t, clips) -> float in
+  [0, 1]`; compositor lerps between frame and `255 - frame`.
+- `pipeline/chromatic_aberration.py` -- full-frame RGB channel shift
+  with seeded per-frame jitter.
+- `pipeline/scanline_tear.py` -- horizontal row-offset distortion.
+- `pipeline/zoom_punch.py` -- brief scale-in/out of the entire frame
+  (bilinear resize, recentered).
+- Shared peaks helper: move `compute_peaks` from
+  `pipeline/lyrics_editor.py` into `pipeline/_waveform_peaks.py` so
+  both editors import it.
+
+### Compositor integration (`pipeline/compositor.py`)
+
+- `CompositorConfig.effects_timeline: EffectsTimeline | None`.
+- `CompositorConfig.auto_reactivity_master: float = 1.0`.
+- `_build_beam_render_context` merges `schedule_rim_beams` output with
+  `ScheduledBeam` records derived from user's BEAM clips; no 10 s gate
+  on user clips.
+- Impact glitch path gains equivalent merging for LOGO_GLITCH clips.
+- New `_build_frame_effects_context(cfg)` pre-indexes non-logo clips by
+  time; returns fast per-frame callables.
+- In `_render_compositor_frame`, after logo composite and before
+  ffmpeg write, apply in order: zoom_punch -> screen_shake ->
+  chromatic_aberration -> scanline_tear -> color_invert. Skip the
+  whole pass when no clip is live at `t`.
+- `auto_reactivity_master` multiplies envelopes in the *auto* path only
+  (bass pulse, snare glow, impact glitch, rim audio modulation). User
+  clips are unaffected so manual placements stay predictable.
+
+### Editor backend (`pipeline/effects_editor.py`)
+
+- `load_editor_state(cache_dir)` returns clips + peaks + duration +
+  **ghost auto events** (runs the same `schedule_rim_beams` +
+  impact-peak-pick the compositor would) so the JS can draw faint
+  tick marks where auto events will fire.
+- `save_edited_timeline(cache_dir, json_payload, *, song_hash_from_dir)`
+  with validation; never trusts client `song_hash`.
+- `bake_auto_schedule(cache_dir)` emits `EffectClip` records from the
+  current auto schedule (deduped on `(kind, t_start +- 20ms)` against
+  any existing user clips) and persists.
+- `build_editor_html(state, *, audio_url, container_id, state_js_var)`
+  returns CSS + markup + a big inline vanilla-JS blob. Inject JS via
+  the same `<script type="text/plain">` + `<img onerror>` pattern used
+  by the lyrics editor so the script runs on every `gr.HTML` value
+  update (Gradio sets `innerHTML`, which doesn't run `<script>` tags).
+
+### JS behavior (mirrors lyrics editor)
+
+- Waveform canvas on top; seven rows beneath (one per effect kind),
+  each row shows only clips of that kind, colour-coded per kind.
+- Toolbar buttons `+ Beam`, `+ Glitch`, ... create a new clip at the
+  playhead with default duration + defaults for that kind's settings.
+- Drag body = move in time; drag left/right edge = resize. Click = seek.
+- Shift / Ctrl + click = multi-select. Click-drag on empty timeline =
+  rubber-band select. Del = delete selected. Esc = clear selection.
+  Ctrl + A = select all. Space = play/pause. +/- = zoom.
+- Per-clip gear icon opens a small floating settings panel (DOM-only,
+  bound to the clip's settings dict); closes on outside-click.
+- Ghost markers: faint vertical ticks at auto-event times on the
+  matching row, non-interactive, so the user sees what's already
+  firing.
+- Per-row "Disable auto for this kind" checkbox beside the row label.
+- Top-of-panel "Auto reactivity master" slider (0-200 %).
+
+### Gradio tab
+
+- New `gr.Tab("Effects timeline")` directly after `"Lyrics timeline"`
+  in `app.py`.
+- Buttons: Load timeline, Save edits, Bake auto events, Clear all.
+- Hidden `gr.Textbox` carries `window._musicvids_effects_state` on Save.
+- Handlers: `_load_effects_editor`, `_save_effects_editor`,
+  `_bake_effects_editor`, `_clear_effects_editor` (mirroring the
+  naming used by the lyrics editor handlers).
+
+### Orchestrator wiring
+
+- `OrchestratorInputs.effects_timeline_enabled: bool = True`.
+- `OrchestratorInputs.auto_reactivity_master: float = 1.0`.
+- When enabled, orchestrator loads `effects_timeline.json` from the
+  per-song cache and threads it into `CompositorConfig` alongside the
+  master multiplier.
+
+### Tests
+
+- `tests/test_effects_timeline.py` -- JSON round-trip, per-kind
+  validation (bad settings raise), `bake_auto_schedule` emits expected
+  clips from a synthetic analysis, dedupe on repeated bake.
+- `tests/test_effects_editor.py` -- handler paths: atomic write, reject
+  payload without `clips`, song_hash always read from cache dir name,
+  never from payload.
+- Per-renderer tests: one file per module
+  (`tests/test_screen_shake.py`, etc.) asserting zero effect outside
+  `[t_start, t_start + duration_s]`, non-zero inside, deterministic
+  under a fixed `song_hash`.
+- `tests/test_compositor_effects_timeline.py` -- empty timeline
+  produces byte-identical frames vs today's output; one BEAM clip at
+  `t=1.0 s` fires a beam even with no scheduled drop; disabling auto
+  for BEAM removes the analyzer-driven beams while keeping the user's.
+
+### Docs
+
+- `docs/technical/effects-timeline-editor.md` -- UX + architecture +
+  data shape, styled like `docs/technical/lyrics-timeline-editor.md`.
+- `docs/technical/effects-timeline-renderers.md` -- one paragraph per
+  new renderer module.
+- Add both bullets to `docs/index.md`.
+- Update `ai-context.md` "Where Things Live" with two new rows
+  (editor + renderers).
+
+## Acceptance criteria
+
+- Tab loads the editor, shows the waveform + seven empty rows + ghost
+  markers for the current analyzer's auto events.
+- Adding a BEAM clip at `t=1.0 s` and rendering produces a beam
+  emission at `t=1.0 s` in the output video.
+- Deleting a baked rim-beam clip and rendering does NOT fire that
+  beam, while still firing the other analyzer-driven beams.
+- Moving the master reactivity slider to 0 % visibly damps all
+  analysis-driven reactivity (bass pulse stops moving the logo, rim
+  beams stop firing, impact glitch stops) while user-placed clips
+  still fire exactly as placed.
+- `cache/<song_hash>/effects_timeline.json` round-trips through
+  save/load with no data loss; malformed payloads raise clear
+  `ValueError`s surfaced in the Gradio run log.
+- Empty timeline produces byte-identical output frames vs the current
+  main branch (regression guard).
+- `uv run pytest` passes; no existing test regresses.

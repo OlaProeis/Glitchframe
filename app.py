@@ -318,6 +318,8 @@ def _build_render_inputs(
     logo_rim_brightness_pct: float,
     logo_rim_halo_size_px: float,
     logo_rim_wave_shape: str,
+    rim_beams_enabled: bool,
+    logo_motion_stability_pct: float,
     show_title: bool,
     title_position: str,
     title_size: str,
@@ -387,6 +389,11 @@ def _build_render_inputs(
         / 100.0,
         logo_rim_halo_spread_px=float(np.clip(logo_rim_halo_size_px, 4.0, 64.0)),
         logo_rim_wave_shape=str(logo_rim_wave_shape or "comet").strip().lower(),
+        rim_beams_enabled=bool(rim_beams_enabled),
+        # UI exposes 0--200 %; compositor expects a raw scale factor where
+        # ``1.0`` is the default deadzone and ``2.0`` is extra stable.
+        logo_motion_stability=float(np.clip(logo_motion_stability_pct, 0.0, 200.0))
+        / 100.0,
         show_title=bool(show_title),
         title_position=str(title_position or "bottom-left"),
         title_size=str(title_size or "small"),
@@ -449,6 +456,8 @@ def _run_preview(
     logo_rim_brightness_pct: float,
     logo_rim_halo_size_px: float,
     logo_rim_wave_shape: str,
+    rim_beams_enabled: bool,
+    logo_motion_stability_pct: float,
     show_title: bool,
     title_position: str,
     title_size: str,
@@ -496,6 +505,8 @@ def _run_preview(
             logo_rim_brightness_pct=logo_rim_brightness_pct,
             logo_rim_halo_size_px=logo_rim_halo_size_px,
             logo_rim_wave_shape=logo_rim_wave_shape,
+            rim_beams_enabled=rim_beams_enabled,
+            logo_motion_stability_pct=logo_motion_stability_pct,
             show_title=show_title,
             title_position=title_position,
             title_size=title_size,
@@ -554,6 +565,8 @@ def _run_render(
     logo_rim_brightness_pct: float,
     logo_rim_halo_size_px: float,
     logo_rim_wave_shape: str,
+    rim_beams_enabled: bool,
+    logo_motion_stability_pct: float,
     show_title: bool,
     title_position: str,
     title_size: str,
@@ -601,6 +614,8 @@ def _run_render(
             logo_rim_brightness_pct=logo_rim_brightness_pct,
             logo_rim_halo_size_px=logo_rim_halo_size_px,
             logo_rim_wave_shape=logo_rim_wave_shape,
+            rim_beams_enabled=rim_beams_enabled,
+            logo_motion_stability_pct=logo_motion_stability_pct,
             show_title=show_title,
             title_position=title_position,
             title_size=title_size,
@@ -1264,6 +1279,31 @@ def build_ui() -> gr.Blocks:
                             "glow, little perceptible motion."
                         ),
                     )
+                    rim_beams_enabled = gr.Checkbox(
+                        label="Rim beams on drops & snare rolls",
+                        value=True,
+                        info=(
+                            "Emits short straight beams outward from the rim "
+                            "on detected drops (and up to 3 pre-drop snare "
+                            "lead-ins). Globally rate-limited to ~1 burst per "
+                            "10 s so it stays earned. See "
+                            "`docs/technical/logo-rim-beams.md`."
+                        ),
+                    )
+                logo_motion_stability_pct = gr.Slider(
+                    label="Logo stability (ignore micro-shake)",
+                    minimum=0,
+                    maximum=200,
+                    value=100,
+                    step=5,
+                    info=(
+                        "Soft deadzone for the beat-pulse + snare squeeze. "
+                        "0% = legacy (every tiny pulse moves the logo); "
+                        "100% = default (chill-section noise collapses to zero); "
+                        "200% = extra stable. Only real kicks / snare hits "
+                        "survive at higher settings."
+                    ),
+                )
                 btn_logo_preview = gr.Button("Preview logo on test frame")
                 logo_preview_image = gr.Image(
                     label="Logo overlay (test gradient)",
@@ -1514,6 +1554,8 @@ See `docs/technical/visual-style-presets.md` for the full schema and
             logo_rim_brightness_pct,
             logo_rim_halo_size_px,
             logo_rim_wave_shape,
+            rim_beams_enabled,
+            logo_motion_stability_pct,
             show_title,
             title_position,
             title_size,

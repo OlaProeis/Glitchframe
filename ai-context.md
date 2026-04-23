@@ -55,6 +55,8 @@
 | Logo rim light field (traveling wave, halo + inward bleed, multicolour + hue drift, premult RGBA patch) + optional snare/bass `RimAudioModulation` and compositor stepper | `pipeline/logo_rim_lights.py` (`RimLightConfig`, `compute_logo_rim_light_patch`), `docs/technical/logo-rim-lights.md`, `docs/technical/logo-rim-lights-color.md`, `docs/technical/logo-rim-audio-modulation.md` |
 | Logo rim + classic neon blended on output frames (`LogoGlowMode`, compositor `logo_rim_enabled`) | `pipeline/logo_composite.py`, `pipeline/compositor.py`, `docs/technical/logo-rim-compositing.md` |
 | Logo rim Gradio controls → orchestrator (`OrchestratorInputs`, `resolve_logo_rim_compositor_fields`) | `app.py` (Branding accordion), `orchestrator.py`, `docs/technical/logo-rim-branding-ui.md` |
+| Rim-light beams on drops + snare lead-ins (schedule, 10 s gating, premult RGBA patch) | `pipeline/logo_rim_beams.py`, `pipeline/compositor.py::_build_beam_render_context`, `docs/technical/logo-rim-beams.md` |
+| Logo motion stability / micro-shake deadzone (bass pulse + snare squeeze gate) | `pipeline/beat_pulse.py::apply_pulse_deadzone`, `pipeline/compositor.py`, `docs/technical/title-and-beat-pulse.md` ("Stability") |
 | Per-frame compositor → ffmpeg NVENC (bg + reactive + typo + logo, bounded queue) | `pipeline/compositor.py`, `docs/technical/frame-compositor.md` |
 | Thumbnail PNG (chorus/RMS frame, Skia title, beside `output.mp4`) | `pipeline/thumbnail.py`, `docs/technical/thumbnail-generator.md` |
 | Title / lyrics fill + glow color picker (bright-end of preset palette) | `pipeline/preset_colors.py::resolve_text_colors`, consumed by `orchestrator.py` and `pipeline/thumbnail.py::_resolve_title_colors` |

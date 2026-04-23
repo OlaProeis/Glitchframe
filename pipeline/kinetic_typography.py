@@ -439,9 +439,26 @@ class KineticTypographyLayer:
 
         self._typeface = self._load_typeface(font_path)
         self._font = skia.Font(self._typeface, self._font_size)
+        # Display-size tuning: kAntiAlias edging + subpixel positioning +
+        # disabled hinting. Skia's default ``kNormal`` hinting is optimised
+        # for 12-16 px UI text and quantises glyph outlines onto the pixel
+        # grid at the sizes kinetic typography renders (60-200 px), which
+        # shows up as stair-stepped diagonals / curves on letters like
+        # ``n``, ``e``, ``v``. Turning hinting off and enabling subpixel
+        # positioning lets Skia's greyscale anti-aliasing produce smooth
+        # evenly-weighted edges -- the same recipe used by the title
+        # overlay (:mod:`pipeline.title_overlay`).
         try:
             self._font.setEdging(skia.Font.Edging.kAntiAlias)
         except AttributeError:  # pragma: no cover - very old skia-python
+            pass
+        try:
+            self._font.setSubpixel(True)
+        except AttributeError:  # pragma: no cover - older skia-python
+            pass
+        try:
+            self._font.setHinting(skia.FontHinting.kNone)
+        except AttributeError:  # pragma: no cover - older skia-python
             pass
 
         self._lines = _group_words_by_line(list(aligned_words))
@@ -700,36 +717,31 @@ class KineticTypographyLayer:
                 x0 = -word_width * 0.5
 
                 if self._shadow_rgb is not None:
-                    # Layered outer bloom — same recipe as
-                    # :mod:`pipeline.title_overlay`, scaled to the per-word
-                    # font size. Three ``kOuter_BlurStyle`` passes produce a
-                    # smooth halo that keeps lyrics legible over busy
-                    # shader backgrounds without the hard-stamped look of
-                    # the previous 2 px offset shadow. ``MakeBlur`` /
-                    # ``kOuter_BlurStyle`` are looked up defensively so
-                    # older skia-python builds fall back to a plain tint.
-                    for sigma_factor, shadow_alpha in (
-                        (0.22, 0.18),
-                        (0.11, 0.32),
-                        (0.045, 0.55),
-                    ):
-                        sigma = max(0.6, self._font_size * sigma_factor)
-                        halo_paint = skia.Paint(
-                            AntiAlias=True,
-                            Color=_argb_with_alpha(
-                                self._shadow_rgb, alpha * shadow_alpha
-                            ),
+                    # Single tight outer-blur pass: just enough dark edge
+                    # lift to keep the letters legible on busy or similar-
+                    # luminance backgrounds without the wide "stamped"
+                    # halo the previous three-pass recipe produced. The
+                    # wide/mid passes bled far past the glyph edges on
+                    # bright preset shadows (e.g. yellow) and made the
+                    # text hard to read; the tight edge bloom is enough
+                    # because kinetic typography uses large display sizes.
+                    sigma = max(0.5, self._font_size * 0.022)
+                    halo_paint = skia.Paint(
+                        AntiAlias=True,
+                        Color=_argb_with_alpha(
+                            self._shadow_rgb, alpha * 0.22
+                        ),
+                    )
+                    style = getattr(
+                        skia, "kOuter_BlurStyle", None
+                    ) or getattr(skia, "kNormal_BlurStyle", None)
+                    if style is not None:
+                        halo_paint.setMaskFilter(
+                            skia.MaskFilter.MakeBlur(style, sigma)
                         )
-                        style = getattr(
-                            skia, "kOuter_BlurStyle", None
-                        ) or getattr(skia, "kNormal_BlurStyle", None)
-                        if style is not None:
-                            halo_paint.setMaskFilter(
-                                skia.MaskFilter.MakeBlur(style, sigma)
-                            )
-                        canvas.drawString(
-                            word.word, x0, 0.0, self._font, halo_paint
-                        )
+                    canvas.drawString(
+                        word.word, x0, 0.0, self._font, halo_paint
+                    )
 
                 main_paint = skia.Paint(
                     AntiAlias=True,

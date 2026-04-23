@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import errno
 import logging
+import math
 import os
 import queue
 import subprocess
@@ -52,6 +53,7 @@ from pipeline.beat_pulse import (
     DEFAULT_LO_DECAY_SEC,
     DEFAULT_MID_DECAY_SEC,
     PulseTrack,
+    apply_pulse_deadzone,
     beat_pulse_envelope,
     build_bass_pulse_track,
     build_hi_transient_track,
@@ -72,10 +74,19 @@ from pipeline.logo_rim_lights import (
     RimLightConfig,
     RimModulationState,
     advance_rim_audio_modulation,
+    compute_logo_rim_prep,
     rim_base_rgb_from_preset,
+)
+from pipeline.logo_rim_beams import (
+    BeamConfig,
+    ScheduledBeam,
+    compute_beam_patch,
+    schedule_rim_beams,
 )
 from pipeline.logo_composite import (
     LogoGlowMode,
+    _blend_premult_rgba_patch,
+    _origin_for_position,
     composite_logo_onto_frame,
     glitch_seed_for_time,
     load_logo_rgba,
@@ -213,6 +224,18 @@ class CompositorConfig:
     logo_rim_sync_snare: bool = True
     logo_rim_sync_bass: bool = True
     logo_rim_mod_strength: float = 1.0
+    # Pre-choreographed rim-light beams on drops + snare lead-ins; see
+    # :mod:`pipeline.logo_rim_beams`. When ``rim_beams_enabled`` is true the
+    # compositor pre-bakes a schedule once per render (drops + nearby snares,
+    # 10 s gated) and blends a padded premultiplied RGBA patch around the logo
+    # centroid on active beams.
+    rim_beams_enabled: bool = True
+    rim_beams_config: BeamConfig = field(default_factory=BeamConfig)
+    # Logo motion stability deadzone. ``0`` = legacy (every micro-pulse moves
+    # the logo); ``1`` = default soft deadzone (chill-section noise collapses
+    # to zero); ``2`` = extra stable. Scales the deadzone passed to
+    # :func:`scale_and_opacity_for_pulse` and the snare-squeeze gate.
+    logo_motion_stability: float = 1.0
     # Persistent title/artist overlay burned into every frame. When
     # ``title_text`` is empty / None the overlay pass is skipped entirely.
     title_text: str | None = None
@@ -397,6 +420,126 @@ def _effective_rim_light_config(
     return replace(base, song_hash=song_hash_opt)
 
 
+@dataclass(frozen=True, slots=True)
+class _BeamRenderContext:
+    """Per-render state needed to draw the rim-beam patch each frame.
+
+    Built once in :func:`_build_beam_render_context` (or ``None`` when beams
+    are disabled / unavailable) and consumed inside the frame loop.
+    """
+
+    schedule: tuple[ScheduledBeam, ...]
+    cfg: BeamConfig
+    rim_rgb: tuple[int, int, int]
+    color_spread_rad: float
+    n_color_layers: int
+    hue_drift_per_sec: float
+    song_hash: str | None
+    centroid_xy_base: tuple[float, float]
+    logo_base_hw: tuple[int, int]
+
+
+def _build_beam_render_context(
+    cfg: CompositorConfig,
+    analysis: Mapping[str, Any],
+    *,
+    logo_rgba_prepared: np.ndarray | None,
+    resolved_rim_config: RimLightConfig | None,
+) -> _BeamRenderContext | None:
+    """Schedule beams + capture color params once per render; ``None`` to skip.
+
+    Skips when ``rim_beams_enabled`` is false, the logo isn't available, or
+    the schedule is empty (no qualifying drops / impacts in the track).
+    """
+    if not bool(cfg.rim_beams_enabled) or logo_rgba_prepared is None:
+        return None
+    beam_cfg = cfg.rim_beams_config or BeamConfig()
+    if not bool(beam_cfg.enabled):
+        return None
+
+    # Rim color context: prefer the resolved rim config (so beams track the
+    # same hue drift / layer count as the travelling rim) and fall back to
+    # preset defaults when the rim is disabled but beams are still on.
+    rim_rgb = rim_base_rgb_from_preset(cfg.shadow_color, cfg.base_color)
+    if resolved_rim_config is not None:
+        color_spread = float(resolved_rim_config.color_spread_rad)
+        n_layers = max(1, int(resolved_rim_config.rim_color_layers))
+        hue_drift = float(resolved_rim_config.hue_drift_per_sec)
+    else:
+        color_spread = 2.0 * math.pi / 3.0
+        n_layers = 2
+        hue_drift = 0.0
+
+    song_hash_raw = analysis.get("song_hash") if isinstance(analysis, Mapping) else None
+    song_hash = str(song_hash_raw) if song_hash_raw else None
+
+    snare_track = _snare_track_for_logo(cfg, analysis)
+    impact_track: PulseTrack | None = None
+    if float(cfg.logo_impact_glitch_strength) > 1e-6 or bool(cfg.rim_beams_enabled):
+        impact_track = build_rms_impact_pulse_track(
+            analysis, sensitivity=float(cfg.logo_impact_sensitivity)
+        )
+    schedule = schedule_rim_beams(
+        analysis,
+        snare_track=snare_track,
+        impact_track=impact_track,
+        cfg=beam_cfg,
+        song_hash=song_hash,
+        n_color_layers=n_layers,
+    )
+    if not schedule:
+        return None
+
+    prep = compute_logo_rim_prep(logo_rgba_prepared)
+    lh, lw = int(logo_rgba_prepared.shape[0]), int(logo_rgba_prepared.shape[1])
+    return _BeamRenderContext(
+        schedule=tuple(schedule),
+        cfg=beam_cfg,
+        rim_rgb=rim_rgb,
+        color_spread_rad=color_spread,
+        n_color_layers=n_layers,
+        hue_drift_per_sec=hue_drift,
+        song_hash=song_hash,
+        centroid_xy_base=(float(prep.centroid_xy[0]), float(prep.centroid_xy[1])),
+        logo_base_hw=(lh, lw),
+    )
+
+
+def _draw_beam_patch_onto_frame(
+    dst: np.ndarray,
+    t: float,
+    *,
+    ctx: _BeamRenderContext,
+    position: str,
+    logo_scale: float,
+) -> None:
+    """Blend active beams onto ``dst`` (uint8 RGB) in place."""
+    fh, fw = int(dst.shape[0]), int(dst.shape[1])
+    base_h, base_w = ctx.logo_base_hw
+    scale = max(1e-3, float(logo_scale))
+    lh = max(1, int(round(base_h * scale)))
+    lw = max(1, int(round(base_w * scale)))
+    x0, y0 = _origin_for_position(position, fh, fw, lh, lw)
+    cx = x0 + ctx.centroid_xy_base[0] * scale
+    cy = y0 + ctx.centroid_xy_base[1] * scale
+
+    result = compute_beam_patch(
+        (fh, fw),
+        centroid_xy=(cx, cy),
+        t=float(t),
+        scheduled=ctx.schedule,
+        rim_rgb=ctx.rim_rgb,
+        cfg=ctx.cfg,
+        color_spread_rad=ctx.color_spread_rad,
+        song_hash=ctx.song_hash,
+        hue_drift_per_sec=ctx.hue_drift_per_sec,
+        n_color_layers=ctx.n_color_layers,
+    )
+    if result is None:
+        return
+    _blend_premult_rgba_patch(dst, result.patch, int(result.x0), int(result.y0))
+
+
 def _render_compositor_frame(
     t: float,
     *,
@@ -418,6 +561,7 @@ def _render_compositor_frame(
     impact_fn: PulseFn | None = None,
     rim_mod_step: RimModStepFn | None = None,
     resolved_rim_config: RimLightConfig | None = None,
+    beam_ctx: _BeamRenderContext | None = None,
 ) -> np.ndarray:
     """One RGB frame: background → reactive → typography → title → logo.
 
@@ -472,13 +616,17 @@ def _render_compositor_frame(
     if logo_rgba_prepared is not None and logo_position_norm is not None:
         logo_scale = 1.0
         logo_opacity_pct = float(cfg.logo_opacity_pct)
+        stability = max(0.0, float(cfg.logo_motion_stability))
+        pulse_deadzone = 0.12 * stability
         if pulse_fn is not None:
             # The pulse function is pre-built once per render (``beats`` grid
             # or ``bass`` envelope) and already encodes the mode + analysis
             # shape, so the hot path stays a single scalar lookup per frame.
             pulse = pulse_fn(float(t))
             logo_scale, opacity_mul = scale_and_opacity_for_pulse(
-                pulse, strength=float(cfg.logo_pulse_strength)
+                pulse,
+                strength=float(cfg.logo_pulse_strength),
+                deadzone=pulse_deadzone,
             )
             logo_opacity_pct = max(
                 0.0, min(100.0, float(cfg.logo_opacity_pct) * opacity_mul)
@@ -488,7 +636,9 @@ def _render_compositor_frame(
             snare_val = float(snare_fn(float(t)))
         if snare_fn is not None and float(cfg.logo_snare_squeeze_strength) > 1e-6:
             sq = float(cfg.logo_snare_squeeze_strength)
-            sv = max(0.0, min(1.0, snare_val))
+            # Apply the same deadzone to the snare-squeeze so mid-band noise
+            # during chill sections doesn't keep nudging the logo smaller.
+            sv = apply_pulse_deadzone(snare_val, deadzone=pulse_deadzone)
             logo_scale *= max(0.68, 1.0 - sq * sv * 0.42)
         glow_amt = 0.0
         if (
@@ -535,6 +685,14 @@ def _render_compositor_frame(
             rim_audio_mod=rim_audio_mod,
             logo_glow_mode=cfg.logo_glow_mode,
         )
+        if beam_ctx is not None:
+            _draw_beam_patch_onto_frame(
+                composited,
+                float(t),
+                ctx=beam_ctx,
+                position=logo_position_norm,
+                logo_scale=float(logo_scale),
+            )
     return composited
 
 
@@ -756,6 +914,12 @@ def render_single_frame(
     impact_fn = _impact_envelope_fn(cfg, analysis)
     rim_mod_step = _create_rim_modulation_stepper(cfg, analysis)
     resolved_rim_config = _effective_rim_light_config(cfg, analysis)
+    beam_ctx = _build_beam_render_context(
+        cfg,
+        analysis,
+        logo_rgba_prepared=logo_rgba_prepared,
+        resolved_rim_config=resolved_rim_config,
+    )
 
     has_typography = bool(aligned_words)
 
@@ -799,6 +963,7 @@ def render_single_frame(
                 impact_fn=impact_fn,
                 rim_mod_step=rim_mod_step,
                 resolved_rim_config=resolved_rim_config,
+                beam_ctx=beam_ctx,
             )
         finally:
             if typo_layer is not None:
@@ -940,6 +1105,12 @@ def render_full_video(
     impact_fn = _impact_envelope_fn(cfg, analysis)
     rim_mod_step = _create_rim_modulation_stepper(cfg, analysis)
     resolved_rim_config = _effective_rim_light_config(cfg, analysis)
+    beam_ctx = _build_beam_render_context(
+        cfg,
+        analysis,
+        logo_rgba_prepared=logo_rgba_prepared,
+        resolved_rim_config=resolved_rim_config,
+    )
 
     if start_sec < 0:
         raise ValueError(f"start_sec must be non-negative, got {start_sec!r}")
@@ -1098,6 +1269,7 @@ def render_full_video(
                             impact_fn=impact_fn,
                             rim_mod_step=rim_mod_step,
                             resolved_rim_config=resolved_rim_config,
+                            beam_ctx=beam_ctx,
                         )
 
                         bgr = np.ascontiguousarray(composited[:, :, ::-1])

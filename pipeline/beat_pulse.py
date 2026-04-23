@@ -594,10 +594,54 @@ def build_snare_glow_track(
     return PulseTrack(values=scaled.astype(np.float32, copy=False), fps=fps)
 
 
+def apply_pulse_deadzone(
+    pulse: float,
+    *,
+    deadzone: float = 0.12,
+    soft_width: float = 0.08,
+) -> float:
+    """Map a pulse value through a soft deadzone → ``[0, 1]``.
+
+    Very small pulses (``≤ deadzone``) collapse to ``0``; pulses in
+    ``(deadzone, deadzone + soft_width)`` ramp up via smoothstep so the
+    transition into visible motion stays gentle; values above the soft zone
+    keep the *remaining* proportional energy (linear above the knee).
+
+    This is the fix for **chill-part micro-shake**: the bass envelope idles in
+    the 0.05--0.20 range during quiet sections, which the linear mapping in
+    :func:`scale_and_opacity_for_pulse` turns into a visible constant wobble.
+    Dropping the low tail to zero and smoothstepping the shoulder removes the
+    jitter without flattening real kicks (peaks ~1.0).
+
+    Passing ``deadzone <= 0`` returns the input clamped to ``[0, 1]`` so
+    callers can restore the legacy behaviour without branching.
+    """
+    p = max(0.0, min(1.0, float(pulse)))
+    dz = max(0.0, float(deadzone))
+    if dz <= 0.0:
+        return p
+    lo = dz
+    hi = dz + max(1e-6, float(soft_width))
+    if p <= lo:
+        return 0.0
+    if p >= hi:
+        # Linear above the knee, mapped so the peak (p=1) stays at 1.
+        span = max(1e-6, 1.0 - lo)
+        return float(min(1.0, (p - lo) / span))
+    x = (p - lo) / (hi - lo)
+    # Smoothstep shoulder: ``x*x*(3-2x)`` then scale back into the outer
+    # linear ramp so there's no C0 discontinuity at ``p == hi``.
+    eased = x * x * (3.0 - 2.0 * x)
+    knee = (hi - lo) / max(1e-6, 1.0 - lo)
+    return float(eased * knee)
+
+
 def scale_and_opacity_for_pulse(
     pulse: float,
     *,
     strength: float = 1.0,
+    deadzone: float = 0.12,
+    soft_width: float = 0.08,
     max_scale_delta: float = 0.12,
     max_opacity_boost: float = 0.22,
     max_scale_cap: float = 0.45,
@@ -607,8 +651,14 @@ def scale_and_opacity_for_pulse(
 
     ``strength`` scales the pulse (UI default 2, max 4) so higher settings read
     as a **bigger** hit. Caps avoid extreme resize artefacts on sub-pixel logos.
+
+    ``deadzone`` + ``soft_width`` suppress chill-section micro-shake by pushing
+    low-amplitude pulses (< ``deadzone``) to zero and smoothstepping the knee
+    (``deadzone..deadzone+soft_width``). Pass ``deadzone=0.0`` for the pre-task
+    linear mapping.
     """
-    p = max(0.0, min(1.0, float(pulse))) * max(0.0, float(strength))
+    p = apply_pulse_deadzone(pulse, deadzone=deadzone, soft_width=soft_width)
+    p *= max(0.0, float(strength))
     scale = 1.0 + min(max_scale_delta * p, max_scale_cap)
     opacity_mul = 1.0 + min(max_opacity_boost * p, max_opacity_cap)
     return scale, opacity_mul
@@ -639,6 +689,7 @@ __all__ = [
     "DEFAULT_SNARE_BAND_LO",
     "DEFAULT_SNARE_DECAY_SEC",
     "PulseTrack",
+    "apply_pulse_deadzone",
     "beat_pulse_envelope",
     "build_band_pulse_track",
     "build_bass_pulse_track",

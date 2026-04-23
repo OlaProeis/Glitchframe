@@ -735,16 +735,194 @@
         "recommendedSubtasks": 5,
         "expansionPrompt": "Split into one subtask per shader stem so each change is independently reviewable.",
         "updatedAt": "2026-04-22T17:00:50.019Z"
+      },
+      {
+        "id": 43,
+        "title": "Create EffectsTimeline data model",
+        "description": "Implement EffectKind Enum, EffectClip dataclass, EffectsTimeline class with load/save functions using atomic writes and validation",
+        "details": "Create pipeline/effects_timeline.py with:\n- from enum import Enum; class EffectKind(Enum): BEAM, LOGO_GLITCH, SCREEN_SHAKE, COLOR_INVERT, CHROMATIC_ABERRATION, SCANLINE_TEAR, ZOOM_PUNCH\n- from dataclasses import dataclass; @dataclass class EffectClip: id: str, kind: EffectKind, t_start: float, duration_s: float, settings: dict, auto_source: bool\n- class EffectsTimeline: clips: list[EffectClip], auto_enabled: dict[EffectKind, bool], auto_reactivity_master: float\n- def load(cache_dir: str) -> EffectsTimeline, def save(cache_dir: str, timeline: EffectsTimeline) with .json.tmp + os.replace() + strict schema validation using pydantic or manual key checks",
+        "testStrategy": "JSON round-trip serialization/deserialization, validation rejects unknown settings keys with ValueError, load/save atomicity test with interrupted writes",
+        "priority": "high",
+        "dependencies": [],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 44,
+        "title": "Extract shared waveform peaks helper",
+        "description": "Move compute_peaks from lyrics_editor.py to shared _waveform_peaks.py for reuse by both editors",
+        "details": "Create pipeline/_waveform_peaks.py with def compute_peaks(audio_path: str, sample_rate: int) -> np.ndarray\nUpdate pipeline/lyrics_editor.py to import from _waveform_peaks\nAdd type hints and docstring matching existing implementation",
+        "testStrategy": "Peaks computation identical to previous lyrics_editor version, both editors produce same peaks output for same audio",
+        "priority": "high",
+        "dependencies": [],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 45,
+        "title": "Implement screen_shake renderer",
+        "description": "Create screen_shake.py returning shake_offset(t, clips, song_hash) -> (dx, dy)",
+        "details": "pipeline/screen_shake.py:\ndef shake_offset(t: float, clips: list[EffectClip], song_hash: str) -> tuple[float, float]:\n  # Find active SCREEN_SHAKE clips at t\n  # seed = hash(song_hash + t)\n  # return amplitude_px * sin(frequency_hz * t + seed) scaled by settings\nUse existing glitch_seed_for_time pattern for determinism",
+        "testStrategy": "Zero offset outside clip intervals, non-zero inside, deterministic for fixed song_hash+t, matches settings dict",
+        "priority": "medium",
+        "dependencies": [
+          43
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 46,
+        "title": "Implement color_invert renderer",
+        "description": "Create color_invert.py returning invert_mix(t, clips) -> float in [0,1]",
+        "details": "pipeline/color_invert.py:\ndef invert_mix(t: float, clips: list[EffectClip]) -> float:\n  # Interpolate active COLOR_INVERT clips at t\n  # Return weighted mix factor for lerping frame -> 255-frame",
+        "testStrategy": "Returns 0.0 outside intervals, settings-driven mix inside, smooth interpolation between overlapping clips",
+        "priority": "medium",
+        "dependencies": [
+          43
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 47,
+        "title": "Implement zoom_punch renderer",
+        "description": "Create zoom_punch.py for brief scale-in/out of entire frame",
+        "details": "pipeline/zoom_punch.py:\ndef zoom_scale(t: float, clips: list[EffectClip]) -> float:\n  # Brief punch curve (ease-in-out) based on clip settings\n  # Return scale factor >1.0 during punch, 1.0 elsewhere",
+        "testStrategy": "Scale=1.0 outside intervals, punch curve peaks per settings, bilinear resize compatible",
+        "priority": "medium",
+        "dependencies": [
+          43
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 48,
+        "title": "Implement effects_editor backend handlers",
+        "description": "Create effects_editor.py with load_editor_state, save_edited_timeline, bake_auto_schedule",
+        "details": "pipeline/effects_editor.py:\n- load_editor_state(cache_dir) -> {'clips': [...], 'peaks': [...], 'duration': float, 'ghost_events': [...]}\n- save_edited_timeline(cache_dir, json_payload, song_hash_from_dir) with validation\n- bake_auto_schedule(cache_dir) converts auto events to EffectClip records, dedupes vs existing clips (±20ms)",
+        "testStrategy": "Handler validation rejects malformed payloads, song_hash extracted from dir name only, bake dedupes correctly",
+        "priority": "high",
+        "dependencies": [
+          43,
+          44
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 49,
+        "title": "Integrate effects into compositor",
+        "description": "Update compositor.py to merge user clips with auto schedule and apply frame effects",
+        "details": "Add CompositorConfig.effects_timeline: EffectsTimeline | None, auto_reactivity_master: float\nImplement _build_frame_effects_context(cfg) -> fast per-frame callables\nIn _render_compositor_frame: apply zoom_punch -> screen_shake -> chromatic_aberration -> scanline_tear -> color_invert order\nMaster slider scales ONLY auto paths\nAlso: merge user BEAM clips into _build_beam_render_context (additive, no 10 s gate on user clips) and user LOGO_GLITCH clips into the impact-glitch envelope path in the same additive way",
+        "testStrategy": "Empty timeline produces identical frames to main branch, user BEAM clip fires independently of auto schedule, user LOGO_GLITCH clip fires independently of analyzer impact events",
+        "priority": "high",
+        "dependencies": [
+          45,
+          46,
+          47,
+          48,
+          54,
+          55
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 50,
+        "title": "Create effects timeline HTML/JS editor",
+        "description": "Implement build_editor_html mirroring lyrics editor pattern with 7 effect rows + ghost markers",
+        "details": "In effects_editor.py: def build_editor_html(state, audio_url, container_id, state_js_var) -> str\nInline vanilla JS + CSS for:\n- Waveform canvas + 7 color-coded rows\n- Drag/resize clips, multi-select, rubber-band, +/- zoom\n- Per-clip gear panels bound to settings dict\n- Ghost auto markers, per-row auto disable checkboxes\n- Master reactivity slider\nUse <script type=\"text/plain\"> + onerror pattern",
+        "testStrategy": "Manual testing: clip creation/movement/resize, settings panel binding, ghost markers appear at auto times",
+        "priority": "high",
+        "dependencies": [
+          48
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 51,
+        "title": "Add Effects timeline Gradio tab",
+        "description": "Add new gr.Tab after Lyrics timeline with Load/Save/Bake/Clear buttons",
+        "details": "In app.py:\n- gr.Tab(\"Effects timeline\", elem_id=\"effects-tab\")\n- gr.HTML for editor, hidden gr.Textbox for state\n- Buttons calling _load_effects_editor(), _save_effects_editor(), etc.\nMirror exact lyrics editor wiring pattern",
+        "testStrategy": "Tab loads with waveform + empty rows + ghost markers, buttons trigger correct handlers",
+        "priority": "high",
+        "dependencies": [
+          50
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 52,
+        "title": "Wire orchestrator integration",
+        "description": "Add OrchestratorInputs.effects_timeline_enabled and auto_reactivity_master",
+        "details": "Update orchestrator to load effects_timeline.json when enabled\nThread into CompositorConfig alongside master multiplier\nDefault: effects_timeline_enabled=True, auto_reactivity_master=1.0",
+        "testStrategy": "Orchestrator passes timeline to compositor when enabled, master slider value flows through",
+        "priority": "medium",
+        "dependencies": [
+          49
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 53,
+        "title": "Add comprehensive tests and docs",
+        "description": "Create all specified test files and documentation",
+        "details": "Tests:\n- tests/test_effects_timeline.py (JSON roundtrip, validation, bake)\n- tests/test_effects_editor.py (handlers)\n- tests/test_screen_shake.py etc. for each renderer\n- tests/test_compositor_effects_timeline.py (regression guard)\nDocs:\n- docs/technical/effects-timeline-editor.md\n- docs/technical/effects-timeline-renderers.md\n- Update docs/index.md and ai-context.md",
+        "testStrategy": "`uv run pytest` passes with no regressions, docs validate against implementation",
+        "priority": "medium",
+        "dependencies": [
+          43,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50,
+          51,
+          52,
+          54,
+          55
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 54,
+        "title": "Implement chromatic_aberration renderer",
+        "description": "Create chromatic_aberration.py for full-frame per-channel RGB shift driven by active CHROMATIC_ABERRATION clips",
+        "details": "pipeline/chromatic_aberration.py:\ndef apply_chromatic_aberration(frame: np.ndarray, t: float, clips: list[EffectClip], song_hash: str) -> np.ndarray:\n  # Find active CHROMATIC_ABERRATION clips at t; early-return frame untouched if none.\n  # Per-clip settings: shift_px (float, max pixel offset of R/B channels), jitter (0..1, seeded per-frame wobble), direction_deg (optional fixed angle; default random-per-clip seeded from song_hash + clip.id).\n  # Per-frame seed: hash(song_hash + clip.id + round(t*1000)) -> reproducible jitter matching glitch_seed_for_time pattern.\n  # Implementation: split RGB -> np.roll / cv2.warpAffine by (dx, dy) computed from (shift_px, angle + jitter), recombine. G channel stays fixed; R and B shift opposite directions so the aberration reads.\n  # Clamp shift so it never exceeds min(H, W) * 0.1 to keep output readable.\n  # Return new ndarray, never mutate input in-place (keeps the compositor frame-queue invariant intact).\nKeep it pure NumPy (matches the pipeline's dependency floor); fall back to skimage/cv2 only if profiling shows a hot-path win.",
+        "testStrategy": "Frame bit-identical to input when no clip active at t. With one active clip at strength>0: R and B channels shifted by expected pixel count, G channel unchanged, output dtype/shape preserved. Deterministic under fixed song_hash + clip.id + t. Clip with shift_px=0 returns input frame unchanged.",
+        "priority": "medium",
+        "dependencies": [
+          43
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 55,
+        "title": "Implement scanline_tear renderer",
+        "description": "Create scanline_tear.py for horizontal row-offset distortion driven by active SCANLINE_TEAR clips",
+        "details": "pipeline/scanline_tear.py:\ndef apply_scanline_tear(frame: np.ndarray, t: float, clips: list[EffectClip], song_hash: str) -> np.ndarray:\n  # Find active SCANLINE_TEAR clips at t; early-return untouched if none.\n  # Per-clip settings: intensity (0..1, max horizontal offset as fraction of W), band_count (int, number of torn horizontal bands, default 3-6), band_height_px (optional), wrap_mode ('wrap' | 'clamp' | 'black', default 'wrap').\n  # Per-frame seed: hash(song_hash + clip.id + round(t*1000)). Pick band y-positions + per-band dx from RNG; apply np.roll along axis=1 per band.\n  # Accumulate contributions across overlapping clips (later clips stack on earlier). Return new ndarray.\n  # Keep shifts bounded to +/- intensity * W * 0.25 so tears never displace more than a quarter of the frame width.\nReference pattern: pipeline/logo_rim_beams.py deterministic seeding; pipeline/chromatic_aberration.py for the ndarray-in-ndarray-out contract.",
+        "testStrategy": "Frame bit-identical to input when no clip active. With one clip at intensity>0: exactly `band_count` bands shifted horizontally, G/R/B all shifted together (no channel split), output dtype/shape preserved. Deterministic under fixed song_hash + clip.id + t. intensity=0 returns input frame unchanged.",
+        "priority": "medium",
+        "dependencies": [
+          43
+        ],
+        "status": "pending",
+        "subtasks": []
       }
     ],
     "metadata": {
-      "version": "1.0.0",
-      "lastModified": "2026-04-22T17:00:50.019Z",
-      "taskCount": 42,
-      "completedCount": 36,
-      "tags": [
-        "master"
-      ]
+      "created": "2026-04-23T11:19:36.706Z",
+      "updated": "2026-04-23T11:19:36.706Z",
+      "description": "Tasks for master context"
     }
   }
 }

@@ -51,27 +51,33 @@ stacking order and corner anchoring are shared.
 for 12–16 px UI text and distorts stroke weights at the sizes we render,
 so disabling it gives smoother, evenly-weighted letters.
 
-Each glyph is painted with a **layered outer-bloom** so the card stays
-legible over arbitrary backgrounds without looking "stamped twice":
+Each glyph is painted with a **minimal tight edge bloom**: just enough
+dark edge lift to keep the card legible on busy or similar-luminance
+backgrounds, without a wide stamped halo that makes the text feel
+splotchy:
 
-1. **Wide bloom** — `MaskFilter.MakeBlur(kOuter_BlurStyle, σ)` with
-   `σ ≈ size_px * 0.22`, alpha ≈ `0.18`. Far-falloff halo.
-2. **Mid halo** — `σ ≈ size_px * 0.11`, alpha ≈ `0.30`. Mid-range glow.
-3. **Tight edge lift** — `σ ≈ size_px * 0.045`, alpha ≈ `0.55`. Brightest
-   part of the halo, flush against the glyph edge.
-4. **Thin outline** — `Paint.kStroke_Style`, `stroke_width ≈ size_px *
-   0.010`, round joins, in the shadow color at 26 % alpha. Provides
-   crisp edge contrast on busy / similar-luminance backgrounds.
-5. **Fill** — the main glyph pass in `base_color` at the configured
+1. **Tight edge lift** — `MaskFilter.MakeBlur(kOuter_BlurStyle, σ)` with
+   `σ ≈ size_px * 0.022`, alpha ≈ `0.18` (or `0.24` with an explicit
+   shadow colour). Hugs the glyph edge, doesn't bleed more than ~2 %
+   of the cap height.
+2. **Thin outline** — `Paint.kStroke_Style`, `stroke_width ≈ size_px *
+   0.008`, round joins, in the shadow color at 18 % alpha. Provides
+   crisp edge contrast on busy backgrounds.
+3. **Fill** — the main glyph pass in `base_color` at the configured
    `title_opacity`.
 
 The `kOuter_BlurStyle` variant bleeds outward *only*, so the fill stays
-crisp. The three wide-to-narrow passes approximate a Gaussian pyramid —
-the result reads as a single smooth neon-style glow rather than the hard
-"stamped blob" a single-pass `kNormal` halo produces. Sigmas, styles, and
-alphas are looked up defensively so skia-python builds that don't expose
-`MaskFilter.MakeBlur` / `kOuter_BlurStyle` fall back to a plain tint
-instead of crashing the render.
+crisp. The previous three-pass recipe (wide / mid / tight) looked
+"neon" in isolation but dominated when presets used bright shadow
+colours (yellow, cyan) over mid-luminance backgrounds, so the current
+single-pass recipe keeps the card minimal and legible. Sigmas, styles,
+and alphas are looked up defensively so skia-python builds that don't
+expose `MaskFilter.MakeBlur` / `kOuter_BlurStyle` fall back to a plain
+tint instead of crashing the render.
+
+Kinetic typography (`pipeline/kinetic_typography.py`) uses the same
+single-pass recipe for every word for the same reason - the large
+display sizes magnified the wide-halo problem.
 
 ### Stacking order (full compositor pipeline)
 
@@ -167,6 +173,54 @@ swaps the signal driving the pulse, not the way it looks on screen.
 - Resize uses PIL **BILINEAR** instead of LANCZOS: per-frame scale deltas are
   modest and bilinear is ~5–10× faster with no visible quality cost.
 
+## Stability (micro-shake deadzone)
+
+Quiet / "chill" sections of a song still carry low-amplitude wobble in the
+normalised bass envelope (5–15 % of peak). `scale_and_opacity_for_pulse`
+used to map those values linearly to a scale delta, which read on screen
+as the logo **micro-shaking** even when nothing was really happening.
+
+`pipeline/beat_pulse.py::apply_pulse_deadzone(pulse, *, deadzone, soft_width)`
+fixes this with a soft deadzone:
+
+- Inputs `≤ deadzone` (default `0.12`) collapse to `0.0` — the logo is
+  perfectly still.
+- Inputs in `(deadzone, deadzone + soft_width]` (default `0.08`-wide
+  shoulder) are remapped through a classic smoothstep
+  (`x*x*(3 - 2x)`) so motion eases in rather than snapping on.
+- Inputs above the shoulder pass through untouched, so real kicks still
+  reach `1.0` and the existing scale / opacity caps still apply.
+
+`scale_and_opacity_for_pulse` calls the helper before the `strength`
+multiplier, so the gate sits on the *envelope* rather than the visual
+amplitude. Setting `deadzone=0.0` reproduces the legacy linear
+behaviour byte-for-byte.
+
+### Compositor hook-up
+
+`CompositorConfig.logo_motion_stability: float = 1.0` is exposed through
+`OrchestratorInputs.logo_motion_stability` and the Branding accordion's
+**Logo stability (ignore micro-shake)** slider. It linearly scales the
+effective deadzone in two places:
+
+1. The bass-pulse scale/opacity mapping (via
+   `scale_and_opacity_for_pulse(..., deadzone=...)`).
+2. The snare-squeeze gate in `_render_compositor_frame` — the same
+   `apply_pulse_deadzone` is applied to the snare value before the
+   `max(0.68, 1.0 - ...)` dip, so a quiet mid-band ripple no longer
+   squishes the logo.
+
+Tuning intent:
+
+- `0.00` - legacy behaviour; every envelope sample moves the logo.
+- `1.00` - default; ~12 % deadzone hides chill-section wobble while
+  leaving kicks untouched.
+- up to `2.00` - aggressive; useful for lo-fi / ambient renders where
+  you want a mostly-static logo that only reacts to genuine peaks.
+
+The slider is percentage-based in the UI (`0-200 %`, default `100 %`)
+and maps to the raw `0.0-2.0` scalar in `_build_render_inputs`.
+
 ## Tuning
 
 - **Track won't pulse / weak kicks.** Raise *Bass sensitivity* first
@@ -210,6 +264,12 @@ The `Branding` tab exposes:
   / tear on RMS jumps.
 - **Impact sensitivity** slider `0.25 → 3.0` (`1.0` default) — only
   meaningful when glitch > 0 %.
+- **Rim beams on drops & snare rolls** (checkbox, default on) — clean
+  radial rays from the rim on drops + snare lead-ins, rate-limited to
+  ~1 burst per 10 s. See [`logo-rim-beams.md`](logo-rim-beams.md).
+- **Logo stability (ignore micro-shake)** slider `0 → 200 %` (`100 %`
+  default) — scales the soft deadzone on the bass pulse + snare squeeze
+  so quiet sections don't micro-shake the logo.
 - **Burn Artist — Title onto every frame** (checkbox, default on).
 - **Title position** (9-point grid dropdown).
 - **Title size** (`Small / Medium / Large`).
@@ -259,6 +319,8 @@ Fields on `OrchestratorInputs` (all optional, sensible defaults):
 | `logo_snare_squeeze_strength` | `0.40` | Max inward scale dip on snares (0 = off; 1.0 = slider max). |
 | `logo_impact_glitch_strength` | `0.45` | RGB-split / tear amplitude on RMS jumps (0 = off). |
 | `logo_impact_sensitivity` | `1.0` | Scales the impact envelope before clipping. |
+| `logo_motion_stability` | `1.0` | Multiplier on the pulse/snare soft deadzone (0 = legacy, 1 = default, 2 = extra stable). |
+| `rim_beams_enabled` | `True` | Master switch for rim-light beams on drops + snare lead-ins; see [`logo-rim-beams.md`](logo-rim-beams.md). |
 | `show_title` | `True` | Master switch for the burned-in card. |
 | `title_position` | `"top-center"` | Grid cell for the title card. |
 | `title_size` | `"medium"` | `small / medium / large`. |
