@@ -28,24 +28,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-import soundfile as sf
-
 from pipeline.lyrics_aligner import (
     LYRICS_ALIGNED_JSON_NAME,
     LYRICS_ALIGNED_SCHEMA_VERSION,
     _lyrics_cache_key,
 )
+from pipeline._waveform_peaks import DEFAULT_PEAK_WIDTH, compute_peaks
 
 LOGGER = logging.getLogger(__name__)
-
-# Width of the peaks array the editor renders. ~1600 is plenty for a 4 min
-# song at 1080p (0.15 s per pixel). Larger means smoother zoom, bigger
-# payload embedded in the HTML.
-DEFAULT_PEAK_WIDTH = 1600
-# Minimum number of samples per peak bucket. When the audio is short we
-# cap the effective width so buckets don't collapse to <1 sample each.
-_MIN_SAMPLES_PER_BUCKET = 4
 
 
 @dataclass(frozen=True)
@@ -67,55 +57,6 @@ class EditorState:
     # to match, without having to listen through the whole song. Empty
     # list for older caches that predate whisper-words persistence.
     whisper_words: list[dict[str, Any]] = field(default_factory=list)
-
-
-# ---------------------------------------------------------------------------
-# Peaks
-# ---------------------------------------------------------------------------
-
-
-def compute_peaks(
-    wav_path: Path | str, target_width: int = DEFAULT_PEAK_WIDTH
-) -> tuple[list[tuple[float, float]], int, float]:
-    """Return ``(peaks, sample_rate, duration_sec)`` for a WAV file.
-
-    ``peaks`` is a list of ``(min, max)`` pairs, each in ``[-1, 1]``, with
-    exactly ``len(peaks)`` columns. The browser side draws them as
-    vertical lines from ``min`` to ``max``. Mono-mixes stereo on load so
-    the editor doesn't need to handle channel layout.
-    """
-    path = Path(wav_path)
-    if not path.is_file():
-        raise FileNotFoundError(f"WAV missing: {path}")
-    y, sr = sf.read(str(path), always_2d=False)
-    if y.ndim > 1:
-        y = np.mean(y, axis=1)
-    y = np.asarray(y, dtype=np.float32)
-    n = int(y.shape[0])
-    if n == 0:
-        return [], int(sr), 0.0
-
-    # Pick effective width so each bucket has at least _MIN_SAMPLES_PER_BUCKET.
-    max_width = max(1, n // _MIN_SAMPLES_PER_BUCKET)
-    width = int(max(1, min(target_width, max_width)))
-    # Normalise to the signal's own peak so quiet songs still read on screen.
-    peak_abs = float(np.max(np.abs(y))) if y.size else 0.0
-    if peak_abs < 1e-6:
-        peak_abs = 1.0
-
-    bucket = np.linspace(0, n, num=width + 1, dtype=np.int64)
-    peaks: list[tuple[float, float]] = []
-    for i in range(width):
-        lo, hi = int(bucket[i]), int(bucket[i + 1])
-        if hi <= lo:
-            peaks.append((0.0, 0.0))
-            continue
-        slice_ = y[lo:hi]
-        mn = float(np.min(slice_)) / peak_abs
-        mx = float(np.max(slice_)) / peak_abs
-        peaks.append((mn, mx))
-    duration = float(n) / float(sr)
-    return peaks, int(sr), duration
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +334,8 @@ _EDITOR_CSS = """
     background: #0b1220; border: 1px solid #1f2937; border-radius: 6px;
     overflow: hidden; user-select: none; }
   .mv-editor .mv-waveform { display: block; width: 100%; height: 120px; }
+  .mv-editor .mv-scroller, .mv-editor .mv-stage, .mv-editor .mv-words,
+  .mv-editor .mv-word { -webkit-user-select: none; user-select: none; }
   .mv-editor .mv-words { position: relative; width: 100%; height: 140px;
     background: #111827; border-top: 1px solid #1f2937; overflow: hidden; }
   .mv-editor .mv-word { position: absolute; top: 20px; height: 40px;
@@ -440,8 +383,8 @@ _EDITOR_CSS = """
   .mv-editor .mv-audio { display: block; width: 100%; margin-top: 6px; }
   .mv-editor .mv-help { color: #9ca3af; font-size: 11px; margin-top: 6px;
     line-height: 1.4; }
-  .mv-editor kbd { background: #1f2937; border: 1px solid #374151;
-    border-radius: 3px; padding: 1px 5px; font-size: 11px; }
+  .mv-editor kbd { background: #1f2937; color: #f3f4f6; border: 1px solid #4b5563;
+    border-radius: 3px; padding: 1px 5px; font-size: 11px; font-weight: 500; }
 </style>
 """.strip()
 
@@ -963,6 +906,25 @@ _EDITOR_JS = r"""
     return bandEl;
   }
 
+  // Word rows in the lyrics editor are laid out via ``top = 12 + (line_idx
+  // % 3) * 44`` inside the ``.mv-words`` container (3 alternating rows).
+  // When a rubber-band drag starts inside that container we scope the
+  // selection + visual band to whichever row the pointer went down over,
+  // so users can marquee-select just the words on a single row. Starting
+  // the drag over the waveform keeps the legacy all-row behaviour.
+  const MV_ROW_HEIGHT_PX = 44;
+
+  function _rowFromPointer(ev) {
+    if (!words) return null;
+    const wr = words.getBoundingClientRect();
+    const y = ev.clientY - wr.top;
+    if (y < 0 || y >= wr.height) return null;
+    const row = Math.floor(y / MV_ROW_HEIGHT_PX);
+    if (row < 0) return 0;
+    if (row > 2) return 2;
+    return row;
+  }
+
   stage.addEventListener("pointerdown", (ev) => {
     // Words and their handles call stopPropagation in onWordPointerDown,
     // so getting here means the click began on empty timeline / waveform.
@@ -977,16 +939,31 @@ _EDITOR_JS = r"""
     const rect = stage.getBoundingClientRect();
     const additive = ev.shiftKey || ev.ctrlKey || ev.metaKey;
     if (!additive) { clearSelection(); }
+    const row = _rowFromPointer(ev);
     band = {
       startX: ev.clientX - rect.left,
       startClientX: ev.clientX,
       origSelected: new Set(selected),
       moved: false,
+      row: row,
     };
     const el = ensureBandEl();
     el.style.display = "block";
     el.style.left = band.startX + "px";
     el.style.width = "0px";
+    // Row-scoped bands visually clip to that row only so the user sees
+    // that the drag won't pick up words on neighbouring rows.
+    if (row !== null && words) {
+      const wr = words.getBoundingClientRect();
+      const top = (wr.top - rect.top) + row * MV_ROW_HEIGHT_PX;
+      el.style.top = top + "px";
+      el.style.bottom = "auto";
+      el.style.height = MV_ROW_HEIGHT_PX + "px";
+    } else {
+      el.style.top = "0";
+      el.style.bottom = "0";
+      el.style.height = "";
+    }
     document.addEventListener("pointermove", onBandMove);
     document.addEventListener("pointerup", onBandUp, { once: true });
   });
@@ -1007,6 +984,7 @@ _EDITOR_JS = r"""
     // actually *unselects* words the user dragged away from.
     const newSel = new Set(band.origSelected);
     state.words.forEach((w, i) => {
+      if (band.row !== null && ((w.line_idx || 0) % 3) !== band.row) return;
       const cx = secondsToPx((w.t_start + w.t_end) / 2);
       if (cx >= left && cx <= right) newSel.add(i);
     });
@@ -1017,7 +995,14 @@ _EDITOR_JS = r"""
 
   function onBandUp(_ev) {
     if (!band) return;
-    if (bandEl) bandEl.style.display = "none";
+    if (bandEl) {
+      bandEl.style.display = "none";
+      // Reset inline row-scoping so the next waveform-scoped drag renders
+      // full-height again.
+      bandEl.style.top = "0";
+      bandEl.style.bottom = "0";
+      bandEl.style.height = "";
+    }
     if (band.moved) { suppressNextStageClick = true; }
     band = null;
     document.removeEventListener("pointermove", onBandMove);

@@ -41,6 +41,13 @@ app.
      tab). **+** / **−** → zoom in / out. **Fit** → zoom to fit.
      **Esc** → clear the selection. **Ctrl/⌘+A** → select all words.
 
+**Browser text selection** — The scroll area, stage, word track, and each
+word bar set CSS `user-select: none` (with `-webkit-user-select` where
+needed) so rubber-band and drag operations do not show the native blue
+text-selection highlight over the word labels. The help line’s `<kbd>`
+key caps use a light `color` on a dark key background so shortcut names
+stay readable in both light and dark Gradio themes.
+
 ### Whisper ghost-text overlay
 
 Faint italic labels floating above the waveform show **what whisper

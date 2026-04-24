@@ -19,8 +19,22 @@
 - `docs/technical/musical-events.md` - Schema v2 drop detection, build-up tension series, post-drop afterglow, and low/mid/high band transient envelopes for reactive shaders.
 - `docs/technical/spectrum-renderer-ffmpeg.md` - M1 spectrum bars, `bgr24` ffmpeg pipe, NVENC mux with `original.wav`, run outputs and CI encoder overrides.
 - `docs/technical/lyrics-aligner.md` - WhisperX large-v3 word timings + Needleman-Wunsch alignment of pasted lyrics; inline `[m:ss]` anchors, typed `--- tag` markers, Silero VAD tighten, vocal-onset snap, and `lyrics.aligned.json` v3 cache (with per-word CTC score).
-- `docs/technical/lyrics-timeline-editor.md` - Visual per-word timeline editor (Gradio tab + vanilla-JS waveform / drag handles) that writes `manually_edited: true` to the aligned JSON so re-aligns don't clobber user corrections.
+- `docs/technical/lyrics-timeline-editor.md` - Visual per-word timeline editor (Gradio tab + vanilla-JS waveform / drag handles) that writes `manually_edited: true` to the aligned JSON so re-aligns don't clobber user corrections; `user-select: none` on word UI and high-contrast help `kbd` styles.
+- `docs/technical/waveform-peaks.md` - Shared `compute_peaks` WAV→min/max column downsampling for canvas waveforms (`pipeline/_waveform_peaks.py`).
+- `docs/technical/effects-timeline.md` - `EffectKind` / `EffectClip` / `EffectsTimeline`, per-kind settings allowlist, and atomic `effects_timeline.json` load/save under the song cache.
+- `docs/technical/effects-editor-backend.md` - `load_editor_state` / `save_edited_timeline` / `bake_auto_schedule` in `pipeline/effects_editor.py` (peaks, ghost auto hints, 20 ms dedupe when baking).
+- `docs/technical/effects-timeline-editor.md` - `build_editor_html` in `pipeline/effects_editor.py`: self-contained CSS + markup + inline JS (gr.HTML), 7 colour-coded rows, master reactivity slider, per-clip gear panel bound to `EFFECT_SETTINGS_KEYS`, `window._musicvids_effects_state` round-trip, number keys 1–7 to add clips at the playhead, `user-select` on clips and help `kbd` contrast.
+- `docs/technical/effects-timeline-renderers.md` - Umbrella: frame post-pass renderers vs logo-path kinds; compositor order; links to per-renderer docs.
+- `docs/technical/effects-timeline-test-suite.md` - Which `tests/test_effects_*.py` and compositor tests cover the effects-timeline stack; how to run `unittest`.
+- `docs/technical/effects-timeline-gradio-tab.md` - Gradio **Effects timeline** tab in `app.py`: handler wiring, audio URL precedence, save `js=` pattern, clear-all semantics, and smoke test; orchestrator hook-up is out of scope here.
+- `docs/technical/screen-shake-renderer.md` - `shake_offset(t, clips, song_hash)` for deterministic `SCREEN_SHAKE` pixel offsets from timeline clips (`pipeline/screen_shake.py`).
+- `docs/technical/chromatic-aberration-renderer.md` - `apply_chromatic_aberration(frame, t, clips, song_hash)` for full-frame R/B channel split from `CHROMATIC_ABERRATION` clips (`pipeline/chromatic_aberration.py`).
+- `docs/technical/scanline-tear-renderer.md` - `apply_scanline_tear(frame, t, clips, song_hash)` for horizontal band shifts from `SCANLINE_TEAR` clips (`pipeline/scanline_tear.py`).
+- `docs/technical/color-invert-renderer.md` - `invert_mix(t, clips)` for a [0, 1] lerp weight toward a colour-inverted frame from `COLOR_INVERT` timeline clips (`pipeline/color_invert.py`).
+- `docs/technical/zoom-punch-renderer.md` - `zoom_scale(t, clips)` for a whole-frame punch-in scale factor from `ZOOM_PUNCH` timeline clips (`pipeline/zoom_punch.py`).
+- `docs/technical/effects-timeline-compositor.md` - Compositor integration of the effects timeline: fixed-order post-stack frame pass, user BEAM / LOGO_GLITCH merging, `auto_reactivity_master` scaling of the auto envelopes.
 - `docs/technical/pipeline-orchestrator.md` - Root `orchestrator.py`: stage order, cache-key rules, progress mapping, Gradio wiring.
+- `docs/technical/orchestrator-effects-timeline-wiring.md` - Preview/full render: load `effects_timeline.json` into `CompositorConfig`, `OrchestratorInputs` flags, merged auto-reactivity master.
 - `docs/technical/reactive-shader-layer.md` - Offscreen moderngl fragment-shader pass, bundled GLSL shaders, `analysis.json`→uniforms mapping (`onset_env`, `bar_phase`, `build_tension` samplers + compositor-injected `bass_hit`/`transient_*`/`drop_hold`), and the per-uniform shader authoring guide.
 - `docs/technical/reactive-composite-and-gradio-preview.md` - Reactive pass blended over RGB background in GLSL, strict shader resolution, intensity, and Gradio one-frame preview.
 - `docs/technical/visual-style-presets.md` - Preset YAML schema, `config` registry validation, `builtin_shaders` allowlist, and Gradio preset auto-fill.
