@@ -501,6 +501,9 @@ def _interp_fill(values: list[float | None]) -> None:
 
 
 def _import_whisperx() -> Any:
+    from pipeline.torch_checkpoint_compat import apply_whisperx_torch_load_compat
+
+    apply_whisperx_torch_load_compat()
     try:
         import whisperx  # type: ignore
 

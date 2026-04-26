@@ -117,6 +117,12 @@ python -m app
 
 Open the local URL printed in the console (default port **7860**).
 
+## Troubleshooting
+
+- **Step-by-step (Windows, after PyTorch / lyrics issues):** [docs/technical/windows-venv-recovery-guide.md](docs/technical/windows-venv-recovery-guide.md) — `git pull`, clean `torch`/`torchvision`/`torchaudio` reinstall, extras, test **Align lyrics**.
+- **Align lyrics** fails with `Weights only load failed` / `omegaconf` / `ListConfig`: PyTorch **2.6+** defaults `torch.load` to a stricter mode that breaks some WhisperX/pyannote checkpoints. **Prefer updating Glitchframe** to a revision that includes `pipeline/torch_checkpoint_compat.py` and keeping a **current** `torch` / `torchvision` / `torchaudio` trio from the same CUDA index ([Install §2](#2-pytorch-with-cuda-recommended)). Downgrading only `torch` to “fix” this often causes the cuDNN mismatch below.
+- **`Could not locate cudnn_ops_infer64_8.dll`:** The faster-whisper / WhisperX stack on Windows expects **cuDNN 8**-named DLLs. Newer PyTorch wheels may ship **`cudnn_ops_infer64_9.dll`** only, or a partial reinstall left mismatched packages. **Fix (pick one):** (1) Reinstall a **matching trio** in one go: `python -m pip uninstall torch torchvision torchaudio` then `python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124` (use the same index you rely on for CUDA), then reinstall `whisperx` if needed. (2) Try pinning **`ctranslate2==4.4.0`** (known workaround when DLL names disagree; see [whisperX#899](https://github.com/m-bain/whisperX/issues/899)). (3) Copy the `bin` DLLs from [NVIDIA cuDNN 8.9.x for CUDA 12](https://developer.nvidia.com/rdp/cudnn-archive) into your venv’s `Lib\site-packages\torch\lib` (or the `ctranslate2` package folder) — last resort. Long term, **avoid** mixing an old `torch` with a newer `torchaudio` / `whisperx`.
+
 ## Development
 
 - Smoke test config/presets: `python config.py`

@@ -13,6 +13,7 @@
 ## Technical Docs
 
 - `docs/technical/project-setup-and-config.md` - Repo layout, pyproject/requirements, config paths and preset registry.
+- `docs/technical/windows-venv-recovery-guide.md` - Windows: step-by-step venv recovery after PyTorch / WhisperX lyrics-align issues (weights_only, cuDNN DLL mismatches).
 - `docs/technical/gradio-ui.md` - Gradio `app.py` tabbed UI, inputs, queue, placeholder actions, and run log.
 - `docs/technical/audio-ingest-and-cache.md` - Upload ingest, `cache/<hash>/` WAV artifacts, and Gradio waveform preview.
 - `docs/technical/audio-analyzer.md` - Beat/onset/spectrum/RMS/segment extraction, optional demucs vocal stem, and `analysis.json` cache.

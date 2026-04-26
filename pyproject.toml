@@ -5,6 +5,7 @@ description = "Local music video generator (Glitchframe)"
 requires-python = ">=3.11"
 dependencies = [
     "gradio>=4.0,<5",
+    # Lower bound only — pip may install 2.6+; WhisperX/pyannote need a compat shim (see pipeline/torch_checkpoint_compat.py) or torch<2.6.
     "torch>=2.0.0",
     "diffusers>=0.27.0",
     "librosa>=0.10.0",
