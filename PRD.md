@@ -1,4 +1,4 @@
-# Product Requirements Document — "MusicVids" Local Video Generator
+# Product Requirements Document — "Glitchframe" Local Video Generator
 
 Version: 0.1 (draft)
 Owner: Single-operator / personal tool
@@ -147,7 +147,7 @@ Results cached in `cache/<song_hash>/background/`.
 - **Thumbnail**: pick the frame at the first chorus downbeat (or loudest 1-s window), overlay a big-text treatment of `Artist — Title` using the same typography preset. Save as `thumbnail.png` 1920×1080.
 - **metadata.txt**:
   - Title: `{Artist} — {Title} [Official Visualizer]`
-  - Description: song info + optional lyric block + "Generated with MusicVids" line.
+  - Description: song info + optional lyric block + "Generated with Glitchframe" line.
   - Tags: genre, artist, title, "music visualizer", plus tags derived from preset.
   - Chapters (if instrumental sections detected): `00:00 Intro`, `00:32 Verse 1`, etc.
 
@@ -169,7 +169,7 @@ Results cached in `cache/<song_hash>/background/`.
 ## 5. Project layout
 
 ```
-musicvids/
+glitchframe/
 ├── app.py                  # Gradio entrypoint
 ├── config.py               # Defaults, paths, preset registry
 ├── orchestrator.py         # Pipeline coordinator

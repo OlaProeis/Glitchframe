@@ -13,7 +13,7 @@ Feature: build a **YouTube-oriented** `metadata.txt` beside `output.mp4` under `
 
 UTF-8 text, parsing-friendly:
 
-1. First line: `musicvids_metadata_version: 1`
+1. First line: `glitchframe_metadata_version: 1` (legacy files may use `musicvids_metadata_version:`)
 2. Sections with headers `## TITLE`, `## DESCRIPTION`, `## CHAPTERS`, `## TAGS`
 
 **Title** follows `{Artist} — {Title} [Official Visualizer]` with fallbacks if fields are missing.

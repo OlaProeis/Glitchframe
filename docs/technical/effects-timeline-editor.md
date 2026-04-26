@@ -1,6 +1,6 @@
 # Effects timeline editor (HTML / JS)
 
-Per-clip visual editor for `cache/<hash>/effects_timeline.json`. Mirrors the lyrics timeline editor (`docs/technical/lyrics-timeline-editor.md`): a single self-contained `gr.HTML` blob with inline vanilla JS; state round-trips through `window._musicvids_effects_state`.
+Per-clip visual editor for `cache/<hash>/effects_timeline.json`. Mirrors the lyrics timeline editor (`docs/technical/lyrics-timeline-editor.md`): a single self-contained `gr.HTML` blob with inline vanilla JS; state round-trips through `window._glitchframe_effects_state`.
 
 This doc covers only the **HTML factory** (`build_editor_html`). The data model lives in `docs/technical/effects-timeline.md`; state load / save / bake in `docs/technical/effects-editor-backend.md`. The **Gradio tab** that injects the HTML is **`Effects timeline` in `app.py`**, directly after **Lyrics timeline**: `Load timeline` / `Save edits` (single-step `js=` payload, same pattern as the lyrics save) / `Bake auto events` / `Clear all`. Audio uses `analysis_mono.wav` with fallback to `original.wav` via `/_file=` URLs under `allowed_paths` (the song cache).
 
@@ -13,7 +13,7 @@ html = build_editor_html(
     load_editor_state(cache_dir),
     audio_url="/file=/abs/path/to/analysis_mono.wav",
     container_id="mv_fx_root",
-    state_js_var="_musicvids_effects_state",  # default
+    state_js_var="_glitchframe_effects_state",  # default
 )
 ```
 
@@ -85,7 +85,7 @@ The header canvas renders `state.peaks` (mono min/max pairs, default `DEFAULT_PE
 
 ## State round-trip
 
-`window[state_js_var]` (default: `_musicvids_effects_state`) holds the full in-memory state, not just the persisted subset. On every mutation (add / move / resize / delete / settings edit / auto toggle / master slider), the JS updates the same object in place. The Gradio Save button serialises it with `JSON.stringify(window._musicvids_effects_state)` and posts to `save_edited_timeline`, which strips UI-only fields (`peaks`, `ghost_events`, `duration`, `sample_rate`, `kind_*`, `settings_keys`) and keeps only `schema_version`, `song_hash`, `auto_reactivity_master`, `auto_enabled`, `clips`.
+`window[state_js_var]` (default: `_glitchframe_effects_state`) holds the full in-memory state, not just the persisted subset. On every mutation (add / move / resize / delete / settings edit / auto toggle / master slider), the JS updates the same object in place. The Gradio Save button serialises it with `JSON.stringify(window._glitchframe_effects_state)` and posts to `save_edited_timeline`, which strips UI-only fields (`peaks`, `ghost_events`, `duration`, `sample_rate`, `kind_*`, `settings_keys`) and keeps only `schema_version`, `song_hash`, `auto_reactivity_master`, `auto_enabled`, `clips`.
 
 `song_hash` in the payload is advisory; the save handler always takes the canonical hash from the cache directory name.
 

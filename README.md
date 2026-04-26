@@ -1,11 +1,50 @@
-# MusicVids
+# Glitchframe
 
-Local, GPU-accelerated **music video** generator: upload a track, analyze audio, align lyrics, style backgrounds (SDXL stills, Ken Burns, optional AnimateDiff), composite reactive shaders and kinetic type, and encode with **ffmpeg** (NVENC on NVIDIA GPUs by default).
+Local, GPU-accelerated **music video** generator: upload a track, analyze it, align lyrics, generate stylized backgrounds, composite reactive shaders and kinetic type, and encode with **ffmpeg** (NVENC on NVIDIA GPUs by default).
+
+**Examples (progress log, newest = current state):** [voidcat on YouTube](https://www.youtube.com/@voidcatalog)
 
 - **UI:** [Gradio](https://www.gradio.app/) — run `python -m app` and open the URL shown (default [http://127.0.0.1:7860](http://127.0.0.1:7860)).
-- **Docs:** see [`docs/index.md`](docs/index.md) and [`docs/technical/project-setup-and-config.md`](docs/technical/project-setup-and-config.md) for layout, config, and optional features.
+- **Deep dive:** [`docs/index.md`](docs/index.md) and [`docs/technical/project-setup-and-config.md`](docs/technical/project-setup-and-config.md).
 
-**License:** [MIT](LICENSE)
+**License:** [MIT](LICENSE) · **Repository:** [github.com/OlaProeis/Glitchframe](https://github.com/OlaProeis/Glitchframe)
+
+## Features (overview)
+
+- **Ingest and analysis:** Per-song cache, waveform preview, beat/onset/spectrum features, optional **Demucs** vocal stem, segment/chapter hints.
+- **Lyrics:** **WhisperX** word timings plus alignment to pasted lyrics; visual per-word **timeline editor** for fixes (saved to cache so re-runs do not clobber your edits).
+- **Backgrounds:** **SDXL** keyframe stills, **Ken Burns** on stills, optional **AnimateDiff** motion (VRAM-heavy; see *Known limitations*).
+- **Look and motion:** GLSL **reactive shaders** (audio-reactive passes), **Skia** kinetic typography, title/thumbnail text, optional **logo** placement with rim glow, beams, and branding-driven effects.
+- **Effects timeline:** Per-clip post effects (e.g. screen shake, chromatic aberration, colour invert, zoom punch, scanline tear) with an in-UI editor and baked JSON under the song cache.
+- **Output:** Full-length render and **10 s preview** (loudest window), `output.mp4` + `thumbnail.png` + YouTube-oriented **`metadata.txt`**, with NVENC by default when available.
+
+## Screenshots
+
+**Lyrics timeline** (per-word alignment and editing on the vocal waveform):
+
+![Glitchframe lyrics timeline editor](screenshots/vocal-timeline.png)
+
+**Effects timeline** (clip-based post effects with rows, playhead, and per-clip controls):
+
+![Glitchframe effects timeline editor](screenshots/effect-timeline.png)
+
+## Known limitations (read before you depend on it)
+
+- **Vocal / lyrics matching** can be **unreliable** in places. Treat alignment as a draft: use the lyrics timeline and listen back **before** you commit time to a full render. Improving this area is a priority; do not assume perfect lip-sync or line timing yet.
+- **Rendering is effectively single-threaded** for the heavy pipeline. Full videos often take **on the order of 1–2+ hours** (sometimes more), depending on preset, length, resolution, and GPU. Plan batch work accordingly.
+- **AnimateDiff “loops” (default in relevant presets)** is **very VRAM-hungry**: plan for **about 20 GB VRAM** on the GPU. With less memory, expect **extreme slowness, swapping, or failed runs**. Prefer SDXL stills or Ken Burns if you are VRAM-limited.
+- The app is under active development; UI labels and edge cases are still being hardened.
+
+## Future (from project backlog)
+
+The following is a short, user-facing summary of work **not yet done** (also tracked in Taskmaster as `pending` / `deferred` in [`.taskmaster/tasks/tasks.json`](.taskmaster/tasks/tasks.json)):
+
+- **Unify “auto” effects with the timeline** — one control surface: analyser-driven glitch, beams, and related FX should not stack with the Effects timeline in confusing ways; timeline becomes authoritative where intended (*pending*).
+- **Faster preview backgrounds** — generate SDXL/AnimateDiff/Ken Burns assets only for the 10 s preview window (plus padding), then fill the rest on full render, with clearer cache keys so preview is much cheaper than today (*deferred*).
+- **Bass-driven logo pulse** — optional mode where logo motion follows low-frequency energy / kicks instead of a generic beat grid, with tunable sensitivity (*deferred*).
+- **Overnight / multi-song queue** — batch several full renders (CLI or Gradio) with stable paths and isolated failures (*deferred*).
+- **Single primary “export” affordance** — one obvious control that runs the full pipeline, while keeping optional Analyze/Align as precache steps (*deferred*).
+- **Timestamped section headers in lyrics** — lines like `[Verse 1 0:12]` or `[Chorus 1:00]` that set both a section break and a coarse time anchor, to reduce manual `[m:ss]` busywork (*deferred*).
 
 ## Requirements
 
@@ -19,12 +58,12 @@ Local, GPU-accelerated **music video** generator: upload a track, analyze audio,
 ### 1. Clone and virtualenv
 
 ```bash
-git clone https://github.com/YOUR_ORG/MusicVids.git
-cd MusicVids
+git clone https://github.com/OlaProeis/Glitchframe.git
+cd Glitchframe
 python -m venv .venv
 ```
 
-Use your real GitHub URL after you create the repository. Then activate the venv:
+Then activate the venv:
 
 - **Windows (cmd):** `.venv\Scripts\activate.bat`
 - **Windows (PowerShell):** `.venv\Scripts\Activate.ps1`
@@ -68,7 +107,7 @@ If after installing `whisperx` CUDA **disappears** from PyTorch, reinstall the C
 copy .env.example .env
 ```
 
-On Unix: `cp .env.example .env` — then edit `.env` if you need custom `MUSICVIDS_*` paths or ffmpeg codec overrides. The sample file also lists optional API keys for **Taskmaster** / dev tooling, not for core MusicVids.
+On Unix: `cp .env.example .env` — then edit `.env` if you need custom **`GLITCHFRAME_*`** paths or ffmpeg codec overrides. Legacy **`MUSICVIDS_*`** names are still read for the same settings. The sample file also lists optional API keys for **Taskmaster** / dev tooling, not for core Glitchframe.
 
 ## Run
 
@@ -83,6 +122,8 @@ Open the local URL printed in the console (default port **7860**).
 - Smoke test config/presets: `python config.py`
 - Tests (after `pip install -e ".[dev]"`): `pytest`
 - In this repo, `uv sync` / `uv run pytest` is also used; see `ai-context.md` for maintainer notes.
+
+**AI-assisted development:** Much of this codebase was built with AI coding assistants and planning tools (the same day-to-day workflow as the [Ferrite](https://github.com/OlaProeis/Ferrite) project). For a concrete write-up of that process—context files, handover notes, and how tasks and reviews are organized—see Ferrite’s [AI development workflow](https://github.com/OlaProeis/Ferrite/blob/master/docs/ai-workflow/ai-development-workflow.md).
 
 ## Contributing
 

@@ -20,7 +20,19 @@ class TestResolveFfmpeg(unittest.TestCase):
     def test_env_override_wins(self) -> None:
         with mock.patch.dict(
             os.environ,
-            {"MUSICVIDS_FFMPEG": __file__},  # a real file, good enough for existence
+            {"GLITCHFRAME_FFMPEG": __file__},  # a real file, good enough for existence
+            clear=False,
+        ):
+            self.assertEqual(ffmpeg_tools.resolve_ffmpeg(), __file__)
+
+    def test_glitchframe_ffmpeg_wins_over_legacy_musicvids(self) -> None:
+        other = str(Path(__file__).parent / "other-ffmpeg.exe")
+        with mock.patch.dict(
+            os.environ,
+            {
+                "GLITCHFRAME_FFMPEG": __file__,
+                "MUSICVIDS_FFMPEG": other,
+            },
             clear=False,
         ):
             self.assertEqual(ffmpeg_tools.resolve_ffmpeg(), __file__)
@@ -28,7 +40,7 @@ class TestResolveFfmpeg(unittest.TestCase):
     def test_env_override_missing_file_falls_through_to_path(self) -> None:
         missing = str(Path(__file__).parent / "definitely-not-a-file.xyz")
         with mock.patch.dict(
-            os.environ, {"MUSICVIDS_FFMPEG": missing}, clear=False
+            os.environ, {"GLITCHFRAME_FFMPEG": missing}, clear=False
         ), mock.patch(
             "pipeline.ffmpeg_tools.shutil.which", return_value="/fake/path/ffmpeg"
         ):
@@ -36,6 +48,7 @@ class TestResolveFfmpeg(unittest.TestCase):
 
     def test_path_lookup_used_when_no_env_override(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=False) as env:
+            env.pop("GLITCHFRAME_FFMPEG", None)
             env.pop("MUSICVIDS_FFMPEG", None)
             with mock.patch(
                 "pipeline.ffmpeg_tools.shutil.which",
@@ -47,6 +60,7 @@ class TestResolveFfmpeg(unittest.TestCase):
         # Fake a windows-style candidate dir containing ffmpeg.exe (or posix name)
         # so we exercise the fallback without caring about the host OS.
         with mock.patch.dict(os.environ, {}, clear=False) as env:
+            env.pop("GLITCHFRAME_FFMPEG", None)
             env.pop("MUSICVIDS_FFMPEG", None)
             with mock.patch(
                 "pipeline.ffmpeg_tools.shutil.which", return_value=None
@@ -62,7 +76,9 @@ class TestResolveFfmpeg(unittest.TestCase):
 
     def test_require_raises_when_missing(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=False) as env:
+            env.pop("GLITCHFRAME_FFMPEG", None)
             env.pop("MUSICVIDS_FFMPEG", None)
+            env.pop("GLITCHFRAME_FFPROBE", None)
             env.pop("MUSICVIDS_FFPROBE", None)
             with mock.patch(
                 "pipeline.ffmpeg_tools.shutil.which", return_value=None
@@ -71,7 +87,7 @@ class TestResolveFfmpeg(unittest.TestCase):
             ):
                 with self.assertRaises(RuntimeError) as cm:
                     ffmpeg_tools.require_ffmpeg()
-                self.assertIn("MUSICVIDS_FFMPEG", str(cm.exception))
+                self.assertIn("GLITCHFRAME_FFMPEG", str(cm.exception))
 
     def test_result_is_cached(self) -> None:
         with mock.patch(

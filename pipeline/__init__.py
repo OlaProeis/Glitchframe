@@ -1,1 +1,1 @@
-"""MusicVids processing pipeline modules."""
+"""Glitchframe processing pipeline modules."""

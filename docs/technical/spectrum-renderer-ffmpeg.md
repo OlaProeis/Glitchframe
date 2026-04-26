@@ -10,7 +10,7 @@ End-to-end **1080p30** render: solid background, **8-band spectrum bars** from `
 ## Run outputs
 
 - **`config.new_run_id(song_hash=...)`** — UTC timestamp plus short song hash (or random hex); used when `run_id` is omitted.
-- Video path: **`outputs/<run_id>/output.mp4`** (`OUTPUTS_DIR` configurable via `MUSICVIDS_OUTPUTS_DIR`).
+- Video path: **`outputs/<run_id>/output.mp4`** (`OUTPUTS_DIR` configurable via `GLITCHFRAME_OUTPUTS_DIR`, legacy `MUSICVIDS_OUTPUTS_DIR`).
 
 ## Spectrum and timing
 
@@ -21,7 +21,7 @@ End-to-end **1080p30** render: solid background, **8-band spectrum bars** from `
 ## ffmpeg
 
 - Default video codec: chosen by `pipeline.ffmpeg_tools.select_video_codec()`. Preference is **`h264_nvenc`** (`-preset p5 -rc vbr -cq 19 -b:v 12M`); when an explicit codec isn't forced, the helper runs a tiny 1-frame `lavfi` encode to confirm NVENC actually opens on the local machine (ffmpeg ≥ 8.x requires NVIDIA driver **≥ 570** — older drivers are auto-detected and we transparently fall back to `libx264 -preset medium -crf 23`). Audio is **AAC 192k**; muxed with **`-shortest`**.
-- **Non-NVENC / CI / forced fallback:** set **`MUSICVIDS_FFMPEG_VIDEO_CODEC=libx264`** (or any other encoder string) to skip the probe entirely. Use **`MUSICVIDS_FFMPEG_VIDEO_ARGS`** for extra `-c:v` flags. See `.env.example`.
+- **Non-NVENC / CI / forced fallback:** set **`GLITCHFRAME_FFMPEG_VIDEO_CODEC=libx264`** (or legacy `MUSICVIDS_FFMPEG_VIDEO_CODEC`, or any other encoder string) to skip the probe entirely. Use **`GLITCHFRAME_FFMPEG_VIDEO_ARGS`** (or legacy `MUSICVIDS_FFMPEG_VIDEO_ARGS`) for extra `-c:v` flags. See `.env.example`.
 
 ## Errors
 

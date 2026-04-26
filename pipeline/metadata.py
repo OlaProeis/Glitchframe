@@ -167,7 +167,7 @@ def build_description_body(
     chapter_lines: Sequence[str],
     lyrics_lines: Sequence[str] | None = None,
     bpm: float | None = None,
-    footer: str = "Generated with MusicVids (local).",
+    footer: str = "Generated with Glitchframe (local).",
 ) -> str:
     """Multi-line description: credits, optional lyrics, chapters, footer."""
     blocks: list[str] = []
@@ -198,7 +198,7 @@ def compose_metadata_txt(
     tag_line = ", ".join(str(t) for t in tags)
     chapter_block = "\n".join(str(c) for c in chapter_lines) if chapter_lines else "(none)"
     return (
-        f"musicvids_metadata_version: {METADATA_FORMAT_VERSION}\n"
+        f"glitchframe_metadata_version: {METADATA_FORMAT_VERSION}\n"
         f"\n"
         f"## TITLE\n"
         f"{youtube_title}\n"
@@ -223,7 +223,7 @@ def write_metadata_txt(
     preset: Mapping[str, Any] | None = None,
     lyrics_lines: Sequence[str] | None = None,
     bpm: float | None = None,
-    footer: str = "Generated with MusicVids (local).",
+    footer: str = "Generated with Glitchframe (local).",
 ) -> Path:
     """
     Write ``metadata.txt`` under ``output_dir`` (created if missing).
@@ -284,7 +284,7 @@ def parse_metadata_txt(text: str) -> dict[str, Any]:
     version: int | None = None
     first_line = text.splitlines()[0] if text else ""
     m_ver = re.match(
-        r"musicvids_metadata_version:\s*(\d+)\s*$",
+        r"(?:glitchframe|musicvids)_metadata_version:\s*(\d+)\s*$",
         first_line.strip(),
     )
     if m_ver:

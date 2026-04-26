@@ -2,7 +2,8 @@
 M1 spectrum visualizer: solid background, 8-band bars from ``analysis.json``,
 raw ``bgr24`` frames into ffmpeg (NVENC by default), mux ``original.wav``.
 
-CI / hosts without NVENC: set ``MUSICVIDS_FFMPEG_VIDEO_CODEC=libx264`` and optional
+CI / hosts without NVENC: set ``GLITCHFRAME_FFMPEG_VIDEO_CODEC=libx264`` (or legacy
+``MUSICVIDS_FFMPEG_VIDEO_CODEC``) and optional ``GLITCHFRAME_FFMPEG_VIDEO_ARGS`` / legacy
 ``MUSICVIDS_FFMPEG_VIDEO_ARGS`` (space-separated extra args after ``-c:v``), e.g.
 ``-preset medium -crf 20``.
 """
@@ -127,7 +128,10 @@ def _audio_duration(path: Path) -> float:
 def _ffmpeg_video_args(codec: str) -> list[str]:
     if codec == "h264_nvenc":
         return ["-preset", "p5", "-rc", "vbr", "-cq", "19", "-b:v", "12M"]
-    extra = os.environ.get("MUSICVIDS_FFMPEG_VIDEO_ARGS", "").strip()
+    extra = (
+        os.environ.get("GLITCHFRAME_FFMPEG_VIDEO_ARGS", "").strip()
+        or os.environ.get("MUSICVIDS_FFMPEG_VIDEO_ARGS", "").strip()
+    )
     if extra:
         return extra.split()
     if codec == "libx264":

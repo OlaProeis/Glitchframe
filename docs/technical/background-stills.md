@@ -106,7 +106,7 @@ rest of the pipeline.
 
 - Always used: `diffusers`, `torch`, `pillow`, `numpy` (already in core deps).
 - Model weights download on first run under `MODEL_CACHE_DIR` (env overridable
-  via `MUSICVIDS_MODEL_CACHE`; HF also respects `HF_HOME` / `TORCH_HOME`).
+  via `GLITCHFRAME_MODEL_CACHE` (legacy `MUSICVIDS_MODEL_CACHE`); HF also respects `HF_HOME` / `TORCH_HOME`).
 
 ## Related files
 

@@ -68,7 +68,7 @@ cover/
 # Jupyter
 .ipynb_checkpoints/
 
-# MusicVids runtime (directories kept via .gitkeep)
+# Glitchframe runtime (directories kept via .gitkeep)
 cache/*
 !cache/.gitkeep
 outputs/*

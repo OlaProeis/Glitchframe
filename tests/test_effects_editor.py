@@ -359,7 +359,7 @@ class TestEffectsEditor(unittest.TestCase):
             self.assertIn('type="text/plain"', html)
             # Default state var name is exposed on window so the Save
             # handler can grab it.
-            self.assertIn("_musicvids_effects_state", html)
+            self.assertIn("_glitchframe_effects_state", html)
             # All seven EffectKind rows + toolbar buttons must be present —
             # the UI contract is "seven rows regardless of renderer status".
             for kind in (

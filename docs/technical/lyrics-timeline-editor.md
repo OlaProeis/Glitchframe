@@ -81,7 +81,7 @@ Caches produced before this feature shipped simply show no ghost text
 click on **Re-align from scratch** regenerates them alongside a fresh
 alignment.
 4. Clicks **Save edited timings**. The browser serialises its in-memory
-   state (`window._musicvids_editor_state`), Gradio writes it into a
+   state (`window._glitchframe_editor_state`), Gradio writes it into a
    hidden textbox, and the Python handler validates + persists as the
    new `lyrics.aligned.json` with `manually_edited: true`.
 5. Subsequent Align clicks return the manual edits unchanged (the
@@ -111,7 +111,7 @@ alignment.
 │                                    allowed_paths)          │
 │                                                            │
 │  [Save edited timings]  ── js=() => JSON.stringify(         │
-│                                 window._musicvids_editor_state)│
+│                                 window._glitchframe_editor_state)│
 │                          ──► Hidden gr.Textbox             │
 │                          ──► _save_editor(song_hash, state,│
 │                                           lyrics_text, log)│
@@ -122,7 +122,7 @@ alignment.
 └────────────────────────────────────────────────────────────┘
 ```
 
-All UI state lives in `window._musicvids_editor_state` on the browser
+All UI state lives in `window._glitchframe_editor_state` on the browser
 side. There is no custom Gradio component — the editor is a plain
 `gr.HTML` with an inline vanilla-JS implementation, which means zero
 extra build steps, no JS bundler, and full offline support.

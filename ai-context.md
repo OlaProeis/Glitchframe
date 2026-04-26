@@ -1,4 +1,4 @@
-# MusicVids - AI Context
+# Glitchframe - AI Context
 
 ## Rules (DO NOT UPDATE)
 
@@ -19,7 +19,7 @@
 - **Diffusion:** diffusers, SDXL (+ optional AnimateDiff)
 - **Graphics:** moderngl (reactive shaders), skia-python (kinetic type), Pillow, numpy
 - **Video:** ffmpeg with NVENC (`h264_nvenc`), raw BGR frame pipe from compositor
-- **Packaging:** `pyproject.toml` (hatchling, `pipeline` package) + `requirements.txt`; optional `MUSICVIDS_*` paths in `.env` (see `.env.example`)
+- **Packaging:** `pyproject.toml` (hatchling, `pipeline` package) + `requirements.txt`; optional `GLITCHFRAME_*` paths in `.env` (legacy `MUSICVIDS_*`); see `.env.example`
 
 ## Architecture & Data Model
 

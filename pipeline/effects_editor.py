@@ -749,7 +749,7 @@ def build_editor_html(
     *,
     audio_url: str,
     container_id: str,
-    state_js_var: str = "_musicvids_effects_state",
+    state_js_var: str = "_glitchframe_effects_state",
     audio_element_id: str = "mv_fx_audio",
     pixels_per_second: float = 40.0,
 ) -> str:

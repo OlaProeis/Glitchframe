@@ -1,4 +1,4 @@
-"""Gradio entrypoint: MusicVids UI.
+"""Gradio entrypoint: Glitchframe UI.
 
 Provides the tabbed layout, upload / analyze / align / preview / render actions,
 and progress callbacks. Long-running buttons (Analyze, Preview 10 s, Render
@@ -24,7 +24,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
-LOGGER = logging.getLogger("musicvids.app")
+LOGGER = logging.getLogger("glitchframe.app")
 
 
 def _format_exception(label: str, exc: BaseException) -> str:
@@ -896,7 +896,7 @@ def _on_audio_upload(
 
 _EDITOR_AUDIO_ELEM_ID = "mv_editor_audio"
 _EDITOR_CONTAINER_ID = "mv_editor_root"
-_EDITOR_STATE_JS_VAR = "_musicvids_editor_state"
+_EDITOR_STATE_JS_VAR = "_glitchframe_editor_state"
 
 _EDITOR_EMPTY_HTML = (
     "<div style='color:#9ca3af;font-family:system-ui,sans-serif;padding:12px;'>"
@@ -906,7 +906,7 @@ _EDITOR_EMPTY_HTML = (
 
 _EFFECTS_EDITOR_CONTAINER_ID = "mv_fx_root"
 _EFFECTS_EDITOR_AUDIO_ELEM_ID = "mv_fx_audio"
-_EFFECTS_EDITOR_STATE_JS_VAR = "_musicvids_effects_state"
+_EFFECTS_EDITOR_STATE_JS_VAR = "_glitchframe_effects_state"
 _EFFECTS_EDITOR_EMPTY_HTML = (
     "<div style='color:#9ca3af;font-family:system-ui,sans-serif;padding:12px;'>"
     "Click <b>Load timeline</b> after ingesting audio and running <b>Analyze</b> "
@@ -1201,8 +1201,11 @@ def build_ui() -> gr.Blocks:
     if shader0 not in BUILTIN_SHADERS:
         shader0 = BUILTIN_SHADERS[0]
 
-    with gr.Blocks(title="MusicVids") as demo:
-        gr.Markdown("# MusicVids\nLocal music video generator — UI skeleton.")
+    with gr.Blocks(title="Glitchframe") as demo:
+        gr.Markdown(
+            "# Glitchframe\n"
+            "Local music video generator — upload, analyze, style, and render."
+        )
 
         with gr.Tabs():
             with gr.Tab("Audio"):

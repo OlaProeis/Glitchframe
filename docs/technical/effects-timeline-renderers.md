@@ -35,6 +35,6 @@ Each step **short-circuits** when the corresponding clip set is inactive at time
 ## Cross-references
 
 - **Compositor integration (merge rules, `auto_reactivity_master`, post-pass detail):** `docs/technical/effects-timeline-compositor.md`
-- **Editor HTML/JS (seven rows, gear panel, `window._musicvids_effects_state`):** `docs/technical/effects-timeline-editor.md`
+- **Editor HTML/JS (seven rows, gear panel, `window._glitchframe_effects_state`):** `docs/technical/effects-timeline-editor.md`
 - **Backend load/save/bake:** `docs/technical/effects-editor-backend.md`
 - **Shared waveform for the editor canvas:** `docs/technical/waveform-peaks.md`

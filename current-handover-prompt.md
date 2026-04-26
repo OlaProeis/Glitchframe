@@ -2,7 +2,7 @@
 
 ## Environment
 
-- **Project:** MusicVids
+- **Project:** Glitchframe
 - **Tech Stack:** Python 3.11, CUDA/PyTorch, Gradio, librosa/demucs/whisperx, diffusers (SDXL / AnimateDiff), moderngl, skia-python, ffmpeg NVENC
 - **Context file:** Always read `ai-context.md` first — it contains project rules, architecture, and model selection.
 - **Python interpreter:** `.\.venv\Scripts\python.exe` (the Windows `py` launcher does NOT point at the project venv — use the full path).
@@ -56,7 +56,7 @@
 
 ## Verification
 
-- `.\.venv\Scripts\python.exe -m compileall g:\DEV\MusicVids -q`
+- `.\.venv\Scripts\python.exe -m compileall <repo-root> -q`
 - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v`
 
 ## Task Master

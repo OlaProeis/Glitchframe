@@ -1,4 +1,4 @@
-"""Defaults, paths, and preset registry for MusicVids."""
+"""Defaults, paths, and preset registry for Glitchframe."""
 
 from __future__ import annotations
 
@@ -18,13 +18,23 @@ _PRESET_STR_FIELDS = frozenset({"prompt", "shader", "typo_style"})
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
-# Optional overrides via environment (see .env.example)
-CACHE_DIR = Path(os.environ.get("MUSICVIDS_CACHE_DIR", PROJECT_ROOT / "cache"))
-OUTPUTS_DIR = Path(os.environ.get("MUSICVIDS_OUTPUTS_DIR", PROJECT_ROOT / "outputs"))
-PRESETS_DIR = Path(os.environ.get("MUSICVIDS_PRESETS_DIR", PROJECT_ROOT / "presets"))
-ASSETS_DIR = Path(os.environ.get("MUSICVIDS_ASSETS_DIR", PROJECT_ROOT / "assets"))
-SHADERS_DIR = Path(os.environ.get("MUSICVIDS_SHADERS_DIR", ASSETS_DIR / "shaders"))
-FONTS_DIR = Path(os.environ.get("MUSICVIDS_FONTS_DIR", ASSETS_DIR / "fonts"))
+
+def _env_path(primary: str, legacy: str, default: Path) -> Path:
+    """Resolve path from env; *primary* wins, then *legacy* (pre-rename), then *default*."""
+    for key in (primary, legacy):
+        raw = os.environ.get(key, "").strip()
+        if raw:
+            return Path(raw)
+    return default
+
+
+# Optional overrides via environment (see .env.example). Legacy `MUSICVIDS_*` still works.
+CACHE_DIR = _env_path("GLITCHFRAME_CACHE_DIR", "MUSICVIDS_CACHE_DIR", PROJECT_ROOT / "cache")
+OUTPUTS_DIR = _env_path("GLITCHFRAME_OUTPUTS_DIR", "MUSICVIDS_OUTPUTS_DIR", PROJECT_ROOT / "outputs")
+PRESETS_DIR = _env_path("GLITCHFRAME_PRESETS_DIR", "MUSICVIDS_PRESETS_DIR", PROJECT_ROOT / "presets")
+ASSETS_DIR = _env_path("GLITCHFRAME_ASSETS_DIR", "MUSICVIDS_ASSETS_DIR", PROJECT_ROOT / "assets")
+SHADERS_DIR = _env_path("GLITCHFRAME_SHADERS_DIR", "MUSICVIDS_SHADERS_DIR", ASSETS_DIR / "shaders")
+FONTS_DIR = _env_path("GLITCHFRAME_FONTS_DIR", "MUSICVIDS_FONTS_DIR", ASSETS_DIR / "fonts")
 # Bundled UI fonts (SIL Open Font License 1.1); commit these files so renders
 # don't fall back to Arial when ``font_path`` is unset. See ``assets/fonts/``.
 DEFAULT_UI_FONT = FONTS_DIR / "Inter.ttf"
@@ -60,7 +70,7 @@ def default_title_font_path() -> Path | None:
     return default_ui_font_path()
 
 # Hugging Face / model caches (optional; libraries also respect HF_HOME, TORCH_HOME)
-MODEL_CACHE_DIR = Path(os.environ.get("MUSICVIDS_MODEL_CACHE", PROJECT_ROOT / ".cache" / "models"))
+MODEL_CACHE_DIR = _env_path("GLITCHFRAME_MODEL_CACHE", "MUSICVIDS_MODEL_CACHE", PROJECT_ROOT / ".cache" / "models")
 
 
 def ensure_runtime_dirs() -> None:

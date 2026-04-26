@@ -407,7 +407,7 @@ def build_editor_html(
     audio_url: str,
     audio_element_id: str = "mv_editor_real_audio",
     container_id: str = "mv_editor_root",
-    state_js_var: str = "_musicvids_editor_state",
+    state_js_var: str = "_glitchframe_editor_state",
     pixels_per_second: float = 40.0,
 ) -> str:
     """Return the full HTML blob (CSS + markup + vanilla-JS editor) for ``state``.

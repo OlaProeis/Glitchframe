@@ -1,7 +1,7 @@
 [project]
-name = "musicvids"
+name = "glitchframe"
 version = "0.1.0"
-description = "Local music video generator (MusicVids)"
+description = "Local music video generator (Glitchframe)"
 requires-python = ">=3.11"
 dependencies = [
     "gradio>=4.0,<5",

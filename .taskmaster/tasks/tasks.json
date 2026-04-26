@@ -5,7 +5,7 @@
         "id": "1",
         "title": "Project Setup and Directory Structure",
         "description": "Initialize Python 3.11 project with uv/pip, create directory layout, requirements.txt, and basic config.py with paths and presets registry.",
-        "details": "Use `uv init musicvids`; create folders: pipeline/, presets/, assets/shaders/, assets/fonts/, cache/, outputs/; generate requirements.txt with gradio==4.x, torch==2.x (cuda12), diffusers, librosa, soundfile, moderngl, skia-python, pillow, numpy; config.py with default paths, preset dict loading YAMLs.",
+        "details": "Use `uv init glitchframe`; create folders: pipeline/, presets/, assets/shaders/, assets/fonts/, cache/, outputs/; generate requirements.txt with gradio==4.x, torch==2.x (cuda12), diffusers, librosa, soundfile, moderngl, skia-python, pillow, numpy; config.py with default paths, preset dict loading YAMLs.",
         "testStrategy": "Verify dir structure exists, `uv sync` installs without errors, `python config.py` loads without ImportError.",
         "priority": "high",
         "dependencies": [],

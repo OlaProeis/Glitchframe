@@ -154,7 +154,7 @@ hand-polish from there.
 - New `gr.Tab("Effects timeline")` directly after `"Lyrics timeline"`
   in `app.py`.
 - Buttons: Load timeline, Save edits, Bake auto events, Clear all.
-- Hidden `gr.Textbox` carries `window._musicvids_effects_state` on Save.
+- Hidden `gr.Textbox` carries `window._glitchframe_effects_state` on Save.
 - Handlers: `_load_effects_editor`, `_save_effects_editor`,
   `_bake_effects_editor`, `_clear_effects_editor` (mirroring the
   naming used by the lyrics editor handlers).

@@ -8,7 +8,8 @@ processes (e.g. a Gradio app launched earlier) do not. That leads to
 
 This module resolves in this order:
 
-1. Environment override: ``MUSICVIDS_FFMPEG`` / ``MUSICVIDS_FFPROBE`` (if set
+1. Environment override: ``GLITCHFRAME_FFMPEG`` / ``GLITCHFRAME_FFPROBE`` (or
+   legacy ``MUSICVIDS_FFMPEG`` / ``MUSICVIDS_FFPROBE``) if set
    and pointing at an executable file).
 2. ``shutil.which(name)`` — the ordinary PATH lookup.
 3. A small set of well-known Windows install locations (winget, Scoop,
@@ -35,9 +36,9 @@ LOGGER = logging.getLogger(__name__)
 _IS_WINDOWS = sys.platform.startswith("win")
 _EXE_SUFFIX = ".exe" if _IS_WINDOWS else ""
 
-_ENV_VAR_BY_NAME: dict[str, str] = {
-    "ffmpeg": "MUSICVIDS_FFMPEG",
-    "ffprobe": "MUSICVIDS_FFPROBE",
+_ENV_VAR_BY_NAME: dict[str, list[str]] = {
+    "ffmpeg": ["GLITCHFRAME_FFMPEG", "MUSICVIDS_FFMPEG"],
+    "ffprobe": ["GLITCHFRAME_FFPROBE", "MUSICVIDS_FFPROBE"],
 }
 
 _cache: dict[str, str | None] = {}
@@ -83,19 +84,17 @@ def _candidate_dirs() -> Iterable[Path]:
 
 
 def _env_override(name: str) -> str | None:
-    env_var = _ENV_VAR_BY_NAME.get(name)
-    if not env_var:
-        return None
-    raw = os.environ.get(env_var)
-    if not raw:
-        return None
-    p = Path(raw).expanduser()
-    if p.is_file():
-        return str(p)
-    LOGGER.warning(
-        "%s=%r does not point at a file; falling back to PATH lookup",
-        env_var, raw,
-    )
+    for env_var in _ENV_VAR_BY_NAME.get(name, ()):
+        raw = os.environ.get(env_var)
+        if not raw:
+            continue
+        p = Path(raw).expanduser()
+        if p.is_file():
+            return str(p)
+        LOGGER.warning(
+            "%s=%r does not point at a file; falling back to PATH lookup",
+            env_var, raw,
+        )
     return None
 
 
@@ -155,11 +154,12 @@ def require_ffprobe() -> str:
 
 
 def _not_found_message(name: str) -> str:
-    env_var = _ENV_VAR_BY_NAME.get(name, "")
+    keys = _ENV_VAR_BY_NAME.get(name, ())
     hint = ""
-    if env_var:
+    if keys:
+        primary = keys[0]
         hint = (
-            f" Set {env_var}=<full path to {name}{_EXE_SUFFIX}>"
+            f" Set {primary}=<full path to {name}{_EXE_SUFFIX}>"
             " or add the install dir to PATH and restart the app."
         )
     return (
@@ -237,12 +237,14 @@ def select_video_codec(preferred: str | None = None) -> str:
 
     Resolution order:
 
-    1. An explicit *preferred* codec (from config or ``MUSICVIDS_FFMPEG_VIDEO_CODEC``
-       env var) — trusted as-is if the user opted in.
+    1. An explicit *preferred* codec (from config or ``GLITCHFRAME_FFMPEG_VIDEO_CODEC`` /
+       legacy ``MUSICVIDS_FFMPEG_VIDEO_CODEC``) — trusted as-is if the user opted in.
     2. ``h264_nvenc`` if the local ffmpeg can actually open the encoder.
     3. ``libx264`` as the portable CPU fallback.
     """
-    explicit = preferred or os.environ.get("MUSICVIDS_FFMPEG_VIDEO_CODEC")
+    explicit = preferred or os.environ.get("GLITCHFRAME_FFMPEG_VIDEO_CODEC")
+    if not explicit:
+        explicit = os.environ.get("MUSICVIDS_FFMPEG_VIDEO_CODEC")
     if explicit:
         return explicit
     if _probe_encoder(DEFAULT_VIDEO_CODEC):
