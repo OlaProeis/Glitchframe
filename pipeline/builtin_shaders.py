@@ -17,7 +17,11 @@ BUILTIN_SHADERS: tuple[str, ...] = (
     "liquid_chrome",
     "vhs_tracking",
     "synth_grid",
+    "tunnel_flight",
     "paper_grain",
+    "voidcat_laser",
+    "void_ascii_bg",
+    "spectral_milkdrop",
 )
 
 __all__: Sequence[str] = ["BUILTIN_SHADERS"]

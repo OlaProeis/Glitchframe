@@ -18,6 +18,7 @@ the producer thread so driver contexts do not leak across threads.
 from __future__ import annotations
 
 import errno
+import hashlib
 import logging
 import math
 import os
@@ -41,9 +42,16 @@ from config import (
 )
 from pipeline.audio_ingest import ORIGINAL_WAV_NAME
 from pipeline.background import BackgroundSource
+from pipeline.chromatic_aberration import apply_chromatic_aberration
+from pipeline.color_invert import apply_invert_mix, invert_mix
+from pipeline.scanline_tear import apply_scanline_tear
+from pipeline.effects_timeline import EffectClip, EffectKind, EffectsTimeline
 from pipeline.ffmpeg_tools import require_ffmpeg, select_video_codec
+from pipeline.screen_shake import apply_shake_offset, shake_offset
+from pipeline.zoom_punch import apply_zoom_scale, zoom_scale
 from pipeline.kinetic_typography import (
     DEFAULT_FONT_SIZE,
+    DEFAULT_KINETIC_BASELINE_RATIO,
     DEFAULT_MOTION,
     AlignedWord,
     KineticTypographyLayer,
@@ -62,7 +70,9 @@ from pipeline.beat_pulse import (
     build_mid_transient_track,
     build_rms_impact_pulse_track,
     build_snare_glow_track,
+    kick_punch_scale_and_opacity,
     scale_and_opacity_for_pulse,
+    stable_pulse_value,
 )
 from pipeline.musical_events import (
     DEFAULT_DROP_HOLD_DECAY_SEC,
@@ -80,6 +90,7 @@ from pipeline.logo_rim_lights import (
 from pipeline.logo_rim_beams import (
     BeamConfig,
     ScheduledBeam,
+    _random_beam_tint,
     compute_beam_patch,
     schedule_rim_beams,
 )
@@ -101,6 +112,11 @@ from pipeline.reactive_shader import (
     composite_premultiplied_rgba_over_rgb,
     resolve_builtin_shader_stem,
     uniforms_at_time,
+)
+from pipeline.voidcat_ascii import (
+    VoidcatAsciiContext,
+    render_voidcat_ascii_rgba,
+    render_voidcat_cat_overlay_rgba,
 )
 from pipeline.title_overlay import (
     normalize_title_position,
@@ -172,11 +188,19 @@ class CompositorConfig:
     title_font_path: Path | None = field(default_factory=default_title_font_path)
     font_size: float = DEFAULT_FONT_SIZE
     typography_motion: str = DEFAULT_MOTION
+    # Lyrics baseline Y as fraction of frame height (larger = lower on screen).
+    typography_baseline_y_ratio: float = DEFAULT_KINETIC_BASELINE_RATIO
     base_color: str = "#FFFFFF"
     shadow_color: str | None = None
     logo_path: Path | None = None
     logo_position: str = "center"
     logo_opacity_pct: float = 100.0
+    # Cap the logo's longest edge at this percent of the **shorter** frame edge
+    # (so the slider behaves the same on 720p / 1080p / 4K). ``<= 0`` disables
+    # the cap and falls back to the legacy "fit inside the frame" behaviour.
+    # Default 30 % keeps a center-aligned logo from covering the kinetic-type
+    # band while leaving room for rim beams to shoot past the rim.
+    logo_max_size_pct: float = 30.0
     # Audio-reactive logo pulse: size + brightness kick on low-frequency hits
     # (``bass``, the default) or on every analyzer beat (``beats``). See
     # ``pipeline.beat_pulse`` for the envelope math.
@@ -189,6 +213,20 @@ class CompositorConfig:
     logo_snare_glow: bool = True
     logo_glow_strength: float = 2.0
     logo_glow_sensitivity: float = 1.0
+    # Kick (low-band) contribution to the same neon halo. Uses the attack-only
+    # bass envelope (:func:`pipeline.beat_pulse.build_bass_pulse_track`) so the
+    # glow pulses on every kick transient in addition to snare hits; toggle off
+    # to restore the snare-only behaviour.
+    logo_kick_glow: bool = True
+    logo_kick_glow_strength: float = 1.6
+    # Dedicated kick punch on the **logo scale** driven by the separated
+    # low-band transient (``build_lo_transient_track`` → ``transient_lo``).
+    # Complements the sustain-aware :func:`build_logo_bass_pulse_track` curve
+    # by giving cleanly-separated kicks a bigger visual bump than the blended
+    # pulse can produce on its own. Combined with the existing pulse via
+    # ``max`` of deltas so one signal never cancels the other — whichever is
+    # larger on the current frame wins the bounce. Set to ``0`` to disable.
+    logo_kick_punch_strength: float = 1.0
     # Mid-band envelope also drives a brief **scale contract** on snare hits
     # (independent of the neon glow toggle).
     logo_snare_squeeze_strength: float = 0.40
@@ -207,7 +245,16 @@ class CompositorConfig:
     # ``build_lo/mid/hi_transient_track`` (0.34 / 0.12 / 0.06 s).
     # ``shader_transient_sensitivity`` scales all three bands together, like
     # the existing ``shader_bass_sensitivity`` but applied post-rectification.
-    shader_transient_sensitivity: float = 1.0
+    #
+    # Lowered from ``1.0`` to ``0.75`` (2026-04) alongside the build-time
+    # :func:`pipeline.beat_pulse.shape_reactive_envelope` gate to calm the
+    # "wild across every preset" feeling: three full-amplitude envelopes
+    # slamming into every shader's motion terms at once produced constant
+    # low-amplitude wobble during non-hit sections. Shape gate kills the
+    # wobble; the sensitivity trim brings the stack closer to the
+    # ``shader_bass_sensitivity=0.72`` budget so peaks and shader mixes
+    # stay in the same ballpark.
+    shader_transient_sensitivity: float = 0.75
     shader_transient_lo_decay_sec: float = DEFAULT_LO_DECAY_SEC
     shader_transient_mid_decay_sec: float = DEFAULT_MID_DECAY_SEC
     shader_transient_hi_decay_sec: float = DEFAULT_HI_DECAY_SEC
@@ -244,6 +291,28 @@ class CompositorConfig:
     title_opacity: float = 0.90
     video_codec: str | None = None
     queue_size: int = DEFAULT_QUEUE_SIZE
+    # Task 49: optional per-song effects timeline (see
+    # :mod:`pipeline.effects_timeline`). When ``None`` the compositor renders
+    # exactly as before (regression guard); when set, user ``EffectClip`` rows
+    # drive the post-stack frame effects (zoom punch, screen shake, colour
+    # invert, future chromatic / scanline) and merge additively into the beam
+    # + logo-glitch auto paths.
+    effects_timeline: EffectsTimeline | None = None
+    # Master multiplier applied to the **auto** reactivity envelopes (bass
+    # pulse, snare glow, impact glitch, rim audio modulation). User clip
+    # contributions are not scaled. ``1.0`` preserves today's behaviour; the
+    # Gradio editor writes ``EffectsTimeline.auto_reactivity_master`` and the
+    # orchestrator threads it here.
+    auto_reactivity_master: float = 1.0
+    # voidcat-ASCII: CPU grid layer (sides + hero-drop cat) over the reactive
+    # pass, under lyrics and logo. Set by the orchestrator for preset
+    # ``voidcat-laser``; ``None`` skips the pass (default).
+    voidcat_ascii_ctx: VoidcatAsciiContext | None = None
+    # When True with a voidcat context, the side cat (and * trace) is
+    # composited again **after** the frame-effects stack (chroma, scanline,
+    # etc.) so it stays legible. The ASCII grid is still only drawn in the
+    # first pass, preserving the "glitchy field" look.
+    voidcat_ascii_sharp_cat: bool = False
 
 
 def _audio_duration(path: Path) -> float:
@@ -371,8 +440,9 @@ def _active_layers_label(
     has_title: bool,
     has_logo: bool,
     has_pulse: bool,
+    has_voidcat_ascii: bool = False,
 ) -> str:
-    """Return e.g. ``bg+shader+typo+title+logo+pulse`` for progress messages.
+    """Return e.g. ``bg+shader+ascii+typo+title+logo+pulse`` for progress messages.
 
     The compositor always renders the background and reactive shader; the rest
     are optional. A compact label lets the UI show which stages are active so
@@ -380,6 +450,8 @@ def _active_layers_label(
     heavy shader, rather than guessing.
     """
     parts = ["bg", "shader"]
+    if has_voidcat_ascii:
+        parts.append("ascii")
     if has_typography:
         parts.append("typo")
     if has_title:
@@ -420,6 +492,303 @@ def _effective_rim_light_config(
     return replace(base, song_hash=song_hash_opt)
 
 
+def _auto_reactivity_master(cfg: CompositorConfig) -> float:
+    """Non-negative finite scalar; out-of-range/NaN collapses to ``1.0``."""
+    m = float(cfg.auto_reactivity_master)
+    if not math.isfinite(m) or m < 0.0:
+        return 1.0
+    return m
+
+
+def _scaled_pulse_fn(fn: PulseFn | None, k: float) -> PulseFn | None:
+    """Return ``t -> k * fn(t)`` or pass-through when ``k == 1`` / ``fn`` empty."""
+    if fn is None:
+        return None
+    if abs(k - 1.0) < 1e-9:
+        return fn
+    return lambda t, _fn=fn, _k=float(k): float(_k) * float(_fn(float(t)))
+
+
+def _timeline_clips(cfg: CompositorConfig) -> tuple[EffectClip, ...]:
+    tl = cfg.effects_timeline
+    if tl is None:
+        return ()
+    return tuple(tl.clips)
+
+
+def _clips_of_kind(
+    clips: Sequence[EffectClip], kind: EffectKind
+) -> tuple[EffectClip, ...]:
+    return tuple(c for c in clips if c.kind is kind)
+
+
+def _auto_enabled_for(cfg: CompositorConfig, kind: EffectKind) -> bool:
+    """``True`` when the effects-timeline hasn't switched off the auto path
+    for ``kind`` (default when no timeline is set)."""
+    tl = cfg.effects_timeline
+    if tl is None:
+        return True
+    return bool(tl.auto_enabled.get(kind, True))
+
+
+def _clip_id_u32(clip_id: str) -> int:
+    """Stable 32-bit seed from a clip's id (uses :mod:`zlib` like shake)."""
+    import zlib as _zlib  # local import keeps the main module import fast
+
+    return _zlib.adler32(clip_id.encode("utf-8", errors="ignore")) & 0xFFFFFFFF
+
+
+def _parse_srgb_hex(value: Any) -> tuple[int, int, int] | None:
+    """Parse ``"#RRGGBB"`` (with or without ``#``) into an sRGB triple.
+
+    Returns ``None`` when ``value`` is not a recognisable 6-hex string so the
+    caller can fall back to the preset palette. Case-insensitive; whitespace
+    trimmed.
+    """
+    if not isinstance(value, str):
+        return None
+    s = value.strip()
+    if not s:
+        return None
+    if s.startswith("#"):
+        s = s[1:]
+    if len(s) != 6:
+        return None
+    try:
+        r = int(s[0:2], 16)
+        g = int(s[2:4], 16)
+        b = int(s[4:6], 16)
+    except ValueError:
+        return None
+    return (r, g, b)
+
+
+def _user_beam_schedule(
+    clips: Sequence[EffectClip],
+    *,
+    beam_cfg: BeamConfig,
+    song_hash: str | None,
+    n_color_layers: int,
+) -> list[ScheduledBeam]:
+    """Convert user ``BEAM`` :class:`EffectClip` rows into :class:`ScheduledBeam`.
+
+    User beams are treated as hero drops (full edge-stretch, drop thickness)
+    with a deterministic per-clip angle and colour layer so re-renders are
+    bit-stable. The 10 s group gate in :func:`schedule_rim_beams` is **not**
+    applied — user cues are authoritative and must fire where placed.
+    """
+    beams: list[ScheduledBeam] = []
+    layers = max(1, int(n_color_layers))
+    for c in clips:
+        if c.kind is not EffectKind.BEAM:
+            continue
+        s = c.settings
+        raw_strength = s.get("strength", 1.0)
+        try:
+            strength = float(raw_strength) if raw_strength is not None else 1.0
+        except (TypeError, ValueError):
+            strength = 1.0
+        strength = max(0.0, min(1.0, strength))
+        if strength <= 1e-6:
+            continue
+        raw_thick = s.get("thickness_px", beam_cfg.drop_beam_thickness_px)
+        try:
+            thickness = (
+                float(raw_thick)
+                if raw_thick is not None
+                else float(beam_cfg.drop_beam_thickness_px)
+            )
+        except (TypeError, ValueError):
+            thickness = float(beam_cfg.drop_beam_thickness_px)
+        if not math.isfinite(thickness) or thickness <= 0.0:
+            thickness = float(beam_cfg.drop_beam_thickness_px)
+        # Deterministic angle + colour layer from the clip id, salted with song.
+        cid = _clip_id_u32(c.id)
+        seed_src = (
+            f"{song_hash or ''}::user_beam::{cid}".encode("utf-8", errors="ignore")
+        )
+        rng_seed = int.from_bytes(
+            hashlib.sha256(seed_src).digest()[:4], "little", signed=False
+        ) & 0x7FFFFFFF
+        rng = np.random.default_rng(rng_seed)
+        angle = float(rng.uniform(0.0, 2.0 * math.pi))
+        layer_idx = cid % layers
+        # Colour pick: an explicit ``color_hex`` in settings always wins
+        # (user's picker); otherwise draw a deterministic random hue so
+        # user-added beams don't all collapse onto the 2-layer preset
+        # palette. Seeded from the same ``rng`` so the same clip id on the
+        # same song renders to the same colour.
+        tint_override = _parse_srgb_hex(s.get("color_hex"))
+        if tint_override is None:
+            tint_override = _random_beam_tint(rng)
+        # Floor the rendered beam lifetime at ``BeamConfig.duration_sec``. Users
+        # routinely place BEAM clips as short ticks on the effects timeline; a
+        # clip with ``duration_s`` shorter than the envelope's attack (40 ms)
+        # would collapse to a single bright pixel and read as a "point" rather
+        # than a ray. Flooring preserves the hand-placed ``t_start`` cue while
+        # still letting the full attack + decay + afterglow play out.
+        raw_duration = float(c.duration_s)
+        floor_duration = float(beam_cfg.duration_sec)
+        render_duration = raw_duration if raw_duration >= floor_duration else floor_duration
+        # Longer-than-default clips use ramp + plateau + growing halo/afterglow
+        # (see :attr:`ScheduledBeam.sustain_shaping`); floored short ticks keep
+        # the original hit-style envelope.
+        sustain_shaping = raw_duration > floor_duration + 1e-9
+        beams.append(
+            ScheduledBeam(
+                t_start=float(c.t_start),
+                duration_s=render_duration,
+                angle_rad=angle,
+                length_px=float(beam_cfg.drop_beam_length_px),
+                thickness_px=thickness,
+                intensity=strength,
+                color_layer_idx=layer_idx,
+                is_drop=True,
+                tint_srgb_override=tint_override,
+                sustain_shaping=sustain_shaping,
+            )
+        )
+    return beams
+
+
+def _user_glitch_envelope_fn(
+    clips: Sequence[EffectClip],
+) -> PulseFn | None:
+    """Return a ``t -> [0, 1]`` callable summing user ``LOGO_GLITCH`` clip
+    strengths active at ``t`` (clamped). ``None`` when no clips exist so the
+    frame loop can skip the combine step."""
+    items: list[tuple[float, float, float]] = []
+    for c in clips:
+        if c.kind is not EffectKind.LOGO_GLITCH:
+            continue
+        raw = c.settings.get("strength", 1.0)
+        try:
+            strength = float(raw) if raw is not None else 1.0
+        except (TypeError, ValueError):
+            strength = 1.0
+        strength = max(0.0, min(1.0, strength))
+        if strength <= 1e-6:
+            continue
+        t0 = float(c.t_start)
+        items.append((t0, t0 + float(c.duration_s), strength))
+    if not items:
+        return None
+    snap = tuple(items)
+
+    def fn(t: float, _snap=snap) -> float:
+        tf = float(t)
+        if not math.isfinite(tf):
+            return 0.0
+        total = 0.0
+        for t0, t1, s in _snap:
+            if t0 <= tf < t1:
+                total += s
+        if total <= 0.0:
+            return 0.0
+        if total >= 1.0:
+            return 1.0
+        return total
+
+    return fn
+
+
+def _combined_glitch_fn(
+    auto_fn: PulseFn | None, user_fn: PulseFn | None
+) -> PulseFn | None:
+    """Sum of ``auto_fn`` and ``user_fn`` clamped to ``[0, 1]``; ``None`` when
+    both are ``None`` so the frame loop short-circuits."""
+    if auto_fn is None and user_fn is None:
+        return None
+    if user_fn is None:
+        return auto_fn
+    if auto_fn is None:
+        return user_fn
+    return lambda t, _a=auto_fn, _u=user_fn: max(
+        0.0, min(1.0, float(_a(float(t))) + float(_u(float(t))))
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _FrameEffectsContext:
+    """Per-render cache of non-logo ``EffectClip`` rows + frame-pass toggles.
+
+    Built once in :func:`_build_frame_effects_context` from
+    :attr:`CompositorConfig.effects_timeline`. The per-frame pass reads these
+    tuples in fixed order: ``zoom_punch`` → ``screen_shake`` →
+    ``chromatic_aberration`` → ``scanline_tear`` → ``color_invert`` (see
+    :func:`_apply_frame_effects`).
+    """
+
+    zoom_clips: tuple[EffectClip, ...]
+    shake_clips: tuple[EffectClip, ...]
+    color_invert_clips: tuple[EffectClip, ...]
+    chromatic_clips: tuple[EffectClip, ...]
+    scanline_clips: tuple[EffectClip, ...]
+    song_hash: str
+
+
+def _build_frame_effects_context(
+    cfg: CompositorConfig, analysis: Mapping[str, Any]
+) -> _FrameEffectsContext | None:
+    """Return a frame-effects ctx or ``None`` when nothing post-logo fires.
+
+    ``None`` is the fast path: the frame loop then skips the whole pass and
+    the output is byte-identical to the pre-effects compositor (regression
+    guard required by the Task 49 acceptance criteria).
+    """
+    clips = _timeline_clips(cfg)
+    if not clips:
+        return None
+    zoom = _clips_of_kind(clips, EffectKind.ZOOM_PUNCH)
+    shake = _clips_of_kind(clips, EffectKind.SCREEN_SHAKE)
+    inv = _clips_of_kind(clips, EffectKind.COLOR_INVERT)
+    chrom = _clips_of_kind(clips, EffectKind.CHROMATIC_ABERRATION)
+    scan = _clips_of_kind(clips, EffectKind.SCANLINE_TEAR)
+    if not (zoom or shake or inv or chrom or scan):
+        return None
+    song_hash = str(analysis.get("song_hash") or "") if isinstance(analysis, Mapping) else ""
+    return _FrameEffectsContext(
+        zoom_clips=zoom,
+        shake_clips=shake,
+        color_invert_clips=inv,
+        chromatic_clips=chrom,
+        scanline_clips=scan,
+        song_hash=song_hash,
+    )
+
+
+def _apply_frame_effects(
+    frame: np.ndarray, t: float, fx: _FrameEffectsContext | None
+) -> np.ndarray:
+    """Fixed-order post-stack effects pass (task 49).
+
+    Order: zoom_punch → screen_shake → chromatic_aberration → scanline_tear
+    → color_invert. Each stage short-circuits to the input array
+    when its clip set is inactive at ``t``, so an empty timeline produces a
+    byte-identical frame.
+    """
+    if fx is None:
+        return frame
+    out = frame
+    if fx.zoom_clips:
+        scale = zoom_scale(t, fx.zoom_clips)
+        if scale > 1.0 + 1e-9:
+            out = apply_zoom_scale(out, scale)
+    if fx.shake_clips:
+        dx, dy = shake_offset(t, fx.shake_clips, fx.song_hash)
+        if abs(dx) >= 0.5 or abs(dy) >= 0.5:
+            out = apply_shake_offset(out, dx, dy)
+    if fx.chromatic_clips:
+        out = apply_chromatic_aberration(out, t, fx.chromatic_clips, fx.song_hash)
+    if fx.scanline_clips:
+        out = apply_scanline_tear(out, t, fx.scanline_clips, fx.song_hash)
+    if fx.color_invert_clips:
+        mix = invert_mix(t, fx.color_invert_clips)
+        if mix > 1e-4:
+            out = apply_invert_mix(out, mix)
+    return out
+
+
 @dataclass(frozen=True, slots=True)
 class _BeamRenderContext:
     """Per-render state needed to draw the rim-beam patch each frame.
@@ -449,7 +818,10 @@ def _build_beam_render_context(
     """Schedule beams + capture color params once per render; ``None`` to skip.
 
     Skips when ``rim_beams_enabled`` is false, the logo isn't available, or
-    the schedule is empty (no qualifying drops / impacts in the track).
+    the combined auto + user schedule is empty. Task 49: user ``BEAM`` clips
+    on :attr:`CompositorConfig.effects_timeline` are merged into the schedule
+    **without** the 10 s group gate (``schedule_rim_beams`` only gates the
+    analyser-driven path).
     """
     if not bool(cfg.rim_beams_enabled) or logo_rgba_prepared is None:
         return None
@@ -473,22 +845,35 @@ def _build_beam_render_context(
     song_hash_raw = analysis.get("song_hash") if isinstance(analysis, Mapping) else None
     song_hash = str(song_hash_raw) if song_hash_raw else None
 
-    snare_track = _snare_track_for_logo(cfg, analysis)
-    impact_track: PulseTrack | None = None
-    if float(cfg.logo_impact_glitch_strength) > 1e-6 or bool(cfg.rim_beams_enabled):
-        impact_track = build_rms_impact_pulse_track(
-            analysis, sensitivity=float(cfg.logo_impact_sensitivity)
+    auto_beams: list[ScheduledBeam] = []
+    if _auto_enabled_for(cfg, EffectKind.BEAM):
+        snare_track = _snare_track_for_logo(cfg, analysis)
+        impact_track: PulseTrack | None = None
+        if float(cfg.logo_impact_glitch_strength) > 1e-6 or bool(cfg.rim_beams_enabled):
+            impact_track = build_rms_impact_pulse_track(
+                analysis, sensitivity=float(cfg.logo_impact_sensitivity)
+            )
+        auto_beams = list(
+            schedule_rim_beams(
+                analysis,
+                snare_track=snare_track,
+                impact_track=impact_track,
+                cfg=beam_cfg,
+                song_hash=song_hash,
+                n_color_layers=n_layers,
+            )
         )
-    schedule = schedule_rim_beams(
-        analysis,
-        snare_track=snare_track,
-        impact_track=impact_track,
-        cfg=beam_cfg,
+
+    user_beams = _user_beam_schedule(
+        _timeline_clips(cfg),
+        beam_cfg=beam_cfg,
         song_hash=song_hash,
         n_color_layers=n_layers,
     )
+    schedule = auto_beams + user_beams
     if not schedule:
         return None
+    schedule.sort(key=lambda b: b.t_start)
 
     prep = compute_logo_rim_prep(logo_rgba_prepared)
     lh, lw = int(logo_rgba_prepared.shape[0]), int(logo_rgba_prepared.shape[1])
@@ -522,6 +907,10 @@ def _draw_beam_patch_onto_frame(
     x0, y0 = _origin_for_position(position, fh, fw, lh, lw)
     cx = x0 + ctx.centroid_xy_base[0] * scale
     cy = y0 + ctx.centroid_xy_base[1] * scale
+    # Half of the shorter logo side is a cheap, position-independent estimate
+    # of the centroid-to-edge distance. Beams use this to start outside the
+    # logo rim instead of piercing its middle.
+    logo_radius_px = 0.5 * float(min(lh, lw))
 
     result = compute_beam_patch(
         (fh, fw),
@@ -534,6 +923,7 @@ def _draw_beam_patch_onto_frame(
         song_hash=ctx.song_hash,
         hue_drift_per_sec=ctx.hue_drift_per_sec,
         n_color_layers=ctx.n_color_layers,
+        logo_radius_px=logo_radius_px,
     )
     if result is None:
         return
@@ -558,16 +948,31 @@ def _render_compositor_frame(
     shader_transient_hi_track: PulseTrack | None = None,
     drop_hold_fn: PulseFn | None = None,
     snare_fn: PulseFn | None = None,
+    kick_glow_fn: PulseFn | None = None,
+    kick_punch_fn: PulseFn | None = None,
     impact_fn: PulseFn | None = None,
     rim_mod_step: RimModStepFn | None = None,
     resolved_rim_config: RimLightConfig | None = None,
     beam_ctx: _BeamRenderContext | None = None,
+    frame_effects: _FrameEffectsContext | None = None,
 ) -> np.ndarray:
-    """One RGB frame: background → reactive → typography → title → logo.
+    """One RGB frame: background → reactive → [ascii] → typography → title →
+    [rim beams] → logo → FX.
 
-    Title and logo are drawn last so they always sit on top of the reactive
-    shader and lyrics. Logo goes *above* the title so branding is never
-    occluded by an artist/song label that shares its edge.
+    Optional voidcat ASCII (``cfg.voidcat_ascii_ctx``) runs after the reactive
+    pass so glyphs sit on the background wash but under lyrics and logo, leaving
+    the centre column transparent for a centre logo.
+
+    Rim beams (when active) are blended before the logo so they read as light
+    from behind the mark; the logo compositing occludes the beam in the
+    glyph area. Title and logo are drawn so branding stays on top of the
+    reactive shader and lyrics; the logo is drawn *above* the title so the
+    mark is not occluded by an artist/song label on a shared edge. Task 49 adds a
+    final fixed-order frame-effects pass (``zoom_punch → screen_shake →
+    chromatic_aberration → scanline_tear → color_invert``) applied after all
+    layers when an ``EffectsTimeline`` is set on the config; the pass is
+    skipped entirely when no clip of any frame-effect kind is active at
+    ``t``.
     """
     bg_rgb = _validate_background_frame(
         background.background_frame(t),
@@ -608,6 +1013,16 @@ def _render_compositor_frame(
     else:
         uniforms["drop_hold"] = 0.0
     composited = reactive.render_frame_composited_rgb(uniforms, bg_rgb)
+    if cfg.voidcat_ascii_ctx is not None:
+        vox = render_voidcat_ascii_rgba(
+            cfg.width,
+            cfg.height,
+            float(t),
+            uniforms=uniforms,
+            ctx=cfg.voidcat_ascii_ctx,
+            omit_cat=bool(cfg.voidcat_ascii_sharp_cat),
+        )
+        composited = composite_premultiplied_rgba_over_rgb(vox, composited)
     if typo_layer is not None:
         typo_rgba = typo_layer.render_frame(float(t), uniforms)
         composited = composite_premultiplied_rgba_over_rgb(typo_rgba, composited)
@@ -617,12 +1032,19 @@ def _render_compositor_frame(
         logo_scale = 1.0
         logo_opacity_pct = float(cfg.logo_opacity_pct)
         stability = max(0.0, float(cfg.logo_motion_stability))
-        pulse_deadzone = 0.12 * stability
+        pulse_deadzone = 0.22 * stability
+        # Smart controls: stability knob scales a short asymmetric smoother
+        # on the pulse. At stability=1.0 we sample a 60 ms look-back window
+        # and smooth the release; at stability=0.0 we pass the raw pulse
+        # through (legacy behaviour). Stability > 1 lets a user push the
+        # window out for ultra-calm logos during mellow sections.
+        pulse_smooth_sec = 0.06 * stability
         if pulse_fn is not None:
-            # The pulse function is pre-built once per render (``beats`` grid
-            # or ``bass`` envelope) and already encodes the mode + analysis
-            # shape, so the hot path stays a single scalar lookup per frame.
-            pulse = pulse_fn(float(t))
+            # ``stable_pulse_value`` preserves attack (kick still hits in one
+            # frame) but averages the release to kill sub-kick jitter that
+            # otherwise shows up as 1-pixel logo shake after integer origin
+            # rounding.
+            pulse = stable_pulse_value(pulse_fn, float(t), smooth_sec=pulse_smooth_sec)
             logo_scale, opacity_mul = scale_and_opacity_for_pulse(
                 pulse,
                 strength=float(cfg.logo_pulse_strength),
@@ -631,9 +1053,39 @@ def _render_compositor_frame(
             logo_opacity_pct = max(
                 0.0, min(100.0, float(cfg.logo_opacity_pct) * opacity_mul)
             )
+        # Kick punch: clean low-band transient on top of the sustain-aware
+        # pulse, combined via ``max`` of deltas so the punch channel only
+        # wins when it's genuinely bigger (kick attack) and the existing
+        # pulse owns the sustained bounce. Independent of ``pulse_fn`` so
+        # a user who disables the mode-based pulse still gets kick reactivity.
+        if (
+            kick_punch_fn is not None
+            and float(cfg.logo_kick_punch_strength) > 1e-6
+        ):
+            k_val = stable_pulse_value(
+                kick_punch_fn, float(t), smooth_sec=pulse_smooth_sec
+            )
+            # ``kick_punch_scale_and_opacity`` applies its own deadzone (0.12)
+            # which is lower than the logo pulse deadzone on purpose — the
+            # envelope already has the build-time shape gate, so extra margin
+            # from ``pulse_deadzone`` would double-gate real kicks.
+            k_scale, k_opacity_mul = kick_punch_scale_and_opacity(
+                k_val,
+                strength=float(cfg.logo_kick_punch_strength)
+                * float(cfg.logo_pulse_strength),
+            )
+            if k_scale > logo_scale:
+                logo_scale = k_scale
+            k_opacity_pct = max(
+                0.0, min(100.0, float(cfg.logo_opacity_pct) * k_opacity_mul)
+            )
+            if k_opacity_pct > logo_opacity_pct:
+                logo_opacity_pct = k_opacity_pct
         snare_val = 0.0
         if snare_fn is not None:
-            snare_val = float(snare_fn(float(t)))
+            snare_val = stable_pulse_value(
+                snare_fn, float(t), smooth_sec=pulse_smooth_sec
+            )
         if snare_fn is not None and float(cfg.logo_snare_squeeze_strength) > 1e-6:
             sq = float(cfg.logo_snare_squeeze_strength)
             # Apply the same deadzone to the snare-squeeze so mid-band noise
@@ -647,17 +1099,38 @@ def _render_compositor_frame(
             and float(cfg.logo_glow_strength) > 1e-6
         ):
             glow_amt = snare_val * float(cfg.logo_glow_strength)
+        if (
+            cfg.logo_kick_glow
+            and kick_glow_fn is not None
+            and float(cfg.logo_kick_glow_strength) > 1e-6
+        ):
+            # Kick envelope is already master-scaled (_scaled_pulse_fn). Adds on
+            # top of the snare glow so the halo pumps on every low-end transient
+            # even on tracks with sparse / absent snare energy.
+            glow_amt += float(kick_glow_fn(float(t))) * float(
+                cfg.logo_kick_glow_strength
+            )
         glow_rgb = resolve_logo_glow_rgb(cfg.shadow_color, cfg.base_color)
         glitch_amt = 0.0
         glitch_seed = 0
+        glitch_tilt_seed = 0
         if impact_fn is not None and float(cfg.logo_impact_glitch_strength) > 1e-6:
             imp = float(impact_fn(float(t)))
             g = max(0.0, min(1.0, imp)) * float(cfg.logo_impact_glitch_strength)
             if g > 1e-4:
                 glitch_amt = g
-                glitch_seed = glitch_seed_for_time(
-                    str(analysis.get("song_hash") or ""), float(t)
-                )
+                song_hash_str = str(analysis.get("song_hash") or "")
+                glitch_seed = glitch_seed_for_time(song_hash_str, float(t))
+                # Quantise ``t`` into ~0.4 s buckets so every frame of a
+                # single impact event shares the same tilt direction (a
+                # typical glitch lasts <0.3 s, so the whole envelope lands in
+                # one bucket). Per-frame randomness only drives the RGB /
+                # tear noise -- the tilt itself now holds one sign for the
+                # full attack-and-release, reading as a crisp camera nudge
+                # instead of left/right shake.
+                _BUCKET_S = 0.4
+                bucket_t = math.floor(float(t) / _BUCKET_S) * _BUCKET_S
+                glitch_tilt_seed = glitch_seed_for_time(song_hash_str, bucket_t)
         rim_audio_mod: RimAudioModulation | None = None
         if rim_mod_step is not None:
             rim_audio_mod = rim_mod_step(float(t))
@@ -667,6 +1140,16 @@ def _render_compositor_frame(
                 rim_audio_mod.glow_strength_mul,
                 rim_audio_mod.phase_offset_rad,
                 rim_audio_mod.inward_strength_mul,
+            )
+        # Rim beams read as light from *behind* the mark: draw before the logo
+        # composite so the RGBA logo occludes the beam instead of washing out.
+        if beam_ctx is not None:
+            _draw_beam_patch_onto_frame(
+                composited,
+                float(t),
+                ctx=beam_ctx,
+                position=logo_position_norm,
+                logo_scale=float(logo_scale),
             )
         composited = composite_logo_onto_frame(
             composited,
@@ -679,20 +1162,29 @@ def _render_compositor_frame(
             glow_rgb=glow_rgb if glow_amt > 1e-5 else None,
             glitch_amount=glitch_amt,
             glitch_seed=glitch_seed,
+            glitch_tilt_seed=glitch_tilt_seed,
             t_sec=float(t),
             song_hash=str(analysis.get("song_hash") or "") or None,
             rim_light_config=resolved_rim_config,
             rim_audio_mod=rim_audio_mod,
             logo_glow_mode=cfg.logo_glow_mode,
         )
-        if beam_ctx is not None:
-            _draw_beam_patch_onto_frame(
-                composited,
-                float(t),
-                ctx=beam_ctx,
-                position=logo_position_norm,
-                logo_scale=float(logo_scale),
-            )
+    if frame_effects is not None:
+        composited = _apply_frame_effects(composited, float(t), frame_effects)
+    if (
+        cfg.voidcat_ascii_sharp_cat
+        and cfg.voidcat_ascii_ctx is not None
+    ):
+        cat_only = render_voidcat_cat_overlay_rgba(
+            cfg.width,
+            cfg.height,
+            float(t),
+            uniforms=uniforms,
+            ctx=cfg.voidcat_ascii_ctx,
+        )
+        composited = composite_premultiplied_rgba_over_rgb(
+            cat_only, composited
+        )
     return composited
 
 
@@ -808,6 +1300,55 @@ def _snare_envelope_fn(
     return track.value_at
 
 
+def _kick_glow_envelope_fn(
+    cfg: CompositorConfig, analysis: Mapping[str, Any]
+) -> PulseFn | None:
+    """Attack-only bass envelope used to pulse the neon halo on kicks.
+
+    Keyed off :func:`pipeline.beat_pulse.build_bass_pulse_track` so it spikes
+    on each low-band onset and decays back to zero between kicks — distinct
+    from :func:`build_logo_bass_pulse_track` (which adds a sustain follower
+    for the logo *scale* pulse and would keep the halo lit on long 808s).
+    Returns ``None`` when the feature is disabled or the analyser lacks a
+    usable spectrum so the frame loop can skip the lookup entirely.
+    """
+    if not bool(cfg.logo_kick_glow):
+        return None
+    if float(cfg.logo_kick_glow_strength) <= 1e-6:
+        return None
+    track = build_bass_pulse_track(
+        analysis, sensitivity=float(cfg.logo_pulse_sensitivity)
+    )
+    if track is None:
+        return None
+    return track.value_at
+
+
+def _kick_punch_envelope_fn(
+    cfg: CompositorConfig, analysis: Mapping[str, Any]
+) -> PulseFn | None:
+    """Low-band transient envelope used to punch the logo *scale* on kicks.
+
+    Distinct from the sustain-aware :func:`build_logo_bass_pulse_track`:
+    this channel keys off :func:`build_lo_transient_track` so it only
+    fires on actual kick attacks (no sustain follower), with the build-
+    time shape gate applied so between-kick wobble reads as zero. The
+    compositor combines the kick punch with the existing pulse via
+    ``max`` of scale / opacity deltas so one never cancels the other.
+
+    Returns ``None`` when the feature is disabled or the analyser lacks a
+    usable spectrum so the per-frame path can skip the lookup entirely.
+    """
+    if float(cfg.logo_kick_punch_strength) <= 1e-6:
+        return None
+    track = build_lo_transient_track(
+        analysis, sensitivity=float(cfg.logo_pulse_sensitivity)
+    )
+    if track is None:
+        return None
+    return track.value_at
+
+
 def _impact_envelope_fn(
     cfg: CompositorConfig, analysis: Mapping[str, Any]
 ) -> PulseFn | None:
@@ -845,7 +1386,10 @@ def _create_rim_modulation_stepper(
         )
         bass_t = bt
     dt = 1.0 / max(1, float(cfg.fps))
-    strength = max(0.0, float(cfg.logo_rim_mod_strength))
+    # Task 49: ``auto_reactivity_master`` scales the rim-audio driver alongside
+    # bass / snare / impact so one knob tames the full auto reactivity stack.
+    master = _auto_reactivity_master(cfg)
+    strength = max(0.0, float(cfg.logo_rim_mod_strength)) * master
     tuning = RimAudioTuning(global_strength=strength)
 
     def step(t: float) -> RimAudioModulation:
@@ -897,10 +1441,14 @@ def render_single_frame(
     if cfg.logo_path is not None and str(cfg.logo_path).strip():
         logo_position_norm = normalize_logo_position(cfg.logo_position)
         raw_logo = load_logo_rgba(cfg.logo_path)
-        logo_rgba_prepared = prepare_logo_rgba(raw_logo, cfg.height, cfg.width)
+        logo_rgba_prepared = prepare_logo_rgba(raw_logo, cfg.height, cfg.width, max_size_pct=cfg.logo_max_size_pct)
 
     title_rgba = _prerender_title_layer(cfg)
-    pulse_fn = _build_pulse_fn(cfg, analysis)
+    master = _auto_reactivity_master(cfg)
+    # Auto reactivity envelopes: bass pulse (logo), snare, impact — each is a
+    # scalar ``t -> [0, 1]`` closure multiplied by ``master`` so the effects
+    # timeline slider damps the full auto stack without touching user clips.
+    pulse_fn = _scaled_pulse_fn(_build_pulse_fn(cfg, analysis), master)
     shader_bass_track = _shader_bass_track_for_analysis(analysis, cfg)
     (
         shader_transient_lo_track,
@@ -910,8 +1458,12 @@ def render_single_frame(
     drop_hold_fn = _drop_hold_fn_for_analysis(
         analysis, float(cfg.shader_drop_hold_decay_sec)
     )
-    snare_fn = _snare_envelope_fn(cfg, analysis)
-    impact_fn = _impact_envelope_fn(cfg, analysis)
+    snare_fn = _scaled_pulse_fn(_snare_envelope_fn(cfg, analysis), master)
+    kick_glow_fn = _scaled_pulse_fn(_kick_glow_envelope_fn(cfg, analysis), master)
+    kick_punch_fn = _scaled_pulse_fn(_kick_punch_envelope_fn(cfg, analysis), master)
+    auto_impact_fn = _scaled_pulse_fn(_impact_envelope_fn(cfg, analysis), master)
+    user_glitch_fn = _user_glitch_envelope_fn(_timeline_clips(cfg))
+    impact_fn = _combined_glitch_fn(auto_impact_fn, user_glitch_fn)
     rim_mod_step = _create_rim_modulation_stepper(cfg, analysis)
     resolved_rim_config = _effective_rim_light_config(cfg, analysis)
     beam_ctx = _build_beam_render_context(
@@ -920,6 +1472,7 @@ def render_single_frame(
         logo_rgba_prepared=logo_rgba_prepared,
         resolved_rim_config=resolved_rim_config,
     )
+    frame_effects = _build_frame_effects_context(cfg, analysis)
 
     has_typography = bool(aligned_words)
 
@@ -939,6 +1492,7 @@ def render_single_frame(
                 width=cfg.width,
                 height=cfg.height,
                 font_size=cfg.font_size,
+                baseline_y_ratio=float(cfg.typography_baseline_y_ratio),
                 base_color=cfg.base_color,
                 shadow_color=cfg.shadow_color,
             )
@@ -960,10 +1514,13 @@ def render_single_frame(
                 shader_transient_hi_track=shader_transient_hi_track,
                 drop_hold_fn=drop_hold_fn,
                 snare_fn=snare_fn,
+                kick_glow_fn=kick_glow_fn,
+                kick_punch_fn=kick_punch_fn,
                 impact_fn=impact_fn,
                 rim_mod_step=rim_mod_step,
                 resolved_rim_config=resolved_rim_config,
                 beam_ctx=beam_ctx,
+                frame_effects=frame_effects,
             )
         finally:
             if typo_layer is not None:
@@ -1088,10 +1645,15 @@ def render_full_video(
         # skip it on disk errors.
         logo_position_norm = normalize_logo_position(cfg.logo_position)
         raw_logo = load_logo_rgba(cfg.logo_path)
-        logo_rgba_prepared = prepare_logo_rgba(raw_logo, cfg.height, cfg.width)
+        logo_rgba_prepared = prepare_logo_rgba(raw_logo, cfg.height, cfg.width, max_size_pct=cfg.logo_max_size_pct)
 
     title_rgba = _prerender_title_layer(cfg)
-    pulse_fn = _build_pulse_fn(cfg, analysis)
+    master = _auto_reactivity_master(cfg)
+    # Mirror of the same auto-envelope wiring in ``render_single_frame``; the
+    # ``master`` multiplier is applied once here (one scalar lookup per frame
+    # stays the hot path). User ``LOGO_GLITCH`` contributions are additive
+    # after the scale so manual cues keep their intended strength.
+    pulse_fn = _scaled_pulse_fn(_build_pulse_fn(cfg, analysis), master)
     shader_bass_track = _shader_bass_track_for_analysis(analysis, cfg)
     (
         shader_transient_lo_track,
@@ -1101,8 +1663,12 @@ def render_full_video(
     drop_hold_fn = _drop_hold_fn_for_analysis(
         analysis, float(cfg.shader_drop_hold_decay_sec)
     )
-    snare_fn = _snare_envelope_fn(cfg, analysis)
-    impact_fn = _impact_envelope_fn(cfg, analysis)
+    snare_fn = _scaled_pulse_fn(_snare_envelope_fn(cfg, analysis), master)
+    kick_glow_fn = _scaled_pulse_fn(_kick_glow_envelope_fn(cfg, analysis), master)
+    kick_punch_fn = _scaled_pulse_fn(_kick_punch_envelope_fn(cfg, analysis), master)
+    auto_impact_fn = _scaled_pulse_fn(_impact_envelope_fn(cfg, analysis), master)
+    user_glitch_fn = _user_glitch_envelope_fn(_timeline_clips(cfg))
+    impact_fn = _combined_glitch_fn(auto_impact_fn, user_glitch_fn)
     rim_mod_step = _create_rim_modulation_stepper(cfg, analysis)
     resolved_rim_config = _effective_rim_light_config(cfg, analysis)
     beam_ctx = _build_beam_render_context(
@@ -1111,6 +1677,7 @@ def render_full_video(
         logo_rgba_prepared=logo_rgba_prepared,
         resolved_rim_config=resolved_rim_config,
     )
+    frame_effects = _build_frame_effects_context(cfg, analysis)
 
     if start_sec < 0:
         raise ValueError(f"start_sec must be non-negative, got {start_sec!r}")
@@ -1175,6 +1742,7 @@ def render_full_video(
         has_title=has_title,
         has_logo=has_logo,
         has_pulse=has_pulse,
+        has_voidcat_ascii=bool(cfg.voidcat_ascii_ctx is not None),
     )
     # Kinetic-typography renders roughly 1 Skia draw per visible word per
     # frame, so it dominates the per-frame cost by a lot on lyrics-heavy
@@ -1227,6 +1795,7 @@ def render_full_video(
                         width=cfg.width,
                         height=cfg.height,
                         font_size=cfg.font_size,
+                        baseline_y_ratio=float(cfg.typography_baseline_y_ratio),
                         base_color=cfg.base_color,
                         shadow_color=cfg.shadow_color,
                     )
@@ -1266,10 +1835,13 @@ def render_full_video(
                             shader_transient_hi_track=shader_transient_hi_track,
                             drop_hold_fn=drop_hold_fn,
                             snare_fn=snare_fn,
+                            kick_glow_fn=kick_glow_fn,
+                            kick_punch_fn=kick_punch_fn,
                             impact_fn=impact_fn,
                             rim_mod_step=rim_mod_step,
                             resolved_rim_config=resolved_rim_config,
                             beam_ctx=beam_ctx,
+                            frame_effects=frame_effects,
                         )
 
                         bgr = np.ascontiguousarray(composited[:, :, ::-1])

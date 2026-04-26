@@ -8,11 +8,19 @@ behaviours on the logo overlay:
 - **Bass pulse** — size + brightness kick on low-end hits (or on every
   analyzer beat), attack-dominant so the logo bounces instead of sitting
   permanently inflated on sustained sub bass.
+- **Kick punch** — dedicated scale / opacity bump on clean low-band
+  transients (`transient_lo`). Combined with the bass pulse via
+  `max` of deltas so one signal never cancels the other; cleanly
+  separated kicks produce a visibly bigger bounce than the blended
+  sustain-aware pulse alone.
 - **Snare neon glow** — blurred premultiplied halo behind the logo, keyed
   off mid-band spectral hits (~snare / clap range).
+- **Kick neon glow** — the same halo also pumps on low-band (kick / sub)
+  transients, so the rim light reads on tracks with sparse or absent
+  snare energy.
 - **Snare squeeze** — brief inward scale dip on the same mid-band detector
   as the neon glow (can run independently).
-- **Impact glitch** — RGB-split / horizontal tears on loudness jumps (build-
+- **Impact glitch** — RGB-split / horizontal tears + ±22° per-event tilt on loudness jumps (build-
   up → drop), keyed off RMS in ``analysis.json``.
 
 All four drivers feed the same `composite_logo_onto_frame` call, so
@@ -51,33 +59,32 @@ stacking order and corner anchoring are shared.
 for 12–16 px UI text and distorts stroke weights at the sizes we render,
 so disabling it gives smoother, evenly-weighted letters.
 
-Each glyph is painted with a **minimal tight edge bloom**: just enough
-dark edge lift to keep the card legible on busy or similar-luminance
-backgrounds, without a wide stamped halo that makes the text feel
-splotchy:
+Each glyph is painted as a **clean fill only** — no halo, no outer
+glow, no `kStroke_Style` outline, no drop shadow. Every variant was
+tried and rejected on saturated preset palettes:
 
-1. **Tight edge lift** — `MaskFilter.MakeBlur(kOuter_BlurStyle, σ)` with
-   `σ ≈ size_px * 0.022`, alpha ≈ `0.18` (or `0.24` with an explicit
-   shadow colour). Hugs the glyph edge, doesn't bleed more than ~2 %
-   of the cap height.
-2. **Thin outline** — `Paint.kStroke_Style`, `stroke_width ≈ size_px *
-   0.008`, round joins, in the shadow color at 18 % alpha. Provides
-   crisp edge contrast on busy backgrounds.
-3. **Fill** — the main glyph pass in `base_color` at the configured
-   `title_opacity`.
+- A `kStroke_Style` outline in the glow colour drew as a **crisp colour
+  ring** on complementary palettes (cyan fill + pink/magenta glow on
+  `cosmic-flow`; yellow fill + cyan glow on `neon-synthwave`) — the
+  original "text border issue".
+- A wide multi-pass blur (wide + mid + tight) bled far past the glyph
+  and stacked into a **solid colour cloud** at the rim on those same
+  palettes.
+- A tuned single-pass soft outer blur at ~14 % alpha still read as a
+  visible ring on the thumbnail-size render, which is where the
+  treatment is first seen.
 
-The `kOuter_BlurStyle` variant bleeds outward *only*, so the fill stays
-crisp. The previous three-pass recipe (wide / mid / tight) looked
-"neon" in isolation but dominated when presets used bright shadow
-colours (yellow, cyan) over mid-luminance backgrounds, so the current
-single-pass recipe keeps the card minimal and legible. Sigmas, styles,
-and alphas are looked up defensively so skia-python builds that don't
-expose `MaskFilter.MakeBlur` / `kOuter_BlurStyle` fall back to a plain
-tint instead of crashing the render.
-
-Kinetic typography (`pipeline/kinetic_typography.py`) uses the same
-single-pass recipe for every word for the same reason - the large
-display sizes magnified the wide-halo problem.
+Fill-vs-background contrast is instead handled by
+`pipeline.preset_colors.resolve_text_colors`, which picks the brightest
+palette entry for the fill so it stands out against the dark half of
+the palette that the reactive shader renders against. `shadow_hex` /
+`shadow_color` are still accepted at the API boundary for signature
+parity (so a future design iteration can re-enable a treatment without
+an API break), but they are unused in the current render paths in
+`pipeline.title_overlay`, `pipeline.kinetic_typography`, and
+`pipeline.thumbnail`. Do not reintroduce any halo / stroke / bloom in
+any of those three modules without a preset-matrix visual sign-off
+first.
 
 ### Stacking order (full compositor pipeline)
 
@@ -144,6 +151,37 @@ swaps the signal driving the pulse, not the way it looks on screen.
   colour (`CompositorConfig.shadow_color`). Toggles: `logo_snare_glow`,
   `logo_glow_strength`, `logo_glow_sensitivity` on `CompositorConfig` /
   Gradio Branding.
+- **Kick neon (logo):** `_kick_glow_envelope_fn` builds
+  `build_bass_pulse_track` (attack-only, ~0.18 s decay) and adds
+  `kick * logo_kick_glow_strength` to the halo amplitude **on top of** the
+  snare contribution, so every low-end transient flashes the halo even on
+  snare-light tracks. Toggles: `logo_kick_glow` (default `True`) and
+  `logo_kick_glow_strength` (default `1.6`) on `CompositorConfig`; the
+  envelope is master-scaled alongside the other auto reactivity tracks.
+- **Kick punch (logo scale / opacity):** `_kick_punch_envelope_fn` builds
+  `build_lo_transient_track` — the same shape-gated low-band transient
+  envelope the reactive shaders read as `transient_lo` — and drives a
+  dedicated, *larger-budget* map via `kick_punch_scale_and_opacity`:
+  - **scale:** `+20%` at peak kick, `strength=1` (default); up to the
+    `+35%` `max_scale_cap` at `strength=2`.
+  - **opacity multiplier:** `+32%` at peak, `strength=1`; up to the
+    `+55%` `max_opacity_cap` at `strength=2`.
+  Peak kicks therefore punch harder than the sustain-aware bass pulse
+  (which caps at `+12 / +22%`), which is the point: cleanly-separated
+  kicks read visibly on screen without amplifying the chill-section
+  breathing that made the older single-channel path feel blurry on hits.
+  The compositor combines the two channels via `max` of deltas
+  (`logo_scale = max(pulse_scale, kick_scale)`, likewise for opacity) so
+  the pulse still owns sustained bounces and the kick punch only wins
+  when it's genuinely bigger. Uses the build-time shape gate from
+  `shape_reactive_envelope` (see below) so between-hit wobble is
+  pre-silenced — the kick punch helper uses a smaller in-helper
+  deadzone (`0.12`) than the logo pulse (`0.22`) to avoid
+  double-gating real kicks. Toggle: `logo_kick_punch_strength` on
+  `CompositorConfig` (default `1.0`; `0` disables). Master-scaled with
+  the rest of the auto stack via `auto_reactivity_master`, and the
+  existing `logo_pulse_strength` slider scales the punch too so the
+  UI's "Pulse strength" knob stays a single-point-of-control.
 - **Snare squeeze (logo scale):** the same `build_snare_glow_track` envelope
   drives a brief inward scale dip applied on top of the bass-pulse scale:
   `logo_scale *= max(0.68, 1.0 - squeeze_strength * snare * 0.42)`. At the
@@ -156,10 +194,27 @@ swaps the signal driving the pulse, not the way it looks on screen.
   copy (build-up energy ramp), and peak-picks through a fast decay — a
   similar shape to the snare detector but keyed off overall level so it
   fires on drops / transitions rather than every percussive hit.
-  `_rgb_glitch_logo_rgba` then applies an RGB-split + horizontal tear
-  distortion to the logo RGBA at amplitude
-  `impact * logo_impact_glitch_strength`; the per-frame seed is
-  `glitch_seed_for_time(song_hash, t)` so a given render is reproducible.
+  `_rgb_glitch_logo_rgba` then applies an RGB-split + horizontal tear +
+  **±22° tilt** distortion to the logo RGBA at amplitude
+  `impact * logo_impact_glitch_strength`; the per-frame seed
+  (`glitch_seed_for_time(song_hash, t)`) drives the RGB jitter / tear
+  randomness so a given render is reproducible. The tilt direction,
+  however, is picked from a **separate `tilt_seed` that stays stable for
+  every frame of one glitch event** — the compositor quantises `t` into
+  ~0.4 s buckets (`glitch_seed_for_time(song_hash, floor(t / 0.4) * 0.4)`)
+  and passes that bucket seed through `composite_logo_onto_frame`. Without
+  this, a typical 0.2 s impact spanning ~6 frames would re-pick a random
+  left/right sign on every frame, producing violent jitter (the "super
+  shaky" regression we chased). With the stable bucket seed the tilt
+  rises with `amount` on attack, holds one direction, and falls cleanly
+  on release — one crisp impact tilt, not shake noise. `tilt_deg`
+  itself is eased as `direction * _GLITCH_TILT_DEG * amount ** 0.85` so
+  the tilt reads immediately at low amounts while still decaying to zero
+  at the end of the event. The rotated logo is re-centered in its
+  expanded bounding box by `Image.rotate(expand=True)` so the visual
+  centre stays anchored to `_origin_for_position`; beams continue to
+  emit from the pre-glitch centroid captured once per render in
+  `_build_beam_render_context`, which reads as a hard camera shake.
 - `pipeline/compositor.py::_build_pulse_fn(cfg, analysis)` builds a
   single `Callable[[float], float]` once per render, encoding the active
   mode. When `cfg.logo_beat_pulse` is `False`, the analyzer output is
@@ -173,19 +228,37 @@ swaps the signal driving the pulse, not the way it looks on screen.
 - Resize uses PIL **BILINEAR** instead of LANCZOS: per-frame scale deltas are
   modest and bilinear is ~5–10× faster with no visible quality cost.
 
-## Stability (micro-shake deadzone)
+## Stability (micro-shake deadzone + smart smoothing)
 
 Quiet / "chill" sections of a song still carry low-amplitude wobble in the
 normalised bass envelope (5–15 % of peak). `scale_and_opacity_for_pulse`
 used to map those values linearly to a scale delta, which read on screen
 as the logo **micro-shaking** even when nothing was really happening.
 
-`pipeline/beat_pulse.py::apply_pulse_deadzone(pulse, *, deadzone, soft_width)`
-fixes this with a soft deadzone:
+The stability pipeline has two cooperating stages:
 
-- Inputs `≤ deadzone` (default `0.12`) collapse to `0.0` — the logo is
-  perfectly still.
-- Inputs in `(deadzone, deadzone + soft_width]` (default `0.08`-wide
+1. **Stateless smoother** (`beat_pulse.stable_pulse_value`) — asymmetric
+   low-pass around `pulse_fn(t)` driven by a short look-back window
+   (default `60 ms · logo_motion_stability`). On rising edges (current
+   value clearly above every recent sample) it passes the raw value
+   through so kick attacks still hit in one frame; otherwise it returns
+   a 50/50 blend of current and past-average, which kills sub-kick jitter
+   in the release tail. Because the logo's origin is computed via
+   integer-rounded `(frame_w - logo_w) // 2`, a tiny pulse wiggle of
+   `~0.01` can shift the scaled logo by a whole pixel — the smoother
+   removes exactly that class of noise before the scale mapping runs.
+2. **Soft deadzone** (`apply_pulse_deadzone`) — collapses anything below
+   a configurable noise floor to zero and smoothsteps the shoulder; see
+   below. Runs *after* the smoother so the floor operates on clean data.
+
+`pipeline/beat_pulse.py::apply_pulse_deadzone(pulse, *, deadzone, soft_width)`
+handles the hard cut-off:
+
+- Inputs `≤ deadzone` (default `0.22`) collapse to `0.0` — the logo is
+  perfectly still. The default was raised from the original `0.12` after
+  renders showed the logo still shaking on soft bass passes; real kicks
+  land at `~1.0` so they're unaffected.
+- Inputs in `(deadzone, deadzone + soft_width]` (default `0.14`-wide
   shoulder) are remapped through a classic smoothstep
   (`x*x*(3 - 2x)`) so motion eases in rather than snapping on.
 - Inputs above the shoulder pass through untouched, so real kicks still
@@ -200,23 +273,26 @@ behaviour byte-for-byte.
 
 `CompositorConfig.logo_motion_stability: float = 1.0` is exposed through
 `OrchestratorInputs.logo_motion_stability` and the Branding accordion's
-**Logo stability (ignore micro-shake)** slider. It linearly scales the
-effective deadzone in two places:
+**Logo stability (ignore micro-shake)** slider. It linearly scales both
+smart controls in three places:
 
-1. The bass-pulse scale/opacity mapping (via
+1. The bass-pulse scale/opacity mapping (via `stable_pulse_value` →
    `scale_and_opacity_for_pulse(..., deadzone=...)`).
-2. The snare-squeeze gate in `_render_compositor_frame` — the same
-   `apply_pulse_deadzone` is applied to the snare value before the
+2. The snare value read (`stable_pulse_value` on `snare_fn`) that drives
+   the snare-squeeze gate in `_render_compositor_frame`.
+3. The soft deadzone applied to the smoothed snare before the
    `max(0.68, 1.0 - ...)` dip, so a quiet mid-band ripple no longer
    squishes the logo.
 
 Tuning intent:
 
-- `0.00` - legacy behaviour; every envelope sample moves the logo.
-- `1.00` - default; ~12 % deadzone hides chill-section wobble while
-  leaving kicks untouched.
-- up to `2.00` - aggressive; useful for lo-fi / ambient renders where
-  you want a mostly-static logo that only reacts to genuine peaks.
+- `0.00` - legacy behaviour; no smoothing, no deadzone. Every envelope
+  sample moves the logo (shakiest).
+- `1.00` - default; ~60 ms release smoothing + ~22 % deadzone hides
+  chill-section wobble while leaving kicks untouched.
+- up to `2.00` - aggressive; ~120 ms smoothing + ~44 % deadzone. Useful
+  for lo-fi / ambient renders where you want a mostly-static logo that
+  only reacts to genuine peaks.
 
 The slider is percentage-based in the UI (`0-200 %`, default `100 %`)
 and maps to the raw `0.0-2.0` scalar in `_build_render_inputs`.
@@ -260,7 +336,7 @@ The `Branding` tab exposes:
 - **Snare-reactive neon glow** (checkbox + strength %) — halo behind the logo.
 - **Snare squeeze (logo scale)** slider `0 → 100 %` (`40 %` default) —
   brief inward scale dip on mid-band hits; independent of the neon toggle.
-- **Drop / impact glitch** slider `0 → 100 %` (`45 %` default) — RGB-split
+- **Drop / impact glitch** slider `0 → 100 %` (`45 %` default) — RGB-split / ±22° per-event tilt
   / tear on RMS jumps.
 - **Impact sensitivity** slider `0.25 → 3.0` (`1.0` default) — only
   meaningful when glitch > 0 %.
@@ -317,7 +393,7 @@ Fields on `OrchestratorInputs` (all optional, sensible defaults):
 | `logo_glow_strength` | `1.0` | Multiplier on the snare-glow envelope. |
 | `logo_glow_sensitivity` | `1.0` | Scales snare-glow spectral detection. |
 | `logo_snare_squeeze_strength` | `0.40` | Max inward scale dip on snares (0 = off; 1.0 = slider max). |
-| `logo_impact_glitch_strength` | `0.45` | RGB-split / tear amplitude on RMS jumps (0 = off). |
+| `logo_impact_glitch_strength` | `0.45` | RGB-split / tear / ±22° per-event tilt amplitude on RMS jumps (0 = off). |
 | `logo_impact_sensitivity` | `1.0` | Scales the impact envelope before clipping. |
 | `logo_motion_stability` | `1.0` | Multiplier on the pulse/snare soft deadzone (0 = legacy, 1 = default, 2 = extra stable). |
 | `rim_beams_enabled` | `True` | Master switch for rim-light beams on drops + snare lead-ins; see [`logo-rim-beams.md`](logo-rim-beams.md). |

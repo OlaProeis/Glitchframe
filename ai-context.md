@@ -41,7 +41,7 @@
 | Dependencies, Python version | `pyproject.toml`, `requirements.txt` |
 | Setup/feature notes | `docs/technical/project-setup-and-config.md` |
 | Defaults, paths, presets registry | `config.py` |
-| End-to-end pipeline coordination | `orchestrator.py` |
+| End-to-end pipeline coordination; preview/full `effects_timeline.json` → `CompositorConfig` | `orchestrator.py`, `docs/technical/orchestrator-effects-timeline-wiring.md` |
 | Audio ingest (hash, WAV cache, mono preview) | `pipeline/audio_ingest.py` |
 | Drop / build-up / band transients (analysis v2 `events` block) | `pipeline/musical_events.py`, `pipeline/beat_pulse.py` (`build_band_pulse_track`), `docs/technical/musical-events.md` |
 | M1 spectrum render → ffmpeg (`output.mp4` under `outputs/<run_id>/`) | `pipeline/renderer.py`, `config.new_run_id` |
@@ -60,6 +60,17 @@
 | Per-frame compositor → ffmpeg NVENC (bg + reactive + typo + logo, bounded queue) | `pipeline/compositor.py`, `docs/technical/frame-compositor.md` |
 | Thumbnail PNG (chorus/RMS frame, Skia title, beside `output.mp4`) | `pipeline/thumbnail.py`, `docs/technical/thumbnail-generator.md` |
 | Title / lyrics fill + glow color picker (bright-end of preset palette) | `pipeline/preset_colors.py::resolve_text_colors`, consumed by `orchestrator.py` and `pipeline/thumbnail.py::_resolve_title_colors` |
+| Effects timeline model (V1 clips + cache JSON) | `pipeline/effects_timeline.py`, `docs/technical/effects-timeline.md` |
+| Effects timeline editor backend (load/save/bake, ghost hints) | `pipeline/effects_editor.py`, `docs/technical/effects-editor-backend.md` |
+| Effects timeline editor HTML/JS (self-contained `gr.HTML` + inline JS, 7 rows, master reactivity, per-clip gear panel) | `pipeline/effects_editor.py::build_editor_html`, `docs/technical/effects-timeline-editor.md` |
+| Effects timeline Gradio tab (load / save / bake / clear) | `app.py` (`_load_effects_editor`, …), `docs/technical/effects-timeline-gradio-tab.md` |
+| Effects timeline renderers (umbrella: post-pass order, BEAM/LOGO_GLITCH vs frame stack; `SCANLINE_TEAR` compositor pass pending) | `docs/technical/effects-timeline-renderers.md` (per-kind: `screen-shake-renderer.md`, `chromatic-aberration-renderer.md`, `color-invert-renderer.md`, `zoom-punch-renderer.md`; compositor: `effects-timeline-compositor.md`) |
+| Effects timeline unittest coverage map | `docs/technical/effects-timeline-test-suite.md` |
+| Screen shake (timeline → `(dx, dy)` pixels) | `pipeline/screen_shake.py`, `docs/technical/screen-shake-renderer.md` |
+| Chromatic aberration (timeline → R/B split, G fixed) | `pipeline/chromatic_aberration.py`, `docs/technical/chromatic-aberration-renderer.md` |
+| Colour invert mix (timeline → [0, 1] lerp toward inverted frame) | `pipeline/color_invert.py`, `docs/technical/color-invert-renderer.md` |
+| Zoom punch scale (timeline → `>= 1.0` whole-frame scale factor) | `pipeline/zoom_punch.py`, `docs/technical/zoom-punch-renderer.md` |
+| WAV → canvas waveform peaks (min/max columns, shared) | `pipeline/_waveform_peaks.py`, `docs/technical/waveform-peaks.md` |
 | YouTube `metadata.txt` (title, description, chapters, tags) | `pipeline/metadata.py`, `orchestrator.write_run_metadata`, `docs/technical/metadata-generator.md` |
 | Preview 10 s (loudest RMS window), full render, ffprobe A/V sync check | `orchestrator.orchestrate_preview_10s`, `orchestrator.orchestrate_full_render`, `pipeline/preview.py`, `pipeline/av_sync.py`, `docs/technical/preview-and-render.md` |
 | GLSL shaders | `assets/shaders/` |

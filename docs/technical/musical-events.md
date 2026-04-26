@@ -144,6 +144,33 @@ uniform dict alongside `bass_hit` — see
 `transient_lo/mid/hi` entries in
 `docs/technical/reactive-shader-layer.md`.
 
+**Shape gate.** `build_lo/mid/hi_transient_track` default to `shape=True`
+which post-processes the returned envelope with
+`shape_reactive_envelope(deadzone=0.18, soft_width=0.12, gamma=1.3)`:
+
+1. Values `<= 0.18` → hard zero (kills the chill-section leakage floor
+   that otherwise constantly wobbles into shader motion).
+2. Values in `(0.18, 0.30)` → smoothstep shoulder so motion eases in
+   instead of snapping on.
+3. Values above the knee → rescaled to span `[0, 1]` then compressed by
+   `x ** 1.3` so mids drop more than peaks.
+
+Real hits still peak near `1.0` because the top of the curve is the
+identity — the gate only calms the between-hit amplitude. Pass
+`shape=False` (or supply custom `shape_deadzone / shape_soft_width /
+shape_gamma` kwargs) for legacy output / A/B debugging; the logo bass
+pulse (`build_bass_pulse_track` / `build_logo_bass_pulse_track`) is
+unaffected and still uses the linear envelope it always has.
+
+**Logo kick punch.** The compositor also builds its own dedicated
+`build_lo_transient_track` instance inside `_kick_punch_envelope_fn`
+(separate from the shader-facing one so it can be scaled by
+`logo_pulse_sensitivity` instead of `shader_transient_sensitivity`).
+It feeds `kick_punch_scale_and_opacity` — a larger-budget variant of
+`scale_and_opacity_for_pulse` — so clean kicks produce a visibly bigger
+logo bump than the sustain-aware bass pulse can on its own. See
+`docs/technical/title-and-beat-pulse.md` for the combining rules.
+
 ## Verification
 
 - `tests/test_beat_pulse.py` — 30 tests, all pass after the refactor,

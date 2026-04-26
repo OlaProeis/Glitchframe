@@ -326,7 +326,7 @@
         "description": "Modify orchestrator to pass preview time range to BackgroundSource generators (SDXL, AnimateDiff, Ken Burns) for partial asset generation only within loudest 10s + padding; ensure full render completes missing assets with proper cache keys for unchanged quality.",
         "details": "1. In orchestrator.py (from Task 5), add preview_start/end params from Task 18 loudest_10s analysis: def ensure_backgrounds(hash, preview_range=None, full_duration=None): if preview_range: t_start, t_end = preview_range; padding=1.0s; gen_range=(max(0,t_start-padding), min(full_duration, t_end+padding)) else: gen_range=(0,full_duration)\n2. Update BackgroundSource.ensure(mode, song_hash, time_range=gen_range): cache_key=f'{hash}_{mode}_{gen_range[0]:.1f}_{gen_range[1]:.1f}' to distinguish partial/full caches in cache/<hash>/backgrounds/\n3. Modify Task14 SDXL: pipe(prompts_for_range=[section_desc for t in np.arange(gen_range[0],gen_range[1],8)]).images → keyframe_{t:.1f}.png\n4. Task15 AnimateDiff/KenBurns: generate loops/zooms only for gen_range, save with time-specific keys\n5. Full render: call ensure_backgrounds(hash, full_duration=analysis['duration']) to fill gaps, using existing partial cache\n6. Update docs/preview-and-render.md: explain partial caching; background-modes.md: time-range param; Gradio: 'Preview generates backgrounds for 10s window only (~2min vs 25min)'\n7. Cache manifest.json: track generated ranges per mode for resume logic.",
         "testStrategy": "1. Preview 30s song: verify BackgroundSource cache keys contain 'X.X_Y.Y' (10s range), SDXL generates ~2 keyframes (<30s total), preview completes <3min\n2. Full render same song: new cache keys for full range, uses partial cache (no re-gen for preview range), ffprobe full video complete/quality matches non-preview baseline\n3. Check cache/<hash>/backgrounds/: partial files from preview, complete after full render; manifest.json lists ranges\n4. Gradio: progress shows 'Backgrounds (10s preview)' vs 'Backgrounds (full 180s)'; docs updated verifiable\n5. Edge: preview at track edge → padding clamps 0/duration; no A/V issues ffprobe drift<50ms.",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [
           "5",
           "14",
@@ -337,7 +337,8 @@
         "subtasks": [],
         "complexity": 8,
         "recommendedSubtasks": 5,
-        "expansionPrompt": "Split into: 1) Orchestrator preview_range param + gen_range logic; 2) BackgroundSource time-range cache keys; 3) Update SDXL/AnimateDiff/KenBurns for partial generation; 4) Full render gap-filling + cache reuse; 5) Docs/Gradio updates + manifest.json."
+        "expansionPrompt": "Split into: 1) Orchestrator preview_range param + gen_range logic with padding; 2) BackgroundSource time-range cache keys and manifest tracking; 3) Update SDXL/AnimateDiff/Ken Burns for partial generation with time-specific keys; 4) Full render gap-filling + cache reuse logic; 5) Gradio progress updates, docs, and edge case handling.",
+        "updatedAt": "2026-04-23T11:28:17.356Z"
       },
       {
         "id": "20",
@@ -345,7 +346,7 @@
         "description": "Replace generic beat pulse with bass/kick-driven animation using low-frequency energy from analysis.json; add tunable sensitivity in CompositorConfig and preserve optional 'every beat' mode.",
         "details": "**Core Changes in compositor/beat_pulse.py:**\n1. Load analysis.json: extract **low-freq energy** - use `spectrum_bands[0:2]` (bass ~20-250Hz, 8 log-mel bands from Task 4) or compute `librosa.feature.rms(y=librosa.stft(analysis['audio'], n_fft=2048)[:,:,:2])` for sub-bass.\n2. **Bass envelope generator**: `def bass_envelope(analysis, frame_time, sensitivity=1.0): bass_energy = np.mean(spectrum_bands[frame_time*sr//hop:frame_time*sr//hop+frame_len, 0:2]); return np.clip(bass_energy*sensitivity, 0, 1)`\n3. **Alternative signals**: kick-detect = `onset_strength[beats] > threshold` filtered to bass band, or `librosa.onset.onset_strength(analysis['audio'].lowpass(250))` peaks.\n4. **Logo params**: `scale = 1.0 + 0.3*bass_envelope; opacity = 0.7 + 0.3*bass_envelope` (smooth with `scipy.signal.sosfilt` 0.1s attack/decay).\n5. **Config**: In `CompositorConfig`: `pulse_mode='bass' | 'beats' | 'hybrid'; bass_sensitivity=Slider(0.1-3.0, default=1.0)`; Gradio slider in UI.\n6. **Fallback**: If `pulse_mode='beats'`, use existing `beat_grid` interpolation.\n7. **Docs**: Update `title-and-beat-pulse.md`: explain bass vs beats modes, sensitivity tuning, freq ranges used.\n**Extend audio_analyzer.py if needed**: Add `bass_rms = librosa.rms(librosa.stft(audio)[:,:,:2])` to analysis.json.\n**Cache**: `pulse_cache/{song_hash}_{mode}_{sensitivity:.1f}.npy` for envelope per frame.",
         "testStrategy": "1. **Analysis verify**: `python -m pipeline.audio_analyzer sample_bassheavy.mp3` → check `analysis.json` has `spectrum_bands.shape[1]>=2`, `bass_rms` if added.\n2. **Pulse render test**: Mock 10s analysis slice → render logo-only frames, verify **scale/opacity** peaks align with kick hits (visualize matplotlib subplot(energy, pulse)) not every hi-hat.\n3. **UI test**: Gradio → Analyze bass-heavy track (e.g. EDM), slider bass_sensitivity=0.5/1.0/2.0 → Preview: logo **pulsing cleanly on kicks** (no jitter on snares), mode='beats' falls back to grid.\n4. **Full render**: EDM track → ffprobe video, extract logo frames → **energy correlation**: `np.corrcoef(bass_rms[::30], logo_scales)>0.7`; weak-beat track (acoustic) → minimal/no jitter.\n5. **Docs**: Verify `title-and-beat-pulse.md` explains tuning/modes.",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [
           "4",
           "5",
@@ -356,7 +357,8 @@
         "subtasks": [],
         "complexity": 7,
         "recommendedSubtasks": 4,
-        "expansionPrompt": "Split into: 1) Audio analyzer bass energy extraction/envelope; 2) beat_pulse.py bass mode implementation + smoothing; 3) Config/UI sliders + fallback modes; 4) Cache + docs updates."
+        "expansionPrompt": "Split into: 1) Extend audio_analyzer for bass RMS/envelope extraction to analysis.json; 2) Implement beat_pulse.py bass mode with smoothing and fallback to beats; 3) Add CompositorConfig pulse_mode/bass_sensitivity + Gradio UI sliders; 4) Cache implementation + docs for tuning.",
+        "updatedAt": "2026-04-23T11:28:17.471Z"
       },
       {
         "id": "21",
@@ -369,12 +371,12 @@
           "5",
           "18"
         ],
-        "status": "pending",
+        "status": "deferred",
         "subtasks": [],
         "complexity": 7,
         "recommendedSubtasks": 4,
-        "expansionPrompt": "Split into: 1) Job spec schema + JSON/JSONL persistence; 2) CLI batch runner with orchestrate_full_render; 3) Asset copying + stable paths per job; 4) Gradio queue UI + background worker.",
-        "updatedAt": "2026-04-17T23:30:00.000Z"
+        "expansionPrompt": "Split into: 1) Define durable job spec schema + JSON/JSONL serialization from OrchestratorInputs; 2) CLI batch runner with sequential orchestrate_full_render and error isolation; 3) Per-job asset copying + stable output paths; 4) Gradio queue UI with background worker/threading.",
+        "updatedAt": "2026-04-23T11:28:17.474Z"
       },
       {
         "id": "22",
@@ -387,12 +389,12 @@
           "2",
           "18"
         ],
-        "status": "pending",
+        "status": "deferred",
         "subtasks": [],
         "complexity": 3,
         "recommendedSubtasks": 2,
-        "expansionPrompt": "Split into: 1) Gradio UI button + wiring to orchestrate_full_render; 2) Docs updates for one-button flow.",
-        "updatedAt": "2026-04-17T23:30:00.000Z"
+        "expansionPrompt": "Split into: 1) Add prominent Gradio Export button wired to orchestrate_full_render with conditional lyrics alignment; 2) Update UI copy/docs to emphasize one-button flow vs optional precache steps.",
+        "updatedAt": "2026-04-23T11:28:17.477Z"
       },
       {
         "id": "23",
@@ -402,12 +404,12 @@
         "testStrategy": "Unit tests in `tests/test_lyrics_aligner.py`:\n  * `TestSplitUserLyricsTimestampedHeaders` — parse each canonical header form; verify section_starts, line_anchors, and section_labels are populated; verify labels don't leak into lyric text; verify mixed documents with both `---` and timestamped headers work.\n  * Backward-compat: re-run `TestSplitUserLyrics*` existing cases and assert outputs unchanged.\n  * Cache-key stability: `_lyrics_cache_key` for a document using only `---` must hash identically before/after this change.\n  * `TestSectionFingerprintEndToEnd` — add a case where the user provides headers on every section and verify the DP picks the header times verbatim (score 2.0 wins).\nEnd-to-end: load one real song with 5-8 labeled section headers and confirm the `Section-fingerprint placement:` log line shows every section `chosen_starts[i]` equal to the header time (within 5 ms).",
         "priority": "high",
         "dependencies": [],
-        "status": "pending",
+        "status": "deferred",
         "subtasks": [],
         "complexity": 6,
         "recommendedSubtasks": 3,
-        "expansionPrompt": "Split into: 1) Parser enhancements for header grammar + section_labels; 2) Backward compatibility + cache key stability; 3) Integration with DP/forced_sec + JSON persistence.",
-        "updatedAt": "2026-04-20T17:31:26.000Z"
+        "expansionPrompt": "Split into: 1) Enhance lyrics_aligner parser for timestamped header grammar + section_labels dict; 2) Ensure backward compatibility, cache key stability for legacy formats; 3) Integrate header timestamps into forced_sec/DP scoring + optional JSON persistence.",
+        "updatedAt": "2026-04-23T11:28:17.480Z"
       },
       {
         "id": "24",
@@ -519,12 +521,12 @@
         "dependencies": [
           "29"
         ],
-        "status": "pending",
+        "status": "done",
         "subtasks": [],
         "complexity": 4,
         "recommendedSubtasks": 1,
-        "expansionPrompt": "Comprehensive pytest coverage for 24-28 + technical documentation + index update.",
-        "updatedAt": "2026-04-22T00:00:00.000Z"
+        "expansionPrompt": "Create comprehensive pytest coverage for Tasks 24-28 (masks, multi-color, beat modulation, determinism, A/B testing) + technical documentation on behavior/controls + index.md entry.",
+        "updatedAt": "2026-04-23T11:30:08.038Z"
       },
       {
         "id": "31",
@@ -737,192 +739,266 @@
         "updatedAt": "2026-04-22T17:00:50.019Z"
       },
       {
-        "id": 43,
+        "id": "43",
         "title": "Create EffectsTimeline data model",
         "description": "Implement EffectKind Enum, EffectClip dataclass, EffectsTimeline class with load/save functions using atomic writes and validation",
         "details": "Create pipeline/effects_timeline.py with:\n- from enum import Enum; class EffectKind(Enum): BEAM, LOGO_GLITCH, SCREEN_SHAKE, COLOR_INVERT, CHROMATIC_ABERRATION, SCANLINE_TEAR, ZOOM_PUNCH\n- from dataclasses import dataclass; @dataclass class EffectClip: id: str, kind: EffectKind, t_start: float, duration_s: float, settings: dict, auto_source: bool\n- class EffectsTimeline: clips: list[EffectClip], auto_enabled: dict[EffectKind, bool], auto_reactivity_master: float\n- def load(cache_dir: str) -> EffectsTimeline, def save(cache_dir: str, timeline: EffectsTimeline) with .json.tmp + os.replace() + strict schema validation using pydantic or manual key checks",
         "testStrategy": "JSON round-trip serialization/deserialization, validation rejects unknown settings keys with ValueError, load/save atomicity test with interrupted writes",
         "priority": "high",
         "dependencies": [],
-        "status": "pending",
-        "subtasks": []
+        "status": "done",
+        "subtasks": [],
+        "complexity": 5,
+        "recommendedSubtasks": 2,
+        "expansionPrompt": "Split into: 1) Define EffectKind Enum, EffectClip dataclass, EffectsTimeline class; 2) Implement load/save with atomic writes, pydantic/manual validation, and JSON roundtrip.",
+        "updatedAt": "2026-04-23T11:29:14.399Z"
       },
       {
-        "id": 44,
+        "id": "44",
         "title": "Extract shared waveform peaks helper",
         "description": "Move compute_peaks from lyrics_editor.py to shared _waveform_peaks.py for reuse by both editors",
         "details": "Create pipeline/_waveform_peaks.py with def compute_peaks(audio_path: str, sample_rate: int) -> np.ndarray\nUpdate pipeline/lyrics_editor.py to import from _waveform_peaks\nAdd type hints and docstring matching existing implementation",
         "testStrategy": "Peaks computation identical to previous lyrics_editor version, both editors produce same peaks output for same audio",
         "priority": "high",
         "dependencies": [],
-        "status": "pending",
-        "subtasks": []
+        "status": "done",
+        "subtasks": [],
+        "complexity": 2,
+        "recommendedSubtasks": 0,
+        "expansionPrompt": "",
+        "updatedAt": "2026-04-23T11:37:31.264Z"
       },
       {
-        "id": 45,
+        "id": "45",
         "title": "Implement screen_shake renderer",
         "description": "Create screen_shake.py returning shake_offset(t, clips, song_hash) -> (dx, dy)",
         "details": "pipeline/screen_shake.py:\ndef shake_offset(t: float, clips: list[EffectClip], song_hash: str) -> tuple[float, float]:\n  # Find active SCREEN_SHAKE clips at t\n  # seed = hash(song_hash + t)\n  # return amplitude_px * sin(frequency_hz * t + seed) scaled by settings\nUse existing glitch_seed_for_time pattern for determinism",
         "testStrategy": "Zero offset outside clip intervals, non-zero inside, deterministic for fixed song_hash+t, matches settings dict",
         "priority": "medium",
         "dependencies": [
-          43
+          "43"
         ],
-        "status": "pending",
-        "subtasks": []
+        "status": "done",
+        "subtasks": [],
+        "complexity": 4,
+        "recommendedSubtasks": 1,
+        "expansionPrompt": "Implement deterministic shake_offset(t) using glitch_seed_for_time pattern, active clip detection, settings scaling.",
+        "updatedAt": "2026-04-23T11:38:53.274Z"
       },
       {
-        "id": 46,
+        "id": "46",
         "title": "Implement color_invert renderer",
         "description": "Create color_invert.py returning invert_mix(t, clips) -> float in [0,1]",
         "details": "pipeline/color_invert.py:\ndef invert_mix(t: float, clips: list[EffectClip]) -> float:\n  # Interpolate active COLOR_INVERT clips at t\n  # Return weighted mix factor for lerping frame -> 255-frame",
         "testStrategy": "Returns 0.0 outside intervals, settings-driven mix inside, smooth interpolation between overlapping clips",
         "priority": "medium",
         "dependencies": [
-          43
+          "43"
         ],
-        "status": "pending",
-        "subtasks": []
+        "status": "done",
+        "subtasks": [],
+        "complexity": 3,
+        "recommendedSubtasks": 0,
+        "expansionPrompt": "",
+        "updatedAt": "2026-04-23T11:40:34.701Z"
       },
       {
-        "id": 47,
+        "id": "47",
         "title": "Implement zoom_punch renderer",
         "description": "Create zoom_punch.py for brief scale-in/out of entire frame",
         "details": "pipeline/zoom_punch.py:\ndef zoom_scale(t: float, clips: list[EffectClip]) -> float:\n  # Brief punch curve (ease-in-out) based on clip settings\n  # Return scale factor >1.0 during punch, 1.0 elsewhere",
         "testStrategy": "Scale=1.0 outside intervals, punch curve peaks per settings, bilinear resize compatible",
         "priority": "medium",
         "dependencies": [
-          43
+          "43"
         ],
-        "status": "pending",
-        "subtasks": []
+        "status": "done",
+        "subtasks": [],
+        "complexity": 4,
+        "recommendedSubtasks": 1,
+        "expansionPrompt": "Implement ease-in-out zoom curve peaking during clip intervals per settings.",
+        "updatedAt": "2026-04-23T11:42:25.723Z"
       },
       {
-        "id": 48,
+        "id": "48",
         "title": "Implement effects_editor backend handlers",
         "description": "Create effects_editor.py with load_editor_state, save_edited_timeline, bake_auto_schedule",
         "details": "pipeline/effects_editor.py:\n- load_editor_state(cache_dir) -> {'clips': [...], 'peaks': [...], 'duration': float, 'ghost_events': [...]}\n- save_edited_timeline(cache_dir, json_payload, song_hash_from_dir) with validation\n- bake_auto_schedule(cache_dir) converts auto events to EffectClip records, dedupes vs existing clips (±20ms)",
         "testStrategy": "Handler validation rejects malformed payloads, song_hash extracted from dir name only, bake dedupes correctly",
         "priority": "high",
         "dependencies": [
-          43,
-          44
+          "43",
+          "44"
         ],
-        "status": "pending",
-        "subtasks": []
+        "status": "done",
+        "subtasks": [],
+        "complexity": 6,
+        "recommendedSubtasks": 3,
+        "expansionPrompt": "Break down into: 1) Implement load_editor_state function handling clips, peaks, duration, and ghost_events loading; 2) Implement save_edited_timeline with JSON validation and song_hash extraction from directory; 3) Implement bake_auto_schedule with conversion of auto events to EffectClip records and deduplication logic (±20ms tolerance).",
+        "updatedAt": "2026-04-23T11:45:46.417Z"
       },
       {
-        "id": 49,
+        "id": "49",
         "title": "Integrate effects into compositor",
         "description": "Update compositor.py to merge user clips with auto schedule and apply frame effects",
         "details": "Add CompositorConfig.effects_timeline: EffectsTimeline | None, auto_reactivity_master: float\nImplement _build_frame_effects_context(cfg) -> fast per-frame callables\nIn _render_compositor_frame: apply zoom_punch -> screen_shake -> chromatic_aberration -> scanline_tear -> color_invert order\nMaster slider scales ONLY auto paths\nAlso: merge user BEAM clips into _build_beam_render_context (additive, no 10 s gate on user clips) and user LOGO_GLITCH clips into the impact-glitch envelope path in the same additive way",
         "testStrategy": "Empty timeline produces identical frames to main branch, user BEAM clip fires independently of auto schedule, user LOGO_GLITCH clip fires independently of analyzer impact events",
         "priority": "high",
         "dependencies": [
-          45,
-          46,
-          47,
-          48,
-          54,
-          55
+          "45",
+          "46",
+          "47",
+          "48",
+          "54",
+          "55"
         ],
-        "status": "pending",
-        "subtasks": []
+        "status": "done",
+        "subtasks": [],
+        "complexity": 8,
+        "recommendedSubtasks": 4,
+        "expansionPrompt": "Divide into: 1) Extend CompositorConfig with effects_timeline and auto_reactivity_master; 2) Implement _build_frame_effects_context for fast per-frame callables; 3) Update _render_compositor_frame to apply effects in fixed order (zoom_punch -> screen_shake -> chromatic_aberration -> scanline_tear -> color_invert); 4) Integrate user BEAM and LOGO_GLITCH clips additively into beam and impact-glitch paths with master scaling only on auto paths.",
+        "updatedAt": "2026-04-23T11:58:25.608Z"
       },
       {
-        "id": 50,
+        "id": "50",
         "title": "Create effects timeline HTML/JS editor",
         "description": "Implement build_editor_html mirroring lyrics editor pattern with 7 effect rows + ghost markers",
         "details": "In effects_editor.py: def build_editor_html(state, audio_url, container_id, state_js_var) -> str\nInline vanilla JS + CSS for:\n- Waveform canvas + 7 color-coded rows\n- Drag/resize clips, multi-select, rubber-band, +/- zoom\n- Per-clip gear panels bound to settings dict\n- Ghost auto markers, per-row auto disable checkboxes\n- Master reactivity slider\nUse <script type=\"text/plain\"> + onerror pattern",
         "testStrategy": "Manual testing: clip creation/movement/resize, settings panel binding, ghost markers appear at auto times",
         "priority": "high",
         "dependencies": [
-          48
+          "48"
         ],
-        "status": "pending",
-        "subtasks": []
+        "status": "done",
+        "subtasks": [],
+        "complexity": 9,
+        "recommendedSubtasks": 5,
+        "expansionPrompt": "Split into: 1) Scaffold build_editor_html mirroring lyrics editor structure with container setup; 2) Implement waveform canvas rendering and 7 color-coded effect rows; 3) Add drag/resize, multi-select, rubber-band selection, and zoom controls in vanilla JS; 4) Create per-clip gear panels bound to dynamic settings dictionaries; 5) Add ghost auto markers, per-row disable checkboxes, and master reactivity slider with state synchronization.",
+        "updatedAt": "2026-04-23T12:08:45.638Z"
       },
       {
-        "id": 51,
+        "id": "51",
         "title": "Add Effects timeline Gradio tab",
         "description": "Add new gr.Tab after Lyrics timeline with Load/Save/Bake/Clear buttons",
         "details": "In app.py:\n- gr.Tab(\"Effects timeline\", elem_id=\"effects-tab\")\n- gr.HTML for editor, hidden gr.Textbox for state\n- Buttons calling _load_effects_editor(), _save_effects_editor(), etc.\nMirror exact lyrics editor wiring pattern",
         "testStrategy": "Tab loads with waveform + empty rows + ghost markers, buttons trigger correct handlers",
         "priority": "high",
         "dependencies": [
-          50
+          "50"
         ],
-        "status": "pending",
-        "subtasks": []
+        "status": "done",
+        "subtasks": [],
+        "complexity": 3,
+        "recommendedSubtasks": 1,
+        "expansionPrompt": "Implement gr.Tab for Effects timeline mirroring lyrics tab pattern: add HTML component for editor, hidden Textbox for state, and Load/Save/Bake/Clear buttons wired to respective handlers (_load_effects_editor, etc.).",
+        "updatedAt": "2026-04-23T12:18:04.197Z"
       },
       {
-        "id": 52,
+        "id": "52",
         "title": "Wire orchestrator integration",
         "description": "Add OrchestratorInputs.effects_timeline_enabled and auto_reactivity_master",
         "details": "Update orchestrator to load effects_timeline.json when enabled\nThread into CompositorConfig alongside master multiplier\nDefault: effects_timeline_enabled=True, auto_reactivity_master=1.0",
         "testStrategy": "Orchestrator passes timeline to compositor when enabled, master slider value flows through",
         "priority": "medium",
         "dependencies": [
-          49
+          "49"
         ],
-        "status": "pending",
-        "subtasks": []
+        "status": "done",
+        "subtasks": [],
+        "complexity": 4,
+        "recommendedSubtasks": 1,
+        "expansionPrompt": "Extend OrchestratorInputs with effects_timeline_enabled (default True) and auto_reactivity_master (default 1.0); add conditional loading of effects_timeline.json; pass timeline and master value through to CompositorConfig.",
+        "updatedAt": "2026-04-23T12:27:48.111Z"
       },
       {
-        "id": 53,
+        "id": "53",
         "title": "Add comprehensive tests and docs",
         "description": "Create all specified test files and documentation",
         "details": "Tests:\n- tests/test_effects_timeline.py (JSON roundtrip, validation, bake)\n- tests/test_effects_editor.py (handlers)\n- tests/test_screen_shake.py etc. for each renderer\n- tests/test_compositor_effects_timeline.py (regression guard)\nDocs:\n- docs/technical/effects-timeline-editor.md\n- docs/technical/effects-timeline-renderers.md\n- Update docs/index.md and ai-context.md",
         "testStrategy": "`uv run pytest` passes with no regressions, docs validate against implementation",
         "priority": "medium",
         "dependencies": [
-          43,
-          44,
-          45,
-          46,
-          47,
-          48,
-          49,
-          50,
-          51,
-          52,
-          54,
-          55
+          "43",
+          "44",
+          "45",
+          "46",
+          "47",
+          "48",
+          "49",
+          "50",
+          "51",
+          "52",
+          "54",
+          "55"
         ],
-        "status": "pending",
-        "subtasks": []
+        "status": "done",
+        "subtasks": [],
+        "complexity": 6,
+        "recommendedSubtasks": 3,
+        "expansionPrompt": "Divide into: 1) Unit tests for effects_timeline (JSON roundtrip, validation, bake) and effects_editor handlers; 2) Renderer integration tests (screen_shake.py, etc.) and compositor_effects_timeline regression tests; 3) Documentation including effects-timeline-editor.md, effects-timeline-renderers.md, and updates to index.md/ai-context.md.",
+        "updatedAt": "2026-04-23T12:31:43.727Z"
       },
       {
-        "id": 54,
+        "id": "54",
         "title": "Implement chromatic_aberration renderer",
         "description": "Create chromatic_aberration.py for full-frame per-channel RGB shift driven by active CHROMATIC_ABERRATION clips",
         "details": "pipeline/chromatic_aberration.py:\ndef apply_chromatic_aberration(frame: np.ndarray, t: float, clips: list[EffectClip], song_hash: str) -> np.ndarray:\n  # Find active CHROMATIC_ABERRATION clips at t; early-return frame untouched if none.\n  # Per-clip settings: shift_px (float, max pixel offset of R/B channels), jitter (0..1, seeded per-frame wobble), direction_deg (optional fixed angle; default random-per-clip seeded from song_hash + clip.id).\n  # Per-frame seed: hash(song_hash + clip.id + round(t*1000)) -> reproducible jitter matching glitch_seed_for_time pattern.\n  # Implementation: split RGB -> np.roll / cv2.warpAffine by (dx, dy) computed from (shift_px, angle + jitter), recombine. G channel stays fixed; R and B shift opposite directions so the aberration reads.\n  # Clamp shift so it never exceeds min(H, W) * 0.1 to keep output readable.\n  # Return new ndarray, never mutate input in-place (keeps the compositor frame-queue invariant intact).\nKeep it pure NumPy (matches the pipeline's dependency floor); fall back to skimage/cv2 only if profiling shows a hot-path win.",
         "testStrategy": "Frame bit-identical to input when no clip active at t. With one active clip at strength>0: R and B channels shifted by expected pixel count, G channel unchanged, output dtype/shape preserved. Deterministic under fixed song_hash + clip.id + t. Clip with shift_px=0 returns input frame unchanged.",
         "priority": "medium",
         "dependencies": [
-          43
+          "43"
         ],
-        "status": "pending",
-        "subtasks": []
+        "status": "done",
+        "subtasks": [],
+        "complexity": 7,
+        "recommendedSubtasks": 2,
+        "expansionPrompt": "Break into: 1) Core logic for finding active CHROMATIC_ABERRATION clips at time t, compute per-frame deterministic shifts using song_hash+clip.id+t seed, handle jitter/direction_deg settings with bounds; 2) NumPy implementation of RGB channel splitting, np.roll/warpAffine shifts (R/B opposite directions, G fixed), recombination returning new ndarray without mutation.",
+        "updatedAt": "2026-04-23T12:34:46.063Z"
       },
       {
-        "id": 55,
+        "id": "55",
         "title": "Implement scanline_tear renderer",
         "description": "Create scanline_tear.py for horizontal row-offset distortion driven by active SCANLINE_TEAR clips",
         "details": "pipeline/scanline_tear.py:\ndef apply_scanline_tear(frame: np.ndarray, t: float, clips: list[EffectClip], song_hash: str) -> np.ndarray:\n  # Find active SCANLINE_TEAR clips at t; early-return untouched if none.\n  # Per-clip settings: intensity (0..1, max horizontal offset as fraction of W), band_count (int, number of torn horizontal bands, default 3-6), band_height_px (optional), wrap_mode ('wrap' | 'clamp' | 'black', default 'wrap').\n  # Per-frame seed: hash(song_hash + clip.id + round(t*1000)). Pick band y-positions + per-band dx from RNG; apply np.roll along axis=1 per band.\n  # Accumulate contributions across overlapping clips (later clips stack on earlier). Return new ndarray.\n  # Keep shifts bounded to +/- intensity * W * 0.25 so tears never displace more than a quarter of the frame width.\nReference pattern: pipeline/logo_rim_beams.py deterministic seeding; pipeline/chromatic_aberration.py for the ndarray-in-ndarray-out contract.",
         "testStrategy": "Frame bit-identical to input when no clip active. With one clip at intensity>0: exactly `band_count` bands shifted horizontally, G/R/B all shifted together (no channel split), output dtype/shape preserved. Deterministic under fixed song_hash + clip.id + t. intensity=0 returns input frame unchanged.",
         "priority": "medium",
         "dependencies": [
-          43
+          "43"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "complexity": 7,
+        "recommendedSubtasks": 2,
+        "expansionPrompt": "Split into: 1) Clip activation detection and per-frame deterministic band positioning/offsets using hash(song_hash + clip.id + round(t*1000)), handle intensity/band_count/band_height_px/wrap_mode settings; 2) Multi-band horizontal shifting via np.roll per band with accumulation across overlapping clips, bounded shifts, returning new ndarray.",
+        "updatedAt": "2026-04-23T12:39:46.796Z"
+      },
+      {
+        "id": "56",
+        "title": "Unify analyser-timed FX under the effects timeline (single control surface)",
+        "description": "Remove duplicate controls outside the Effects timeline editor for glitch, beams, and other kinds that are currently driven both from main Gradio (e.g. branding/impact) and from the timeline/ghost/bake path. The timeline becomes the only user-facing place to enable and shape those events.",
+        "details": "Product model:\n- Default per-row `auto_enabled` in the effects editor to OFF for kinds that today stack invisible compositor auto on top of clips (at minimum LOGO_GLITCH and BEAM).\n- When the user turns auto ON for a row, materialize `EffectClip` rows from the same analyser sources as ghosts/bake (`build_ghost_events` / `bake_auto_schedule` logic)—no parallel compositor auto that adds the same hits again.\n- Clips on the timeline are authoritative: edit, shorten, or delete a clip and render matches.\n\nImplementation direction:\n1) LOGO_GLITCH: Stop surfacing standalone logo impact glitch controls in Branding (or repoint them into timeline-only semantics). Compositor must not sum `_impact_envelope_fn` with user clips when the timeline owns glitch—clips-only path. Decide fate of `logo_impact_glitch_strength` / sensitivity (fixed internal defaults, migrate to clip settings, or per-timeline JSON fields).\n2) BEAM: When timeline is authoritative, skip analyser `schedule_rim_beams` auto leg so baked/manual BEAM clips are not duplicated; auto ON generates beam clips from `_schedule_beams_for_ghosts` / same schedule as today.\n3) Audit ZOOM/SCREEN_SHAKE/CHROMATIC (already clip-first for render), SCANLINE_TEAR/COLOR_INVERT (ghost/bake gaps), and align defaults + docs.\n4) UX: Clarify auto checkbox + optional explicit “generate clips” flow; update `docs/technical/effects-timeline-editor.md`, `effects-timeline-compositor.md`, `effects-timeline-gradio-tab.md`; extend `tests/test_compositor_effects_timeline.py` and effects editor tests.\n\nMigration: existing `effects_timeline.json` files may need default `auto_enabled` false for affected kinds; document behaviour for old projects that relied on Branding sliders alone.",
+        "testStrategy": "No double application of glitch or beam auto vs clips; with fresh timeline defaults and no clips, hidden analyser glitch/beams do not fire until auto generates clips or user adds clips; pytest compositor + effects editor coverage; manual smoke on Effects timeline tab + preview render.",
+        "priority": "high",
+        "dependencies": [
+          "49",
+          "53"
         ],
         "status": "pending",
-        "subtasks": []
+        "subtasks": [],
+        "complexity": 7,
+        "recommendedSubtasks": 4,
+        "expansionPrompt": "Divide into: 1) Compositor flags / timeline schema for clip-authoritative BEAM + LOGO_GLITCH and removal of duplicate auto paths; 2) Gradio/app.py remove or relocate Branding controls; effects_editor defaults + auto-on clip generation wiring; 3) SCANLINE/COLOR_INVERT and remaining kinds audit; 4) Docs + migration note + tests.",
+        "updatedAt": "2026-04-26T17:15:00.000Z"
       }
     ],
     "metadata": {
-      "created": "2026-04-23T11:19:36.706Z",
-      "updated": "2026-04-23T11:19:36.706Z",
-      "description": "Tasks for master context"
+      "version": "1.0.0",
+      "lastModified": "2026-04-26T17:15:00.000Z",
+      "taskCount": 56,
+      "completedCount": 50,
+      "tags": [
+        "master"
+      ]
     }
   }
 }

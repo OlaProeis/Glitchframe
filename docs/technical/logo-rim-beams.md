@@ -27,15 +27,17 @@ Angles are seeded per-drop from `song_hash`: a random base angle, ~120° between
 
 ## Per-frame patch (`compute_beam_patch`)
 
-`compute_beam_patch((H, W), *, centroid_xy, t, scheduled, rim_rgb, cfg, color_spread_rad, song_hash, hue_drift_per_sec, n_color_layers)` returns a padded premultiplied-RGBA patch (or `None` when no beam is active at `t`). Key steps:
+`compute_beam_patch((H, W), *, centroid_xy, t, scheduled, rim_rgb, cfg, color_spread_rad, song_hash, hue_drift_per_sec, n_color_layers, logo_radius_px=0.0)` returns a padded premultiplied-RGBA patch (or `None` when no beam is active at `t`). Key steps:
 
 1. Filter the schedule to beams where `0 <= t - t_start <= duration_s`; empty → return `None`.
-2. Compute the patch bounding box around the active beams + the logo centroid (axis-aligned, clipped to the frame).
-3. For each active beam, evaluate an envelope `linear-attack(0.04 s) · exponential-decay` and paint the beam as:
-   - along-axis profile: fast rise from the centroid (~10 % of length), then tail into the tip,
-   - across-axis profile: Gaussian sigma = `thickness_px`.
-4. Accumulate contributions as straight sRGB `alpha · tint` + per-pixel max alpha so the premultiplied invariant (`rgb <= alpha`) holds by construction.
-5. A light 1.8 px Gaussian blur softens pixel-grid aliasing.
+2. Compute the patch bounding box around the active beams + the logo centroid (axis-aligned, clipped to the frame). Margins honour the halo sigma (`thickness_px * halo_width_mul`) so the bloom never clips against the patch edge.
+3. For each active beam, evaluate an envelope `linear-attack(0.04 s) · exponential-decay` (default `duration_sec = 0.75 s`, so roughly a `0.5 s` afterglow hangs after the attack) and paint the beam as:
+   - **edge-offset origin**: ``u = 0`` sits at ``logo_radius_px * cfg.edge_offset_frac`` outward from the centroid, so beams clearly spring *from* the logo rim instead of piercing its middle. Default ``edge_offset_frac = 0.70`` (just inside the rim) keeps a usable length remaining out to the frame edge; pass ``logo_radius_px=0`` for the legacy centroid-rooted behaviour.
+   - **core profile**: short rise just past the edge, then a gentle ``tail ** 0.85`` falloff to the tip, multiplied by a Gaussian sigma = ``thickness_px``. The exponent is deliberately < 1 so the bright core holds across most of the beam's length and only fades close to the nominal tip; combined with ``*_length_frac_edge > 1`` (defaults `1.35` lead-in / `1.40` drop) the **visible** core reaches the actual frame edge before it dims out, reading as a full-screen ray instead of a short stub.
+   - **halo profile**: the same along-axis shape at a wider Gaussian sigma = ``thickness_px * halo_width_mul`` (default ``3.5×``), at reduced intensity = ``halo_intensity`` (default ``0.70``). The halo uses a softer ``tail ** 0.6`` falloff so the afterglow bloom trails behind the crisp core. Blended with per-pixel ``max`` of core + halo so the beam reads as a bright bloom rather than a thin stroke.
+   - **white-hot core boost** (``core_white_boost``, default ``0.55``): additional pure-white energy added into the brightest core pixels (weighted by ``profile_core``). This saturates the beam's axis toward white so dark shadow-colour presets still read as a bright ray on a black background while the halo keeps the preset tint (so the afterglow colour stays faithful to the preset).
+4. Accumulate contributions as straight sRGB `alpha · tint` + white-hot core (all three channels) + per-pixel max alpha so the premultiplied invariant (`rgb <= alpha`) holds by construction.
+5. A ~2.6 px Gaussian blur softens pixel-grid aliasing and feeds the afterglow look.
 6. Return `BeamPatchResult(patch, x0, y0)` ready for `_blend_premult_rgba_patch` (the same helper the rim patch uses).
 
 Colours come from `_layer_srgb_tints` in `pipeline/logo_rim_lights.py`, so beams automatically inherit `color_spread_rad` + `hue_drift_per_sec` from the resolved `RimLightConfig`. When the travelling rim is disabled but beams are on, the scheduler still fires; the tint falls back to the preset's shadow/base hex.
@@ -53,7 +55,11 @@ Colours come from `_layer_srgb_tints` in `pipeline/logo_rim_lights.py`, so beams
 - Captures the rim colour context (`rim_rgb`, `color_spread_rad`, `n_color_layers`, `hue_drift_per_sec`) from the resolved rim config (or preset defaults when rim is off).
 - Runs `compute_logo_rim_prep` once to get the logo centroid in prepared-logo pixel space.
 
-`_render_compositor_frame` then projects the prepared centroid through the per-frame logo scale + `_origin_for_position` to find the output-space centroid, calls `compute_beam_patch`, and blends the patch in place **after** the logo composite so beams always sit on top of the branding element they seem to emit from.
+`_render_compositor_frame` then projects the prepared centroid through the per-frame logo scale + `_origin_for_position` to find the output-space centroid, estimates the logo radius as ``0.5 * min(logo_h, logo_w)`` (in output px, tracking the per-frame pulse scale), calls `compute_beam_patch(..., logo_radius_px=...)`, and blends the patch in place **after** the logo composite so beams always sit on top of the branding element they seem to emit from.
+
+### Timeline BEAM clips: duration floor
+
+`_user_beam_schedule` converts each `EffectKind.BEAM` clip on the effects timeline into a `ScheduledBeam` (one per clip, treated as a hero drop). Because the envelope's attack alone is 40 ms, a hand-placed timeline BEAM clip with a very short `duration_s` would otherwise collapse to a single-frame "point" and never play the afterglow. The schedule therefore floors the rendered beam lifetime at `BeamConfig.duration_sec` (default `0.75 s`) while preserving the user-chosen `t_start` exactly. Authors can still place BEAM clips as thin timeline ticks — the full attack + decay + afterglow plays regardless of the clip's on-timeline width.
 
 ## UI
 

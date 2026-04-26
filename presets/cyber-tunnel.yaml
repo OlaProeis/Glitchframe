@@ -1,0 +1,12 @@
+prompt: >-
+  Dark cyberpunk void, infinite wireframe tunnel vanishing into red-orange
+  emissive lattice, deep black negative space, cool blue-violet depth haze,
+  subtle bloom and high-contrast neon, first-person flight, cinematic wide
+shader: tunnel_flight
+typo_style: beat-shake
+colors:
+  - "#FF2A1A"
+  - "#FF6B2C"
+  - "#6B4DFF"
+  - "#9D4EDD"
+  - "#FF1B8D"

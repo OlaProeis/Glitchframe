@@ -42,7 +42,11 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_WIDTH = 1920
 DEFAULT_HEIGHT = 1080
 DEFAULT_FONT_SIZE = 72
+# Generic Skia lower-third anchor (e.g. thumbnail title line).
 DEFAULT_BASELINE_RATIO = 0.75
+# Full compositor path: sit lyrics lower so they center better between a
+# center-placed logo and the bottom Artist — Title imprint.
+DEFAULT_KINETIC_BASELINE_RATIO = 0.82
 DEFAULT_LINE_FADE_SECONDS = 0.4
 DEFAULT_INTRO_SECONDS = 0.18
 DEFAULT_OUTRO_SECONDS = 0.25
@@ -716,33 +720,14 @@ class KineticTypographyLayer:
                 # centre, not its left edge.
                 x0 = -word_width * 0.5
 
-                if self._shadow_rgb is not None:
-                    # Single tight outer-blur pass: just enough dark edge
-                    # lift to keep the letters legible on busy or similar-
-                    # luminance backgrounds without the wide "stamped"
-                    # halo the previous three-pass recipe produced. The
-                    # wide/mid passes bled far past the glyph edges on
-                    # bright preset shadows (e.g. yellow) and made the
-                    # text hard to read; the tight edge bloom is enough
-                    # because kinetic typography uses large display sizes.
-                    sigma = max(0.5, self._font_size * 0.022)
-                    halo_paint = skia.Paint(
-                        AntiAlias=True,
-                        Color=_argb_with_alpha(
-                            self._shadow_rgb, alpha * 0.22
-                        ),
-                    )
-                    style = getattr(
-                        skia, "kOuter_BlurStyle", None
-                    ) or getattr(skia, "kNormal_BlurStyle", None)
-                    if style is not None:
-                        halo_paint.setMaskFilter(
-                            skia.MaskFilter.MakeBlur(style, sigma)
-                        )
-                    canvas.drawString(
-                        word.word, x0, 0.0, self._font, halo_paint
-                    )
-
+                # No halo / glow / stroke — every variant (tight single
+                # pass, wide multi-pass, soft whisper, kStroke outline)
+                # drew as a coloured rim or blob on saturated preset
+                # palettes. Ship a clean fill and let
+                # :func:`pipeline.preset_colors.resolve_text_colors`
+                # guarantee fill-vs-background contrast. ``shadow_color``
+                # is accepted at the API boundary but currently unused in
+                # the render path.
                 main_paint = skia.Paint(
                     AntiAlias=True,
                     Color=_argb_with_alpha(self._base_rgb, alpha),
@@ -809,6 +794,7 @@ def _swizzle_to_rgba(pixels: np.ndarray) -> np.ndarray:
 __all__: Sequence[str] = [
     "AlignedWord",
     "DEFAULT_BASELINE_RATIO",
+    "DEFAULT_KINETIC_BASELINE_RATIO",
     "DEFAULT_FONT_SIZE",
     "DEFAULT_HEIGHT",
     "DEFAULT_INTRO_SECONDS",

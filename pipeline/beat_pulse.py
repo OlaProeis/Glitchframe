@@ -84,6 +84,28 @@ DEFAULT_HI_BAND_LO = 6
 DEFAULT_HI_BAND_HI = 8  # ~5 – 16 kHz (hats / cymbals / air)
 DEFAULT_HI_DECAY_SEC = 0.06
 
+DEFAULT_SHADER_SHAPE_DEADZONE = 0.18
+"""Soft-gate floor applied to shader-bound transient envelopes.
+
+Percentile-normalised envelopes idle in the 0.05--0.25 band during non-hit
+sections (mid-band leakage, decay tails, ambient noise). Multiplying that
+wobble into a shader's motion terms reads on screen as constant flicker.
+Collapsing ``<= 0.18`` to zero removes the noise floor without touching
+real hits (which land at ~1.0 after normalisation).
+"""
+
+DEFAULT_SHADER_SHAPE_SOFT_WIDTH = 0.12
+"""Smoothstep shoulder after the deadzone so motion eases in, not snaps."""
+
+DEFAULT_SHADER_SHAPE_GAMMA = 1.3
+"""Gamma compression exponent applied after the shoulder.
+
+Values ``> 1`` compress mids more than peaks: ``0.5**1.3 ≈ 0.41`` while
+``1.0**1.3 = 1.0``. This keeps real hits at full amplitude while dropping
+the in-between "breathing" of the envelope, which is what produces the
+"wild / disturbant" feeling on busy backgrounds.
+"""
+
 DEFAULT_LOGO_PULSE_DYN_HI_PCT = 99.5
 """Upper percentile for the high end of the logo envelope stretch range.
 
@@ -304,6 +326,61 @@ def build_rms_impact_pulse_track(
     return PulseTrack(values=scaled.astype(np.float32, copy=False), fps=fps)
 
 
+def shape_reactive_envelope(
+    values: np.ndarray,
+    *,
+    deadzone: float = DEFAULT_SHADER_SHAPE_DEADZONE,
+    soft_width: float = DEFAULT_SHADER_SHAPE_SOFT_WIDTH,
+    gamma: float = DEFAULT_SHADER_SHAPE_GAMMA,
+) -> np.ndarray:
+    """Soft-gate + gamma compression on a ``[0, 1]`` envelope array.
+
+    Mirrors the philosophy of :func:`apply_pulse_deadzone` (used on the
+    logo) but vectorised so it can run once at build time on a full
+    ``PulseTrack.values`` array. The result is a new ``float32`` array;
+    the input is not mutated.
+
+    Transform:
+
+    1. ``v <= deadzone`` → ``0`` (kills chill-section noise floor).
+    2. ``v`` in ``(deadzone, deadzone + soft_width)`` → smoothstep-eased
+       ramp so motion fades in instead of snapping on.
+    3. ``v >= deadzone + soft_width`` → ``(v - deadzone) / (1 - deadzone)``
+       (rescales the surviving range to span ``[0, 1]``).
+    4. Gamma compression: ``out = out ** gamma`` with ``gamma >= 1``
+       pushes mids down while preserving peaks. With ``gamma == 1`` the
+       step is a no-op.
+
+    Use ``deadzone <= 0`` to disable the gate and get pure gamma
+    compression; use ``gamma == 1`` to get pure soft-gate without curve
+    shaping.
+    """
+    arr = np.clip(np.asarray(values, dtype=np.float32), 0.0, 1.0)
+    dz = max(0.0, float(deadzone))
+    sw = max(1e-6, float(soft_width))
+    g = max(1e-6, float(gamma))
+    out = np.zeros_like(arr)
+    if dz <= 0.0:
+        out = arr.copy()
+    else:
+        knee = dz + sw
+        # Smoothstep shoulder inside (dz, knee).
+        mask_knee = (arr > dz) & (arr < knee)
+        if mask_knee.any():
+            x = (arr[mask_knee] - dz) / sw
+            eased = x * x * (3.0 - 2.0 * x)
+            span = max(1e-6, 1.0 - dz)
+            out[mask_knee] = eased * (sw / span)
+        # Linear tail above the shoulder: rescale [knee, 1] → [sw/span, 1].
+        mask_tail = arr >= knee
+        if mask_tail.any():
+            span = max(1e-6, 1.0 - dz)
+            out[mask_tail] = (arr[mask_tail] - dz) / span
+    if g != 1.0:
+        out = np.power(np.clip(out, 0.0, 1.0), g, dtype=np.float32)
+    return out.astype(np.float32, copy=False)
+
+
 def build_band_pulse_track(
     analysis: Mapping[str, Any],
     *,
@@ -392,25 +469,61 @@ def build_bass_pulse_track(
     )
 
 
+def _shape_track(
+    track: PulseTrack | None,
+    *,
+    deadzone: float,
+    soft_width: float,
+    gamma: float,
+) -> PulseTrack | None:
+    """Return a new :class:`PulseTrack` with :func:`shape_reactive_envelope`
+    applied to its values. Pass-through when ``track`` is ``None``.
+    """
+    if track is None:
+        return None
+    shaped = shape_reactive_envelope(
+        track.values, deadzone=deadzone, soft_width=soft_width, gamma=gamma
+    )
+    return PulseTrack(values=shaped, fps=track.fps)
+
+
 def build_lo_transient_track(
     analysis: Mapping[str, Any],
     *,
     sensitivity: float = 1.0,
     decay_sec: float = DEFAULT_LO_DECAY_SEC,
     norm_percentile: float = DEFAULT_BASS_NORM_PERCENTILE,
+    shape: bool = True,
+    shape_deadzone: float = DEFAULT_SHADER_SHAPE_DEADZONE,
+    shape_soft_width: float = DEFAULT_SHADER_SHAPE_SOFT_WIDTH,
+    shape_gamma: float = DEFAULT_SHADER_SHAPE_GAMMA,
 ) -> PulseTrack | None:
     """Low-band (kick / sub) transient envelope for reactive shaders.
 
     Longer decay than the logo bass pulse (~0.34 s) so background motion
     breathes on every kick rather than flickering at spectrum frame rate.
+
+    When ``shape`` is ``True`` (default) the returned envelope is passed
+    through :func:`shape_reactive_envelope` so the chill-section noise
+    floor collapses to zero and mids are gamma-compressed — this is what
+    shaders see today. Pass ``shape=False`` for the legacy raw envelope
+    (unit tests / A/B debugging).
     """
-    return build_band_pulse_track(
+    track = build_band_pulse_track(
         analysis,
         band_lo=DEFAULT_LO_BAND_LO,
         band_hi=DEFAULT_LO_BAND_HI,
         decay_sec=decay_sec,
         sensitivity=sensitivity,
         norm_percentile=norm_percentile,
+    )
+    if not shape:
+        return track
+    return _shape_track(
+        track,
+        deadzone=shape_deadzone,
+        soft_width=shape_soft_width,
+        gamma=shape_gamma,
     )
 
 
@@ -420,15 +533,30 @@ def build_mid_transient_track(
     sensitivity: float = 1.0,
     decay_sec: float = DEFAULT_MID_DECAY_SEC,
     norm_percentile: float = DEFAULT_BASS_NORM_PERCENTILE,
+    shape: bool = True,
+    shape_deadzone: float = DEFAULT_SHADER_SHAPE_DEADZONE,
+    shape_soft_width: float = DEFAULT_SHADER_SHAPE_SOFT_WIDTH,
+    shape_gamma: float = DEFAULT_SHADER_SHAPE_GAMMA,
 ) -> PulseTrack | None:
-    """Mid-band (snare / clap / body) transient envelope for shaders."""
-    return build_band_pulse_track(
+    """Mid-band (snare / clap / body) transient envelope for shaders.
+
+    See :func:`build_lo_transient_track` for the ``shape`` contract.
+    """
+    track = build_band_pulse_track(
         analysis,
         band_lo=DEFAULT_MID_BAND_LO,
         band_hi=DEFAULT_MID_BAND_HI,
         decay_sec=decay_sec,
         sensitivity=sensitivity,
         norm_percentile=norm_percentile,
+    )
+    if not shape:
+        return track
+    return _shape_track(
+        track,
+        deadzone=shape_deadzone,
+        soft_width=shape_soft_width,
+        gamma=shape_gamma,
     )
 
 
@@ -438,15 +566,30 @@ def build_hi_transient_track(
     sensitivity: float = 1.0,
     decay_sec: float = DEFAULT_HI_DECAY_SEC,
     norm_percentile: float = DEFAULT_BASS_NORM_PERCENTILE,
+    shape: bool = True,
+    shape_deadzone: float = DEFAULT_SHADER_SHAPE_DEADZONE,
+    shape_soft_width: float = DEFAULT_SHADER_SHAPE_SOFT_WIDTH,
+    shape_gamma: float = DEFAULT_SHADER_SHAPE_GAMMA,
 ) -> PulseTrack | None:
-    """High-band (hats / cymbals / air) transient envelope for shaders."""
-    return build_band_pulse_track(
+    """High-band (hats / cymbals / air) transient envelope for shaders.
+
+    See :func:`build_lo_transient_track` for the ``shape`` contract.
+    """
+    track = build_band_pulse_track(
         analysis,
         band_lo=DEFAULT_HI_BAND_LO,
         band_hi=DEFAULT_HI_BAND_HI,
         decay_sec=decay_sec,
         sensitivity=sensitivity,
         norm_percentile=norm_percentile,
+    )
+    if not shape:
+        return track
+    return _shape_track(
+        track,
+        deadzone=shape_deadzone,
+        soft_width=shape_soft_width,
+        gamma=shape_gamma,
     )
 
 
@@ -594,11 +737,68 @@ def build_snare_glow_track(
     return PulseTrack(values=scaled.astype(np.float32, copy=False), fps=fps)
 
 
+def stable_pulse_value(
+    pulse_fn: Any,
+    t: float,
+    *,
+    smooth_sec: float = 0.06,
+    n_samples: int = 4,
+    attack_ratio: float = 1.15,
+) -> float:
+    """Stateless asymmetric smoother around ``pulse_fn(t)``.
+
+    The raw pulse envelope is sharp but noisy: between real kicks it
+    wiggles in the 0.05--0.30 range (mid-band leakage, vibrato, string
+    noise). With the logo's integer-rounded positioning, each wiggle of
+    ``~0.01`` in pulse can shift the logo by a whole pixel which reads as
+    the "super shaky at times" jitter the user reported.
+
+    This helper samples ``pulse_fn`` at ``t`` plus ``n_samples - 1`` past
+    times evenly spaced across ``smooth_sec`` and returns:
+
+    * ``cur`` unchanged when we're on a rising edge (``cur > past_max *
+      attack_ratio``) so kick attacks still hit in one frame;
+    * the boxcar average of the short window otherwise, which smooths
+      the release and kills sub-kick jitter.
+
+    The function is stateless (no per-render side effects) so it plugs
+    into the per-frame compositor without threading any state object
+    through. ``smooth_sec`` deliberately defaults to a short 60 ms window
+    -- long enough to mask 1--2 frames of noise at 30--60 fps but short
+    enough that kick attacks still read as punchy.
+    """
+    if pulse_fn is None:
+        return 0.0
+    cur = float(pulse_fn(float(t)))
+    if smooth_sec <= 0.0 or n_samples <= 1:
+        return cur
+    n = max(2, int(n_samples))
+    dt = float(smooth_sec) / float(n - 1)
+    past_sum = 0.0
+    past_max = 0.0
+    for i in range(1, n):
+        v = float(pulse_fn(max(0.0, float(t) - i * dt)))
+        past_sum += v
+        if v > past_max:
+            past_max = v
+    past_avg = past_sum / float(n - 1)
+    # Rising-edge detection: if the current value is clearly above every
+    # recent sample, treat as an attack and pass through unchanged. The
+    # ``cur > 0.35`` floor prevents noisy sub-kick wobble (where ``cur``
+    # might randomly exceed a noisy past_max by a hair) from re-triggering
+    # the attack branch.
+    if cur > 0.35 and cur > past_max * float(attack_ratio):
+        return cur
+    # Otherwise return the smoothed average. Blending ``cur`` + ``past_avg``
+    # 50/50 keeps some responsiveness but drops high-frequency ripples.
+    return 0.5 * cur + 0.5 * past_avg
+
+
 def apply_pulse_deadzone(
     pulse: float,
     *,
-    deadzone: float = 0.12,
-    soft_width: float = 0.08,
+    deadzone: float = 0.22,
+    soft_width: float = 0.14,
 ) -> float:
     """Map a pulse value through a soft deadzone → ``[0, 1]``.
 
@@ -636,12 +836,51 @@ def apply_pulse_deadzone(
     return float(eased * knee)
 
 
-def scale_and_opacity_for_pulse(
-    pulse: float,
+def kick_punch_scale_and_opacity(
+    kick: float,
     *,
     strength: float = 1.0,
     deadzone: float = 0.12,
     soft_width: float = 0.08,
+    max_scale_delta: float = 0.20,
+    max_opacity_boost: float = 0.32,
+    max_scale_cap: float = 0.35,
+    max_opacity_cap: float = 0.55,
+) -> tuple[float, float]:
+    """Dedicated ``(scale, opacity_mul)`` map for a separated kick transient.
+
+    Mirrors :func:`scale_and_opacity_for_pulse` but with a **larger visual
+    budget** so cleanly-separated kicks (``build_lo_transient_track`` →
+    ``transient_lo``) produce a visibly bigger logo pop than the existing
+    sustain-aware bass pulse. Lower ``deadzone`` (``0.12`` vs ``0.22``)
+    because ``transient_lo`` is already percentile-normalised and — when
+    shape-gated — has a clean zero floor between hits, so the extra
+    margin of the logo-pulse deadzone would swallow real kicks.
+
+    Typical budget at ``strength=1.0`` with ``kick=1.0``:
+
+    * ``scale`` reaches ``1.20`` (+20 %).
+    * ``opacity_mul`` reaches ``1.32`` (+32 %).
+
+    At ``strength=2.0`` (UI max) caps kick in at ``1.35`` / ``1.55``.
+
+    The compositor combines the pulse-derived scale with this kick punch
+    via ``max(...)`` so one envelope never cancels the other; whichever
+    signal is larger on the current frame wins the bounce.
+    """
+    p = apply_pulse_deadzone(kick, deadzone=deadzone, soft_width=soft_width)
+    p *= max(0.0, float(strength))
+    scale = 1.0 + min(max_scale_delta * p, max_scale_cap)
+    opacity_mul = 1.0 + min(max_opacity_boost * p, max_opacity_cap)
+    return scale, opacity_mul
+
+
+def scale_and_opacity_for_pulse(
+    pulse: float,
+    *,
+    strength: float = 1.0,
+    deadzone: float = 0.22,
+    soft_width: float = 0.14,
     max_scale_delta: float = 0.12,
     max_opacity_boost: float = 0.22,
     max_scale_cap: float = 0.45,
@@ -685,6 +924,9 @@ __all__ = [
     "DEFAULT_MID_BAND_LO",
     "DEFAULT_MID_DECAY_SEC",
     "DEFAULT_PULSE_TAU_FRACTION",
+    "DEFAULT_SHADER_SHAPE_DEADZONE",
+    "DEFAULT_SHADER_SHAPE_GAMMA",
+    "DEFAULT_SHADER_SHAPE_SOFT_WIDTH",
     "DEFAULT_SNARE_BAND_HI",
     "DEFAULT_SNARE_BAND_LO",
     "DEFAULT_SNARE_DECAY_SEC",
@@ -699,5 +941,8 @@ __all__ = [
     "build_mid_transient_track",
     "build_rms_impact_pulse_track",
     "build_snare_glow_track",
+    "kick_punch_scale_and_opacity",
     "scale_and_opacity_for_pulse",
+    "shape_reactive_envelope",
+    "stable_pulse_value",
 ]

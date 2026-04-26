@@ -36,6 +36,35 @@ class TestNebulaFlowAllowlist(unittest.TestCase):
         self.assertEqual(resolve_builtin_shader_stem("nebula_flow"), "nebula_flow")
 
 
+class TestTunnelFlightShader(unittest.TestCase):
+    def test_tunnel_flight_in_builtin_shaders(self) -> None:
+        self.assertIn("tunnel_flight", BUILTIN_SHADERS)
+
+    def test_voidcat_laser_in_builtin_shaders(self) -> None:
+        self.assertIn("voidcat_laser", BUILTIN_SHADERS)
+        self.assertEqual(resolve_builtin_shader_stem("voidcat_laser"), "voidcat_laser")
+
+    def test_void_ascii_bg_in_builtin_shaders(self) -> None:
+        self.assertIn("void_ascii_bg", BUILTIN_SHADERS)
+
+    def test_spectral_milkdrop_in_builtin_shaders(self) -> None:
+        self.assertIn("spectral_milkdrop", BUILTIN_SHADERS)
+        self.assertEqual(resolve_builtin_shader_stem("void_ascii_bg"), "void_ascii_bg")
+
+    def test_tunnel_flight_frag_resolves(self) -> None:
+        self.assertEqual(resolve_builtin_shader_stem("tunnel_flight"), "tunnel_flight")
+
+
+class TestCyberTunnelPreset(unittest.TestCase):
+    def test_cyber_tunnel_loads_and_targets_tunnel_flight(self) -> None:
+        registry = load_preset_registry()
+        self.assertIn("cyber-tunnel", registry)
+        self.assertEqual(registry["cyber-tunnel"]["shader"], "tunnel_flight")
+
+    def test_cyber_tunnel_yaml_file_exists(self) -> None:
+        self.assertTrue((PRESETS_DIR / "cyber-tunnel.yaml").is_file())
+
+
 class TestCosmicFlowPreset(unittest.TestCase):
     def test_cosmic_flow_loads_and_targets_nebula_flow(self) -> None:
         registry = load_preset_registry()

@@ -1,12 +1,12 @@
 # Visual style presets (YAML + Gradio)
 
-Feature: six bundled visual-style presets as validated YAML, registry loading in `config.py`, and Gradio auto-fill on the **Visual style** tab.
+Feature: bundled visual-style presets as validated YAML, registry loading in `config.py`, and Gradio auto-fill on the **Visual style** tab.
 
 ## What was implemented
 
-- **Preset files:** `presets/*.yaml` — one file per stem: `neon-synthwave`, `minimal-mono`, `organic-liquid`, `glitch-vhs`, `cosmic-flow`, `lofi-warm`. Each file defines an SD-oriented `prompt`, reactive `shader` stem, `typo_style` string, and `colors` as a non-empty list of `#RRGGBB` values.
+- **Preset files:** `presets/*.yaml` — one file per stem (including `neon-synthwave`, `minimal-mono`, `organic-liquid`, `glitch-vhs`, `cosmic-flow`, `lofi-warm`, `cyber-tunnel`, `voidcat-laser`, `future-plasma`). Each file defines an SD-oriented `prompt`, reactive `shader` stem, `typo_style` string, and `colors` as a non-empty list of `#RRGGBB` values.
 - **Registry API:** `load_preset_registry()` reads every `*.yaml`, validates schema and types, normalizes hex to uppercase, and rejects unknown `shader` values. `get_preset_ids()` returns sorted stems; `get_preset(name)` returns a shallow copy or raises `KeyError`.
-- **Shader allowlist:** `pipeline/builtin_shaders.py` defines `BUILTIN_SHADERS` (`spectrum_bars`, `particles`, `geometry_pulse`, `nebula_drift`, `liquid_chrome`, `vhs_tracking`, `synth_grid`, `paper_grain`) so preset validation and the UI do not import `moderngl`. `pipeline/reactive_shader` imports the same tuple for the GL layer.
+- **Shader allowlist:** `pipeline/builtin_shaders.py` defines `BUILTIN_SHADERS` (including `void_ascii_bg`, `voidcat_laser`, `spectral_milkdrop`, `tunnel_flight`, `paper_grain`, …) so preset validation and the UI do not import `moderngl`. `pipeline/reactive_shader` imports the same tuple for the GL layer.
 - **Gradio:** **Preset** dropdown drives a `.change` handler that fills **Custom prompt**, **Reactive shader**, **Typography style**, and **Color palette** (comma-separated hex). If no YAML is present, dropdown labels fall back to PRD ids but fields stay empty until files exist.
 
 ## What each preset does
@@ -21,8 +21,10 @@ Each preset ships a coherent bundle of prompt + shader + typography + palette. T
 | **minimal-mono** | `geometry_pulse` | Swiss brutalist: concentric rings on black, minimal motion | 4-color mono palette drives ring tones |
 | **neon-synthwave** | `synth_grid` | 80s retrowave: 1/z perspective grid with `fwidth` AA, sliced neon sun, horizon halo | 0 sky low, 1 sky high, 2 sun low, 3 sun high, 4 grid lines |
 | **organic-liquid** | `liquid_chrome` | Iridescent ink macro: two-step domain-warped FBM remapped onto palette, onset radial ripples | 0→4 dark→bright ramp, 3 ripple color |
+| **voidcat-laser** | `void_ascii_bg` | **GPU:** dark void + grain; **CPU:** full-screen ASCII (every cell) with per-character **animated** colours (beat/bar, onsets, RMS, tension, transients) and a softer **centre** band alpha for a centre logo; multiline **cat** + side laser on the top **confidence** `events.drops` only. `pipeline/voidcat_ascii.py` | Same palette: void/dust, body, eye/hi, laser, accent |
+| **future-plasma** | `spectral_milkdrop` | Milkdrop-style **feedback** (`u_prev_frame`): zoom–rotate smear + RGB split on hats, fresh polar “plasma” with per-mel-band phase; bass/RMS/transients/tension/drop/onsets all wired | 0 void, 1–3 cool→hot interference, 4 onset flash |
 
-All six shaders are written from scratch in this repo using public-domain techniques (value noise, FBM, domain warp, scanlines, perspective grid, film grain). None are ports from Shadertoy or other licensed shader galleries.
+Bundled reactive shaders (including the above) are written from scratch in this repo using public-domain techniques (value noise, FBM, domain warp, scanlines, perspective grid, film grain). None are ports from Shadertoy or other licensed shader galleries.
 
 ### How palette ordering matters
 

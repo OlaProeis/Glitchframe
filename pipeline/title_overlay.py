@@ -225,51 +225,19 @@ def render_title_rgba(
     surface = skia.Surface(pixels)
 
     fill_rgb = _parse_hex_rgb(fill_hex)
-    shadow_rgb = _parse_hex_rgb(shadow_hex) if shadow_hex else (0, 0, 0)
+    # ``shadow_hex`` is accepted for API parity with the kinetic-typography
+    # layer but deliberately unused in the render path: every halo / glow
+    # / ``kStroke_Style`` variant we tried drew as a visible coloured rim
+    # or blob on saturated preset palettes (e.g. cyan fill + pink glow on
+    # ``cosmic-flow``; yellow fill + cyan glow on ``neon-synthwave``).
+    # Ship a clean fill and let
+    # :func:`pipeline.preset_colors.resolve_text_colors` guarantee
+    # fill-vs-background contrast.
+    _ = shadow_hex  # documented-unused
 
     x0, y_base = _text_anchor(position_key, width, height, text_w, text_h)
 
-    # --- Minimal tight edge bloom + stroke + fill ---------------------------
-    # A single tight outer-blur pass gives just enough edge contrast to keep
-    # the title legible on busy or similar-luminance backgrounds without the
-    # wide "stamped" halo that the previous three-pass recipe produced. Wide
-    # / mid passes were dominant when presets used bright shadow colours
-    # (yellow, cyan) and made the text feel splotchy rather than sharp.
-    tight_sigma = max(0.45, size_px * 0.022)
-
-    has_shadow = shadow_hex is not None
-    tight_alpha = (0.24 if has_shadow else 0.18) * alpha
-
-    stroke_width = max(0.5, size_px * 0.008)
-    stroke_alpha = 0.18 * alpha
-
-    # ``kOuter_BlurStyle`` / ``MakeBlur`` aren't part of every skia-python
-    # build — detect at runtime so CI / older wheels still get the old
-    # single-pass halo rather than a hard crash.
-    outer_style = getattr(skia, "kOuter_BlurStyle", None)
-    normal_style = getattr(skia, "kNormal_BlurStyle", None)
-
-    def _blur_paint(rgb: tuple[int, int, int], sigma: float, a: float) -> skia.Paint:
-        paint = skia.Paint(AntiAlias=True, Color=_argb_color(rgb, a))
-        style = outer_style if outer_style is not None else normal_style
-        if style is not None:
-            paint.setMaskFilter(skia.MaskFilter.MakeBlur(style, sigma))
-        return paint
-
     with surface as canvas:
-        canvas.drawString(
-            line, x0, y_base, font, _blur_paint(shadow_rgb, tight_sigma, tight_alpha)
-        )
-
-        stroke_paint = skia.Paint(
-            AntiAlias=True,
-            Color=_argb_color(shadow_rgb, stroke_alpha),
-            Style=skia.Paint.kStroke_Style,
-            StrokeWidth=stroke_width,
-            StrokeJoin=skia.Paint.kRound_Join,
-        )
-        canvas.drawString(line, x0, y_base, font, stroke_paint)
-
         main_paint = skia.Paint(
             AntiAlias=True, Color=_argb_color(fill_rgb, alpha)
         )

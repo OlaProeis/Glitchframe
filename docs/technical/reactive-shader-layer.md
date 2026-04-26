@@ -22,6 +22,8 @@ GPU fragment-shader pass via **moderngl** running in a **standalone OpenGL 3.3+ 
 - **`spectrum_bars.frag`** — 8 reactive bars, color shifts with `beat_phase`, glow pulses on `onset_pulse`.
 - **`particles.frag`** — cellular noise field; per-cell radius reacts to the mapped spectrum band; drift speed scales with `rms`.
 - **`geometry_pulse.frag`** — concentric rings pulsing on onsets; ring tone mixes on `rms`, spacing modulates with `time`.
+- **`tunnel_flight.frag`** — first-person wireframe tunnel (spiral lattice, corner nodes, dual-layer line glow); scroll and palette cross-fade with `rms` / `bass_hit`, sparks on high-band transients.
+- **`spectral_milkdrop.frag`** — feedback-loop spectral visual: previous-frame warp (zoom/spin/spectral curl + chromatic split on `transient_hi`) blended with a fresh interference layer driven by all eight `band_energies`, `beat_phase` / `bar_phase`, `bass_hit`, transients, `build_tension`, `drop_hold`, and onset envelopes.
 
 Every fragment shader expects the same uniform contract and writes premultiplied RGBA so downstream compositing can alpha-blend without further math.
 
@@ -59,7 +61,7 @@ void main() {
 - **`onset_pulse`** — `exp(-ONSET_DECAY_PER_SEC * (t - last_peak))` from `onsets.peaks`; `0.0` before the first peak. Good for flash-on-hit behaviour.
 - **`onset_env`** — continuous transient envelope sampled from `onsets.strength` at `onsets.frame_rate_hz` (onsets use a different hop than the mel spectrum, so this is **not** `analysis.fps`). Normalised once per load by the 95th percentile (`ONSET_ENV_NORM_PERCENTILE`) so a single outlier spike doesn't crush the rest of the track; the normalised array is memoised on `analysis['_onset_env_cache']` keyed by `id(strength)`. Good for sustained texture / shimmer response — pairs with `onset_pulse` for flash-on-hit.
 - **`build_tension`** — `[0, 1]` pre-drop smoothstep ramp interpolated from `events.build_tension.values` (`fps` + `values` shape identical to `rms`). Zero when the `events` block is absent. Snaps to zero immediately after each drop — the post-drop "release" is the compositor-injected `drop_hold`.
-- **`bass_hit`, `transient_lo/mid/hi`, `drop_hold`** — optional `0…1` envelopes injected by the compositor (not by `uniforms_at_time`). `bass_hit` is a kick-shaped `build_bass_pulse_track`; the three `transient_*` tracks come from `build_lo/mid/hi_transient_track` in `pipeline/beat_pulse.py` (low / mid / high mel-band slices with 0.34 / 0.12 / 0.06 s decays); `drop_hold` is an exponential release off the most recent drop in `events.drops`. The Gradio reactive preview merges all four at `t=0` so the preview never reads zero for these signals.
+- **`bass_hit`, `transient_lo/mid/hi`, `drop_hold`** — optional `0…1` envelopes injected by the compositor (not by `uniforms_at_time`). `bass_hit` is a kick-shaped `build_bass_pulse_track`; the three `transient_*` tracks come from `build_lo/mid/hi_transient_track` in `pipeline/beat_pulse.py` (low / mid / high mel-band slices with 0.34 / 0.12 / 0.06 s decays); `drop_hold` is an exponential release off the most recent drop in `events.drops`. **The three `transient_*` tracks are shape-gated at build time via `shape_reactive_envelope(deadzone=0.18, soft_width=0.12, gamma=1.3)`**: below the deadzone the envelope reads as hard zero (kills the chill-section noise floor that produced constant low-amplitude shader wobble), the smoothstep shoulder easing the ramp in, and the gamma pass compressing mid-amplitude values more than peaks so cleanly-separated hits still peak near `1.0`. Shaders consequently see a much cleaner "silent between hits, sharp on hits" profile without any per-frame CPU cost. Opt out per-band via `build_*_transient_track(..., shape=False)` for debugging. The Gradio reactive preview merges all four at `t=0` so the preview never reads zero for these signals.
 - **`time`, `resolution`, `intensity`** — forwarded from callers; `resolution` is pinned to the FBO size regardless of input.
 - **`u_background`**, **`u_comp_background`** — `sampler2D` RGB background at full FBO resolution and `0`/`1` flag; when `u_comp_background` is `1`, each fragment blends the reactive premultiplied RGBA over `texture(u_background, v_uv)` and outputs opaque RGB (`alpha = 1`). The Gradio **Reactive intensity** slider should scale `intensity` as `percent / 100` and pass it into `uniforms_at_time(..., intensity=...)` (or merge into the uniform dict) so it multiplies the overlay strength inside the shaders.
 
@@ -97,6 +99,14 @@ General rules:
 * Prefer `mix(base, hot, clamp(signal, 0, 1))` over additive saturation so
   brightness stays bounded on dense transient stacks (kick + snare + hat
   landing on the same frame).
+* The shader transient sensitivity default (`CompositorConfig.shader_transient_sensitivity`)
+  is `0.75`, not `1.0`, to keep the three bands in the same rough budget as
+  `shader_bass_sensitivity=0.72`. Combined with the build-time shape gate,
+  this tames the additive signal pile-up (most shaders read 4–6 reactive
+  envelopes at once) that otherwise manifested as constant low-amplitude
+  wobble during non-hit sections. Shaders that genuinely need more
+  transient punch should scale inside the shader (`1.0 + 0.6 * transient_lo`)
+  rather than lift the global sensitivity.
 
 The `pilot_shader` effort (task 40) and the per-shader propagation pass
 (task 42) will land concrete examples — this table is the reference they

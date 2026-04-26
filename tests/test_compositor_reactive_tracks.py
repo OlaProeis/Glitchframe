@@ -21,6 +21,7 @@ from pipeline.compositor import (
     CompositorConfig,
     _build_beam_render_context,
     _drop_hold_fn_for_analysis,
+    _kick_glow_envelope_fn,
     _shader_transient_tracks_for_analysis,
 )
 from pipeline.musical_events import DEFAULT_DROP_HOLD_DECAY_SEC
@@ -154,6 +155,39 @@ class TestShaderTransientTracksForAnalysis(unittest.TestCase):
         self.assertLess(lo.value_at(3.9), 0.05)
         self.assertLess(mid.value_at(3.9), 0.05)
         self.assertLess(hi.value_at(3.9), 0.05)
+
+
+class TestKickGlowEnvelopeFn(unittest.TestCase):
+    """Contract tests for the kick (low-band) contribution to the neon halo."""
+
+    def test_disabled_returns_none(self) -> None:
+        analysis = _spectrum_analysis()
+        cfg = CompositorConfig(logo_kick_glow=False)
+        self.assertIsNone(_kick_glow_envelope_fn(cfg, analysis))
+
+    def test_zero_strength_returns_none(self) -> None:
+        # Zero-strength short-circuits without needing an analyser — a
+        # disabled contribution shouldn't pay the cost of building a track.
+        cfg = CompositorConfig(logo_kick_glow=True, logo_kick_glow_strength=0.0)
+        self.assertIsNone(_kick_glow_envelope_fn(cfg, _spectrum_analysis()))
+
+    def test_missing_spectrum_returns_none(self) -> None:
+        # Empty analysis → the bass pulse track builder returns ``None`` and
+        # the helper must propagate that so the compositor frame loop can
+        # skip the lookup entirely.
+        cfg = CompositorConfig()
+        self.assertIsNone(_kick_glow_envelope_fn(cfg, {}))
+
+    def test_enabled_emits_scalar_envelope_at_kick(self) -> None:
+        analysis = _spectrum_analysis()
+        cfg = CompositorConfig()
+        fn = _kick_glow_envelope_fn(cfg, analysis)
+        self.assertIsNotNone(fn)
+        assert fn is not None
+        # Spectrum fixture puts a low-band peak at n/4 with fps=30, seconds=4
+        # → t ≈ 1.0 s. The attack-only bass pulse track peaks on that frame,
+        # so the envelope should be strictly positive there.
+        self.assertGreater(fn(1.0), 0.0)
 
 
 def _dummy_logo_rgba(size: int = 48) -> np.ndarray:

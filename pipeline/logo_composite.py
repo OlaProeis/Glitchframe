@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import enum
+import math
 import zlib
 from pathlib import Path
 
@@ -81,12 +82,56 @@ def _fit_logo_hw(lh: int, lw: int, fh: int, fw: int) -> tuple[int, int]:
     return nh, nw
 
 
-def prepare_logo_rgba(logo_rgba: np.ndarray, frame_h: int, frame_w: int) -> np.ndarray:
-    """Resize logo if it is larger than the frame (LANCZOS). Same array if no resize."""
+def _cap_logo_hw_by_pct(
+    lh: int, lw: int, fh: int, fw: int, max_size_pct: float
+) -> tuple[int, int]:
+    """Cap logo so its **longest edge** is ``max_size_pct / 100`` of the shorter
+    frame edge, preserving aspect ratio.
+
+    Using the shorter frame edge as the reference makes the slider behave
+    identically on portrait, landscape, 720p, 1080p, and 4K renders — a logo
+    always occupies roughly the same visual fraction of the frame regardless
+    of resolution. ``max_size_pct <= 0`` disables the cap (returns the input
+    unchanged); values > 100 are clamped at 100 to stay within the frame.
+    """
+    pct = float(max_size_pct)
+    if not math.isfinite(pct) or pct <= 0.0:
+        return lh, lw
+    pct = min(100.0, pct)
+    short_edge = max(1, min(int(fh), int(fw)))
+    target_long_px = max(1, int(round(short_edge * pct / 100.0)))
+    long_edge = max(lh, lw)
+    if long_edge <= target_long_px:
+        return lh, lw
+    scale = target_long_px / float(long_edge)
+    nh = max(1, int(round(lh * scale)))
+    nw = max(1, int(round(lw * scale)))
+    return nh, nw
+
+
+def prepare_logo_rgba(
+    logo_rgba: np.ndarray,
+    frame_h: int,
+    frame_w: int,
+    *,
+    max_size_pct: float | None = None,
+) -> np.ndarray:
+    """Resize logo so it fits inside the frame (LANCZOS) and, optionally, so its
+    longest edge is at most ``max_size_pct`` percent of the **shorter** frame
+    edge.
+
+    When ``max_size_pct`` is ``None`` or ``<= 0`` the legacy behaviour is
+    preserved: the logo is only shrunk when it exceeds the frame. The shorter
+    frame edge is used as the reference so the slider reads the same across
+    720p / 1080p / 4K renders. Returns the input array unchanged when no
+    resize is needed.
+    """
     if logo_rgba.ndim != 3 or logo_rgba.shape[2] != 4:
         raise ValueError("logo_rgba must have shape (H, W, 4)")
     lh, lw = int(logo_rgba.shape[0]), int(logo_rgba.shape[1])
     nh, nw = _fit_logo_hw(lh, lw, frame_h, frame_w)
+    if max_size_pct is not None:
+        nh, nw = _cap_logo_hw_by_pct(nh, nw, frame_h, frame_w, float(max_size_pct))
     if nh == lh and nw == lw:
         return logo_rgba
     pil = Image.fromarray(logo_rgba, mode="RGBA")
@@ -253,12 +298,33 @@ def _rim_config_is_active(config: RimLightConfig | None) -> bool:
     return float(max(0.0, config.intensity)) * op > 1e-6
 
 
+_GLITCH_TILT_DEG = 22.0
+"""Maximum tilt magnitude applied during a glitch (degrees).
+
+The rotation direction is seeded from ``tilt_seed`` — a coarse-grained time
+bucket — so every frame inside one glitch event picks the **same** left/right
+sign. Without this, a 0.2 s impact spanning ~6 frames would re-pick a random
+sign per frame (since the per-frame ``glitch_seed_for_time`` changes every
+frame), producing violent left/right thrashing. With a stable per-event seed
+the tilt rises with ``amount`` and falls with the decay, reading as one
+crisp impact instead of shake noise."""
+
+
 def _rgb_glitch_logo_rgba(
     logo_rgba: np.ndarray,
     amount: float,
     seed: int,
+    *,
+    tilt_seed: int | None = None,
 ) -> np.ndarray:
-    """Cheap RGB-split + horizontal tear glitch; ``amount`` in ``[0, 1]`` typical."""
+    """RGB-split + horizontal tear + ±tilt glitch; ``amount`` in ``[0, 1]``.
+
+    ``seed`` drives the per-frame RGB / tear randomness (so the split wobbles
+    subtly across frames). ``tilt_seed`` is separate and should be **stable
+    across all frames of one glitch event** (the compositor derives it by
+    quantising ``t`` into coarse buckets). If ``tilt_seed`` is ``None`` we
+    fall back to ``seed`` for backward compatibility with older call sites.
+    """
     a = float(np.clip(amount, 0.0, 1.5))
     if a < 1e-4:
         return logo_rgba
@@ -283,6 +349,25 @@ def _rgb_glitch_logo_rgba(
         out[ry, :, 0] = np.roll(row[:, 0], dx)
         out[ry, :, 1] = np.roll(row[:, 1], dx)
         out[ry, :, 2] = np.roll(row[:, 2], dx)
+
+    # Tilt direction is deterministic per-event (stable tilt_seed) so the
+    # entire impact tilts the same way. ``expand=True`` keeps the rotated
+    # logo fully visible and centres it in its new box, which keeps
+    # ``_origin_for_position`` aligned with the user's chosen anchor.
+    ts = int(tilt_seed if tilt_seed is not None else seed) & 0x7FFFFFFF
+    direction = 1.0 if (ts & 1) else -1.0
+    # Slight ease on the tilt envelope: ``t ** 0.85`` rises faster at low
+    # amounts (so the tilt reads immediately on attack) while still decaying
+    # back to 0 as the impact releases.
+    tilt_deg = float(direction * _GLITCH_TILT_DEG * (t ** 0.85))
+    if abs(tilt_deg) > 0.05:
+        pil = Image.fromarray(out, mode="RGBA")
+        rotated = pil.rotate(
+            tilt_deg,
+            resample=Image.Resampling.BILINEAR,
+            expand=True,
+        )
+        out = np.asarray(rotated, dtype=np.uint8)
     return out
 
 
@@ -300,12 +385,14 @@ def composite_logo_onto_frame(
     *,
     inplace: bool = False,
     scale: float = 1.0,
+    max_size_pct: float | None = None,
     glow_amount: float = 0.0,
     glow_rgb: tuple[int, int, int] | None = None,
     glow_blur_radius: float = 5.0,
     glow_pad_px: int = 32,
     glitch_amount: float = 0.0,
     glitch_seed: int = 0,
+    glitch_tilt_seed: int | None = None,
     t_sec: float | None = None,
     song_hash: str | None = None,
     logo_rim_prep: LogoRimPrep | None = None,
@@ -341,10 +428,15 @@ def composite_logo_onto_frame(
     if frame.ndim != 3 or frame.shape[2] not in (3, 4):
         raise ValueError("frame must have shape (H, W, 3) or (H, W, 4)")
     fh, fw = int(frame.shape[0]), int(frame.shape[1])
-    logo = prepare_logo_rgba(logo_rgba, fh, fw)
+    logo = prepare_logo_rgba(logo_rgba, fh, fw, max_size_pct=max_size_pct)
     logo = _scale_logo_rgba(logo, float(scale))
     if float(glitch_amount) > 1e-4:
-        logo = _rgb_glitch_logo_rgba(logo, float(glitch_amount), int(glitch_seed))
+        logo = _rgb_glitch_logo_rgba(
+            logo,
+            float(glitch_amount),
+            int(glitch_seed),
+            tilt_seed=(int(glitch_tilt_seed) if glitch_tilt_seed is not None else None),
+        )
     lh, lw = int(logo.shape[0]), int(logo.shape[1])
 
     op = float(np.clip(opacity_pct, 0.0, 100.0)) / 100.0
@@ -449,12 +541,14 @@ def composite_logo_from_path(
     *,
     inplace: bool = False,
     scale: float = 1.0,
+    max_size_pct: float | None = None,
     glow_amount: float = 0.0,
     glow_rgb: tuple[int, int, int] | None = None,
     glow_blur_radius: float = 5.0,
     glow_pad_px: int = 32,
     glitch_amount: float = 0.0,
     glitch_seed: int = 0,
+    glitch_tilt_seed: int | None = None,
     t_sec: float | None = None,
     song_hash: str | None = None,
     logo_rim_prep: LogoRimPrep | None = None,
@@ -473,12 +567,14 @@ def composite_logo_from_path(
         opacity_pct,
         inplace=inplace,
         scale=scale,
+        max_size_pct=max_size_pct,
         glow_amount=glow_amount,
         glow_rgb=glow_rgb,
         glow_blur_radius=glow_blur_radius,
         glow_pad_px=glow_pad_px,
         glitch_amount=glitch_amount,
         glitch_seed=glitch_seed,
+        glitch_tilt_seed=glitch_tilt_seed,
         t_sec=t_sec,
         song_hash=song_hash,
         logo_rim_prep=logo_rim_prep,

@@ -20,6 +20,7 @@ from pipeline.audio_analyzer import AnalysisResult, analyze_song
 from pipeline.audio_ingest import IngestResult, ingest_audio_file
 from pipeline.lyrics_aligner import AlignmentResult, align_lyrics
 from pipeline.metadata import write_metadata_txt
+from pipeline.effects_timeline import EffectsTimeline, load as load_effects_timeline
 from pipeline.preset_colors import resolve_text_colors
 from pipeline.preview import DEFAULT_PREVIEW_WINDOW_SEC
 
@@ -51,6 +52,10 @@ class OrchestratorInputs:
     logo_path: str | Path | None = None
     logo_position: str = "center"
     logo_opacity_pct: float = 85.0
+    # Cap on the logo's longest edge as a percent of the shorter frame edge.
+    # Keeps the slider resolution-independent (30 % reads the same on 1080p
+    # and 4K); ``<= 0`` falls back to the legacy "fit inside frame" behaviour.
+    logo_max_size_pct: float = 30.0
     logo_beat_pulse: bool = True
     # ``bass`` keys the pulse off low-frequency energy in ``analysis.json``
     # (kick / sub-bass hits). ``beats`` preserves the original grid-locked
@@ -107,6 +112,14 @@ class OrchestratorInputs:
     fps: int = 30
     include_lyrics: bool = True
     preview_window_sec: float = DEFAULT_PREVIEW_WINDOW_SEC
+    # Effects timeline: load ``cache/<hash>/effects_timeline.json`` into the
+    # compositor when true; when false, behaviour matches pre–effects-timeline
+    # renders (no per-song JSON / compositor defaults).
+    effects_timeline_enabled: bool = True
+    # Run-level trim (default 1.0) combined with
+    # ``EffectsTimeline.auto_reactivity_master`` from the loaded file; see
+    # :func:`_effects_compositor_config`.
+    auto_reactivity_master: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -402,6 +415,30 @@ def resolve_logo_rim_compositor_fields(inputs: OrchestratorInputs) -> dict[str, 
     }
 
 
+def _effects_compositor_config(
+    inputs: OrchestratorInputs, cache_dir: Path
+) -> tuple[EffectsTimeline | None, float]:
+    """
+    When ``inputs.effects_timeline_enabled``, load ``effects_timeline.json``
+    and return ``(EffectsTimeline, effective_master)`` for
+    :class:`pipeline.compositor.CompositorConfig`. When disabled, return
+    ``(None, 1.0)`` (legacy render path, no JSON).
+
+    **Master merge:** the compositor reads a single
+    :attr:`CompositorConfig.auto_reactivity_master` scalar. The on-disk
+    :attr:`EffectsTimeline.auto_reactivity_master` (Gradio / editor save) is
+    multiplied by :attr:`OrchestratorInputs.auto_reactivity_master` (run
+    default ``1.0``). The loaded timeline object still stores the file value
+    for round-trip; the product is what scales auto reactivity in the engine.
+    """
+    if not bool(inputs.effects_timeline_enabled):
+        return (None, 1.0)
+    tl = load_effects_timeline(cache_dir)
+    in_m = max(0.0, float(inputs.auto_reactivity_master))
+    eff = in_m * float(tl.auto_reactivity_master)
+    return (tl, eff)
+
+
 def _render_pipeline(
     inputs: OrchestratorInputs,
     *,
@@ -478,6 +515,10 @@ def _render_pipeline(
         _thumbnail_line_from_metadata(inputs.metadata) if inputs.show_title else None
     )
 
+    eff_timeline, eff_auto_master = _effects_compositor_config(
+        inputs, state.cache_dir
+    )
+
     cfg = CompositorConfig(
         fps=int(inputs.fps),
         width=int(inputs.width),
@@ -491,6 +532,7 @@ def _render_pipeline(
         logo_path=logo_path_obj,
         logo_position=inputs.logo_position,
         logo_opacity_pct=float(inputs.logo_opacity_pct),
+        logo_max_size_pct=float(inputs.logo_max_size_pct),
         logo_beat_pulse=bool(inputs.logo_beat_pulse),
         logo_pulse_mode=str(inputs.logo_pulse_mode),
         logo_pulse_strength=float(inputs.logo_pulse_strength),
@@ -507,7 +549,18 @@ def _render_pipeline(
         title_text=title_line,
         title_position=str(inputs.title_position),
         title_size=str(inputs.title_size),
+        effects_timeline=eff_timeline,
+        auto_reactivity_master=float(eff_auto_master),
     )
+    if preset_id == "voidcat-laser":
+        from pipeline.voidcat_ascii import build_voidcat_ascii_context
+
+        _ad = dict(state.analysis.analysis)
+        _ad.setdefault("song_hash", state.song_hash)
+        cfg.voidcat_ascii_ctx = build_voidcat_ascii_context(
+            _ad, list(colors) if colors else None
+        )
+        cfg.voidcat_ascii_sharp_cat = True
 
     bg_cb = _wrap_progress(progress, bg_lo, bg_hi)
     if progress is not None:

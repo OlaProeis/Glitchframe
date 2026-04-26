@@ -15,6 +15,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
+from pipeline import _waveform_peaks as waveform_peaks
 from pipeline.lyrics_editor import (
     build_editor_html,
     compute_peaks,
@@ -87,6 +88,26 @@ class TestComputePeaks(unittest.TestCase):
     def test_missing_file_raises(self) -> None:
         with self.assertRaises(FileNotFoundError):
             compute_peaks(Path("/this/path/does/not/exist.wav"))
+
+    def test_default_peak_width_is_high_resolution(self) -> None:
+        """Effects-timeline waveform needs sub-50 ms buckets to resolve kicks.
+
+        Regression guard for the bump from 1600 → 6000 peaks. A lower value
+        collapses adjacent transients into a single bucket and the timeline
+        editor can no longer eyeball where to place clips.
+        """
+        self.assertGreaterEqual(waveform_peaks.DEFAULT_PEAK_WIDTH, 4000)
+
+    def test_shared_module_matches_public_export(self) -> None:
+        """``pipeline._waveform_peaks`` is the canonical implementation;
+        ``lyrics_editor.compute_peaks`` must stay a thin re-export."""
+        with tempfile.TemporaryDirectory() as td:
+            wav = Path(td) / "v.wav"
+            _write_sine_wav(wav, seconds=0.2, sr=8000)
+            for w in (17, 200, 1000):
+                a = compute_peaks(wav, target_width=w)
+                b = waveform_peaks.compute_peaks(wav, target_width=w)
+                self.assertEqual(a, b)
 
 
 class TestLoadEditorState(unittest.TestCase):

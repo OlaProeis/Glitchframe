@@ -39,6 +39,7 @@ choreography bit-for-bit.
 
 from __future__ import annotations
 
+import colorsys
 import hashlib
 import math
 from dataclasses import dataclass, replace
@@ -49,6 +50,29 @@ from scipy import ndimage
 
 from pipeline.beat_pulse import PulseTrack
 from pipeline.logo_rim_lights import _layer_srgb_tints
+
+
+def _hsv_to_srgb_u8(h: float, s: float, v: float) -> tuple[int, int, int]:
+    """Convert HSV in ``[0, 1]`` to an sRGB triple in ``0..255``."""
+    r, g, b = colorsys.hsv_to_rgb(float(h) % 1.0, float(s), float(v))
+    return (
+        int(round(max(0.0, min(1.0, r)) * 255.0)),
+        int(round(max(0.0, min(1.0, g)) * 255.0)),
+        int(round(max(0.0, min(1.0, b)) * 255.0)),
+    )
+
+
+def _random_beam_tint(rng: np.random.Generator) -> tuple[int, int, int]:
+    """Pick a bright, saturated beam tint from ``rng``.
+
+    Full hue randomness, saturation pinned near 1.0 (keeps colours vivid even
+    after ``core_white_boost`` mixes white into the axis), value pinned at 1.0
+    so every beam reads at peak brightness. Call sites seed ``rng`` from
+    ``song_hash`` + a per-beam index so renders stay bit-stable.
+    """
+    h = float(rng.uniform(0.0, 1.0))
+    s = float(rng.uniform(0.82, 1.0))
+    return _hsv_to_srgb_u8(h, s, 1.0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,37 +114,67 @@ class BeamConfig:
     """Skip standalone impacts within this window of an already-scheduled drop
     (± this many seconds) -- the drop group already covers them."""
 
-    snare_beam_length_px: float = 320.0
+    snare_beam_length_px: float = 420.0
     """Floor on the rendered length of a lead-in snare beam. The actual
     length is ``max(snare_beam_length_px, snare_beam_length_frac_edge *
     distance_to_frame_edge_along_angle)`` so beams always reach the edge
     on reasonable frame sizes but never collapse to zero on tiny thumbs."""
 
-    drop_beam_length_px: float = 520.0
+    drop_beam_length_px: float = 680.0
     """Floor on the rendered length of the drop beam. See
     :attr:`drop_beam_length_frac_edge` for the edge-relative stretch."""
 
-    snare_beam_thickness_px: float = 10.0
+    snare_beam_thickness_px: float = 20.0
     """Gaussian sigma across the beam width (snare lead-ins)."""
 
-    drop_beam_thickness_px: float = 16.0
+    drop_beam_thickness_px: float = 32.0
     """Gaussian sigma across the beam width (drop)."""
 
-    snare_beam_length_frac_edge: float = 0.85
+    snare_beam_length_frac_edge: float = 1.35
     """Lead-in beam length as a fraction of the distance from the logo
-    centroid to the frame edge along the beam angle. ``1.0`` reaches the
-    edge exactly; default ``0.85`` keeps snare beams visibly shorter than
-    the drop beam even when the logo sits near one edge of the frame."""
+    centroid to the frame edge along the beam angle. Values > 1.0 push the
+    nominal beam tip past the frame edge so the along-axis falloff (which
+    fades to zero at the nominal tip) still reads as a bright core when
+    it crosses the actual frame edge."""
 
-    drop_beam_length_frac_edge: float = 1.0
+    drop_beam_length_frac_edge: float = 1.40
     """Drop beam length as a fraction of the distance to the frame edge.
-    The drop is the "hero" ray and should read as a full-frame burst."""
+    The drop is the "hero" ray and should read as a full-frame burst; we
+    overshoot slightly so the visible bright core reaches the edge instead
+    of fading out before it."""
 
-    duration_sec: float = 0.32
-    """Total visible life of a beam -- attack + decay combined."""
+    duration_sec: float = 0.75
+    """Total visible life of a beam -- attack + decay combined. The
+    exponential decay leaves roughly a ``0.5 s`` afterglow after the
+    attack so the bloom hangs on screen after the hit instead of cutting."""
 
     attack_sec: float = 0.04
     """Envelope rise time (linear to 1.0)."""
+
+    halo_width_mul: float = 3.5
+    """Halo gaussian sigma as a multiple of the beam's core ``thickness_px``.
+    The halo sits under the core at lower intensity so the beam feels
+    bloomed / afterglowing instead of a hard stroke."""
+
+    halo_intensity: float = 0.70
+    """Peak intensity of the halo layer (``[0, 1]``) relative to the core.
+    Lower values keep the core crisp; higher values push bloom."""
+
+    core_white_boost: float = 0.55
+    """Additional white energy pushed into the brightest core pixels
+    (``0``: pure tinted beam; ``1``: core saturates fully to white).
+    This makes beams read bright on **any** preset colour -- without it a
+    dark shadow tint would render the beam barely visible against a black
+    background even at full alpha. The boost decays with ``profile_core``
+    so only the hot axis goes white while the halo keeps the tint."""
+
+    edge_offset_frac: float = 0.70
+    """Fraction of the supplied ``logo_radius_px`` used as the beam's
+    visual starting offset from the centroid. Values < 1 keep the beam
+    root just *inside* the logo edge so it clearly springs *from* the
+    logo rather than from empty space next to it. Too high and the beam
+    loses usable length before reaching the frame edge, so we default to
+    a conservative 0.70 (just inside the rim)."""
 
     angle_jitter_rad: float = 0.45
     """± jitter applied to each beam's base angle (radians, ~26°)."""
@@ -157,6 +211,23 @@ class ScheduledBeam:
 
     is_drop: bool
     """``True`` = drop (thicker / longer); ``False`` = snare lead-in."""
+
+    tint_srgb_override: tuple[int, int, int] | None = None
+    """Explicit sRGB tint (0--255) that bypasses the rim-layer palette.
+
+    ``None`` (the default) keeps the analyser-scheduled behaviour: colour comes
+    from :func:`pipeline.logo_rim_lights._layer_srgb_tints` indexed by
+    :attr:`color_layer_idx`. User-placed ``BEAM`` clips whose settings carry a
+    ``color_hex`` use this field so the picker in the effects editor actually
+    drives the rendered colour instead of being silently discarded.
+    """
+
+    sustain_shaping: bool = False
+    """When ``True`` (user timeline BEAM longer than :attr:`BeamConfig.duration_sec`),
+    strength follows a ramp → plateau → hold, then **core and halo** both ramp
+    up together (with a modest extra halo swell) through the rest of the clip,
+    then a longer fade-out. Auto-scheduled beams and short floored user ticks
+    use the default attack–decay envelope."""
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +311,18 @@ def _rng_seed(song_hash: str | None, salt: int) -> int:
     return int.from_bytes(digest[:4], "little", signed=False) & 0x7FFFFFFF
 
 
+def _color_rng(song_hash: str | None, salt: int) -> np.random.Generator:
+    """Deterministic per-beam colour RNG, seeded independently of the angle
+    RNG so adding / removing hue picks can't drift the angle sequence
+    (bit-stability tests compare ``angle_rad`` for a fixed ``song_hash``)."""
+    base = (song_hash or "").encode("utf-8", errors="replace")
+    digest = hashlib.sha256(
+        base + f"::beam::color::{int(salt)}".encode("ascii")
+    ).digest()
+    seed = int.from_bytes(digest[:4], "little", signed=False) & 0x7FFFFFFF
+    return np.random.default_rng(seed)
+
+
 def _beam_group_for_drop(
     drop_time: float,
     drop_index: int,
@@ -269,6 +352,10 @@ def _beam_group_for_drop(
     spread = float(cfg.angle_group_spread_rad)
     jitter = float(cfg.angle_jitter_rad)
     n_layers = max(1, int(n_color_layers))
+    # Separate colour RNG per group so each beam in the group gets a distinct
+    # hue. Seeded from the same drop index the angle RNG uses, but on a
+    # different domain (``::color::``) so it never drifts the angle sequence.
+    crng = _color_rng(song_hash, drop_index)
 
     beams: list[ScheduledBeam] = []
     for i, (t_peak, strength) in enumerate(lead_ins):
@@ -283,6 +370,7 @@ def _beam_group_for_drop(
                 intensity=float(min(1.0, max(0.35, strength))),
                 color_layer_idx=i % n_layers,
                 is_drop=False,
+                tint_srgb_override=_random_beam_tint(crng),
             )
         )
     # Drop beam: biased angle so the drop doesn't overlap the last lead-in.
@@ -297,6 +385,7 @@ def _beam_group_for_drop(
             intensity=1.0,
             color_layer_idx=len(lead_ins) % n_layers,
             is_drop=True,
+            tint_srgb_override=_random_beam_tint(crng),
         )
     )
     return beams
@@ -315,6 +404,7 @@ def _standalone_impact_group(
     rng = np.random.default_rng(_rng_seed(song_hash, 100_000 + impact_index))
     ang = float(rng.uniform(0.0, 2.0 * math.pi))
     n_layers = max(1, int(n_color_layers))
+    crng = _color_rng(song_hash, 100_000 + impact_index)
     return [
         ScheduledBeam(
             t_start=float(impact_time),
@@ -325,6 +415,7 @@ def _standalone_impact_group(
             intensity=float(min(1.0, max(0.6, strength))),
             color_layer_idx=impact_index % n_layers,
             is_drop=True,
+            tint_srgb_override=_random_beam_tint(crng),
         )
     ]
 
@@ -506,32 +597,153 @@ def _beam_envelope(age: float, duration: float, attack: float) -> float:
     return float(math.exp(-(age - a) / tau))
 
 
-def _active_beams(
+def _sustain_knots(D: float) -> tuple[float, float, float, float]:
+    """Knots for a long user BEAM: ``(ramp, plateau, fade, t_plateau_end)``.
+
+    After ``t_plateau_end = ramp + plateau``, the beam **core** and halo both
+    ramp up (see :func:`_sustain_energy_mul` and :func:`_sustain_halo_scales`)
+    until a slightly elongated end fade on long clips.
+    """
+    D = max(1e-4, float(D))
+    # Slightly longer tail than before so a long cue "hangs" before release.
+    fade = min(0.18, max(0.035, 0.065 * D))
+    ramp = min(0.45, max(0.04, 0.12 * D))
+    plateau = min(0.45, max(0.03, 0.10 * D))
+    t2 = ramp + plateau
+    if t2 > D * 0.55:
+        scale = (D * 0.50) / t2
+        ramp *= scale
+        plateau *= scale
+        t2 = ramp + plateau
+    return ramp, plateau, fade, t2
+
+
+def _sustain_strength(age: float, D: float) -> float:
+    """Ramp + plateau (full) + optional end fade; values in ``[0, 1]``."""
+    if age < 0.0 or age > D or D <= 0.0:
+        return 0.0
+    ramp, _plateau, fade, t2 = _sustain_knots(D)
+    d_end = D - fade
+    if age >= d_end:
+        return max(0.0, 1.0 - (age - d_end) / max(fade, 1e-4))
+    if age < ramp:
+        return float(age / max(ramp, 1e-4))
+    if age < t2:
+        return 1.0
+    return 1.0
+
+
+def _sustain_glow_u(age: float, D: float) -> float:
+    """0 during ramp+plateau, 1 by end of glow window (before strength fade)."""
+    if age < 0.0 or age > D or D <= 0.0:
+        return 0.0
+    ramp, _plateau, fade, t2 = _sustain_knots(D)
+    t_glow_end = D - fade
+    if age < t2:
+        return 0.0
+    if age >= t_glow_end:
+        return 1.0
+    return (age - t2) / max(t_glow_end - t2, 1e-4)
+
+
+def _sustain_energy_mul(age: float, D: float) -> float:
+    """Extra scale on :func:`_sustain_strength` for long clips (``>= 1.0``).
+
+    After the strength plateau, the **core and halo** both get louder together
+    as ``g`` sweeps 0→1, so the tip at the screen edge and the hot axis
+    brighten — not just the afterglo halo. Clamped to keep gains sane.
+    """
+    if age < 0.0 or age > D or D <= 0.0:
+        return 1.0
+    g = _sustain_glow_u(age, D)
+    if g <= 0.0:
+        return 1.0
+    extra = max(0.0, float(D) - 0.75)
+    # Bigger D → a bit more peak punch on very long hero beams.
+    boost = 0.12 + 0.26 * min(1.0, extra / 3.25)
+    return min(1.0 + g * float(boost), 1.40)
+
+
+def _sustain_halo_scales(age: float, D: float) -> tuple[float, float, float]:
+    """Extra halo width, halo intensity, and blur multipliers (base = 1.0)."""
+    g = _sustain_glow_u(age, D)
+    extra = max(0.0, float(D) - 0.75)
+    # Modest halo swell on top of :func:`_sustain_energy_mul` (global brightening).
+    w = 1.0 + g * (0.28 + 0.45 * min(1.0, extra / 4.0))
+    hi = 1.0 + g * 0.38 * min(1.0, extra / 3.5)
+    blur = 1.0 + 0.14 * min(2.0, extra) * (0.2 + 0.8 * g)
+    # Cap very long BEAMs so a single cue does not smother the whole frame.
+    w = min(w, 1.78)
+    hi = min(hi, 1.50)
+    blur = min(blur, 1.55)
+    return w, hi, blur
+
+
+def _active_beam_states(
     t: float, scheduled: Sequence[ScheduledBeam]
-) -> list[tuple[ScheduledBeam, float]]:
-    """Return ``(beam, envelope)`` pairs with ``envelope > 0`` at ``t``."""
-    out: list[tuple[ScheduledBeam, float]] = []
+) -> list[
+    tuple[ScheduledBeam, float, float, float, float]
+]:
+    """Return ``(beam, env, halo_w_mul, halo_i_mul, blur_mul)`` for active beams.
+
+    ``halo_*`` and ``blur`` are multipliers on top of :class:`BeamConfig` defaults
+    (``1.0`` = no change; used for long user-timeline sustain shaping).
+    """
+    out: list[tuple[ScheduledBeam, float, float, float, float]] = []
     tf = float(t)
     for b in scheduled:
         age = tf - float(b.t_start)
-        if age < 0.0 or age > float(b.duration_s):
+        D = float(b.duration_s)
+        if age < 0.0 or age > D:
             continue
-        env = _beam_envelope(age, float(b.duration_s), 0.04) * float(b.intensity)
-        if env > 1e-4:
-            out.append((b, env))
+        if b.sustain_shaping:
+            s = _sustain_strength(age, D)
+            emul = _sustain_energy_mul(age, D)
+            env = s * float(b.intensity) * emul
+            if env <= 1e-4:
+                continue
+            hw, hi, br = _sustain_halo_scales(age, D)
+            out.append((b, env, hw, hi, br))
+        else:
+            env = _beam_envelope(age, D, 0.04) * float(b.intensity)
+            if env > 1e-4:
+                out.append((b, env, 1.0, 1.0, 1.0))
     return out
 
 
+def _gaussian_blur_footprint_pad_px(
+    blur_sigma_base: float, *, max_br: float
+) -> int:
+    """Extra outer pad so per-beam ``ndimage.gaussian_filter`` does not clip.
+
+    The beam is rasterised, then each layer is blurred with
+    ``sigma = blur_sigma_base * br``. The 2D blur tail must decay to
+    ~negligible *inside* the sub-patch before its bottom/right edges, or
+    a straight cut (often a horizontal strip) appears in the mid-frame
+    when the bloom is wide. 6.5--7σ+ margin is a practical minimum for
+    high-``br`` / long-sustain looks.
+    """
+    sigma = max(0.0, float(blur_sigma_base)) * max(1.0, float(max_br))
+    return max(1, int(math.ceil(6.6 * sigma + 1.0)))
+
+
 def _patch_bounds(
-    scheduled_active: Sequence[tuple[ScheduledBeam, float]],
+    scheduled_active: Sequence[
+        tuple[ScheduledBeam, float, float, float, float]
+    ],
     *,
     centroid_xy: tuple[float, float],
     frame_hw: tuple[int, int],
+    base_halo_width_mul: float,
     pad_px: int = 8,
+    blur_pad_px: int = 0,
 ) -> tuple[int, int, int, int] | None:
     """Bounding box ``(x0, y0, x1, y1)`` in frame coords covering all beams.
 
-    Returns ``None`` when no beam is active or the bbox falls outside the frame.
+    The margin honours the widest halo sigma so the unblurred field does not
+    clip, and ``blur_pad_px`` extends the box for the post-pass Gaussian
+    (see :func:`_gaussian_blur_footprint_pad_px`). Returns ``None`` when no
+    beam is active or the bbox falls outside the frame.
     """
     if not scheduled_active:
         return None
@@ -539,23 +751,24 @@ def _patch_bounds(
     cx, cy = float(centroid_xy[0]), float(centroid_xy[1])
     xs: list[float] = [cx]
     ys: list[float] = [cy]
-    for beam, _env in scheduled_active:
+    base_hm = max(1.0, float(base_halo_width_mul))
+    for beam, _env, hw, _hi, _br in scheduled_active:
         ang = float(beam.angle_rad)
         L = float(beam.length_px)
-        # Quad envelope plus a bit of sigma margin.
-        margin = 3.0 * float(beam.thickness_px)
+        # Quad envelope plus a halo-sigma margin so bloom doesn't clip.
+        eff_halo = base_hm * max(1.0, float(hw))
+        margin = 3.5 * float(beam.thickness_px) * eff_halo
         tip_x = cx + math.cos(ang) * L
         tip_y = cy + math.sin(ang) * L
-        # Bound four corners of the beam quad (tip ± sigma perpendicular, base
-        # ± sigma perpendicular) -- simpler: expand by margin on all axes.
         xs.extend([tip_x - margin, tip_x + margin])
         ys.extend([tip_y - margin, tip_y + margin])
         xs.extend([cx - margin, cx + margin])
         ys.extend([cy - margin, cy + margin])
-    x0 = max(0, int(math.floor(min(xs))) - int(pad_px))
-    y0 = max(0, int(math.floor(min(ys))) - int(pad_px))
-    x1 = min(w, int(math.ceil(max(xs))) + int(pad_px))
-    y1 = min(h, int(math.ceil(max(ys))) + int(pad_px))
+    bpad = int(max(0, int(blur_pad_px)))
+    x0 = max(0, int(math.floor(min(xs))) - int(pad_px) - bpad)
+    y0 = max(0, int(math.floor(min(ys))) - int(pad_px) - bpad)
+    x1 = min(w, int(math.ceil(max(xs))) + int(pad_px) + bpad)
+    y1 = min(h, int(math.ceil(max(ys))) + int(pad_px) + bpad)
     if x0 >= x1 or y0 >= y1:
         return None
     return x0, y0, x1, y1
@@ -570,14 +783,22 @@ def _draw_beam_into(
     cx_local: float,
     cy_local: float,
     rim_rgb_srgb: tuple[int, int, int],
+    edge_offset_px: float,
+    halo_width_mul: float,
+    halo_intensity: float,
+    core_white_boost: float = 0.0,
 ) -> None:
     """Add one beam's energy into linear-RGB + alpha accumulators (in place).
 
     The beam is drawn as a rectangular coordinate system: ``u`` along the beam
-    axis (``0`` at the logo edge, ``1`` at the tip) and ``v`` across its width
-    (``0`` on the axis, ``±`` outward). Along ``u`` we apply a fast rise from
-    the centroid edge and a long tail toward the tip; across ``v`` a gaussian
-    so the beam has a soft cylindrical look rather than a stamped rectangle.
+    axis (``edge_offset_px`` at the logo edge, ``L`` at the tip) and ``v``
+    across its width (``0`` on the axis, ``±`` outward). Two profiles are
+    accumulated: a crisp core at ``sigma = thickness_px`` and a softer halo
+    at ``halo_width_mul * thickness_px`` so the beam reads as a bloomed
+    afterglow rather than a hard stroke. Along ``u`` the beam starts at the
+    logo edge (``edge_offset_px``) and fades toward the tip; pixels with
+    ``u < edge_offset_px`` get zero so the beam is strictly outside the logo
+    centroid disc.
     """
     h, w = accum_linear.shape[:2]
     if h == 0 or w == 0:
@@ -591,23 +812,62 @@ def _draw_beam_into(
     ys, xs = np.indices((h, w), dtype=np.float32)
     dx = xs - float(cx_local)
     dy = ys - float(cy_local)
-    u = dx * cos_a + dy * sin_a          # along beam axis, px from centroid
+    u_raw = dx * cos_a + dy * sin_a      # along beam axis, px from centroid
     v = -dx * sin_a + dy * cos_a         # perpendicular distance, px
 
-    # Along-axis profile: rises sharply over ~10 % of L from the centroid,
-    # plateaus briefly, then fades toward the tip. Negative ``u`` (behind the
-    # centroid) is zero so the beam is one-sided.
-    rise = np.clip(u / (0.10 * L), 0.0, 1.0)
-    tail = np.clip(1.0 - (u / L), 0.0, 1.0)
-    axial = rise * (tail ** 1.6)
-    axial = np.where(u >= 0.0, axial, 0.0)
+    # Shift along-axis origin so ``u = 0`` sits at the logo edge, not the
+    # centroid. The effective length is the remaining span out to the tip.
+    offset = max(0.0, float(edge_offset_px))
+    u = u_raw - offset
+    L_eff = max(1.0, L - offset)
 
-    # Across-axis profile: gaussian, cheap to evaluate.
-    radial = np.exp(-0.5 * (v / sigma) ** 2)
+    # Along-axis profile: short rise just past the logo edge, then a gentle
+    # tail toward the tip. Pixels behind the edge (``u < 0``) get zero so
+    # the beam root sits on the logo rim, not in the middle of the glyph.
+    # ``tail`` is raised to < 1 so the core holds most of its peak intensity
+    # across the majority of the beam length and only fades close to the
+    # nominal tip; combined with ``*_length_frac_edge > 1`` this lets the
+    # visible core reach the actual frame edge before it dims out.
+    rise_core = np.clip(u / max(1.0, 0.08 * L_eff), 0.0, 1.0)
+    tail = np.clip(1.0 - (u / L_eff), 0.0, 1.0)
+    axial_core = rise_core * (tail ** 0.85)
+    axial_core = np.where(u >= 0.0, axial_core, 0.0)
 
-    # Beam core is brighter and tighter than the soft halo; combine so the
-    # edges bloom without the center washing out.
-    profile = (axial * radial).astype(np.float32, copy=False)
+    # Core + halo gaussians. The halo fades faster near the rim and slower
+    # near the tip so the afterglow feels smokey rather than flat.
+    radial_core = np.exp(-0.5 * (v / sigma) ** 2)
+    sigma_halo = max(sigma + 1.0, sigma * float(halo_width_mul))
+    radial_halo = np.exp(-0.5 * (v / sigma_halo) ** 2)
+    # Halo stays on the forward half (``u >= 0``) only. Back-bleed along ``u`` was
+    # removed: it read as light spilling *through* the mark to the far side. The
+    # compositor draws beams *under* the logo so the glyph occludes; softening
+    # at the screen edge is handled by the gaussian margin + padding in
+    # :func:`_patch_bounds`.
+    rise_halo = np.clip(u / max(1.0, 0.05 * L_eff), 0.0, 1.0)
+    axial_halo = rise_halo * (tail ** 0.6)
+    axial_halo = np.where(u >= 0.0, axial_halo, 0.0)
+    halo_gain = max(0.0, min(1.0, float(halo_intensity)))
+
+    profile_core = (axial_core * radial_core).astype(np.float32, copy=False)
+    profile_halo = (axial_halo * radial_halo * halo_gain).astype(np.float32, copy=False)
+    # Round off the "flat" u>=0 cut (a straight isocontour in screen space) with a
+    # small 2D cap in (u, v) at the rim: isophotes are curves near the attach point
+    # instead of an infinite line in v. ``u + shift`` offsets the lobe slightly
+    # inward (toward the centroid) so it tucks under the solid logo; compositor
+    # still draws the mark on top, so it does not read as a wash over the glyph.
+    sig_r = max(2.5, min(0.48 * float(sigma_halo), 0.18 * L_eff + 0.5))
+    u_t = u + 0.32 * float(sig_r)
+    v_r = v / 1.12
+    endcap = np.exp(
+        -0.5 * ((u_t / max(float(sig_r), 0.1)) ** 2 + (v_r / max(float(sig_r), 0.1)) ** 2)
+    ).astype(np.float32, copy=False)
+    endcap = (endcap * float(halo_gain) * 0.68).astype(np.float32, copy=False)
+    profile_halo = np.maximum(profile_halo, endcap)
+    # Optional micro-feather on the hot core (same rim zone only)
+    nudge = 0.18 * endcap
+    profile_core = np.maximum(profile_core, nudge)
+
+    profile = np.maximum(profile_core, profile_halo)
     if not np.any(profile > 1e-4):
         return
 
@@ -628,6 +888,18 @@ def _draw_beam_into(
     accum_linear[..., 0] += contrib * r
     accum_linear[..., 1] += contrib * g
     accum_linear[..., 2] += contrib * b
+    # White-hot core: push pure white into all three channels where the
+    # crisp core profile peaks. This saturates the beam's axis toward white
+    # even when the tint is dark (dark shadow presets otherwise produce a
+    # barely-visible dim beam on a black background). The ``profile_core``
+    # weighting ensures only the hot axis whitens -- the halo keeps its
+    # tint so the afterglow still reads as the preset colour.
+    wb = max(0.0, float(core_white_boost))
+    if wb > 1e-4:
+        white = (profile_core * gain * wb).astype(np.float32, copy=False)
+        accum_linear[..., 0] += white
+        accum_linear[..., 1] += white
+        accum_linear[..., 2] += white
     np.maximum(alpha_accum, contrib, out=alpha_accum)
 
 
@@ -675,7 +947,8 @@ def compute_beam_patch(
     song_hash: Any = None,
     hue_drift_per_sec: float = 0.0,
     n_color_layers: int = 1,
-    blur_sigma_px: float = 1.8,
+    blur_sigma_px: float = 2.6,
+    logo_radius_px: float = 0.0,
 ) -> BeamPatchResult | None:
     """Build a padded premultiplied-RGBA patch for currently active beams.
 
@@ -683,8 +956,14 @@ def compute_beam_patch(
     then skip all per-frame work. Blend the returned patch at
     ``(result.x0, result.y0)`` via
     :func:`pipeline.logo_composite._blend_premult_rgba_patch`.
+
+    ``logo_radius_px`` is the approximate distance from the centroid to the
+    logo edge (output-frame px). Beams start at ``logo_radius_px *
+    cfg.edge_offset_frac`` outward along their angle, so they visually spring
+    from the rim rather than piercing the logo's middle. Pass ``0`` (the
+    default) to restore the centroid-rooted legacy behaviour.
     """
-    active_raw = _active_beams(t, scheduled)
+    active_raw = _active_beam_states(t, scheduled)
     if not active_raw:
         return None
 
@@ -699,17 +978,50 @@ def compute_beam_patch(
                 b, cx=cx_frame, cy=cy_frame, frame_hw=frame_hw, cfg=cfg,
             ),
             env,
+            hw,
+            hi,
+            br,
         )
-        for b, env in active_raw
+        for b, env, hw, hi, br in active_raw
     ]
 
-    bounds = _patch_bounds(active, centroid_xy=centroid_xy, frame_hw=frame_hw)
+    max_br = 1.0
+    for _b, _e, _w, _h, br in active:
+        max_br = max(max_br, float(br))
+    blur_pad = _gaussian_blur_footprint_pad_px(
+        float(blur_sigma_px), max_br=max_br
+    )
+
+    bounds = _patch_bounds(
+        active,
+        centroid_xy=centroid_xy,
+        frame_hw=frame_hw,
+        base_halo_width_mul=float(cfg.halo_width_mul),
+        blur_pad_px=blur_pad,
+    )
     if bounds is None:
         return None
     x0, y0, x1, y1 = bounds
     ph, pw = y1 - y0, x1 - x0
     if ph <= 0 or pw <= 0:
         return None
+
+    H, W = int(frame_hw[0]), int(frame_hw[1])
+    eff_blur_sigma = float(blur_sigma_px) * max_br
+    patch_area = float(ph * pw)
+    frame_area = float(max(1, H * W))
+    # Tight sub-rect + large gaussian leaves non-negligible alpha on the inner
+    # edge of the buffer (horizontal/vertical "shelf" in the frame). When the
+    # blur is strong or the bbox already covers most of the frame, raster the
+    # whole frame so only the *video* edges taper to black.
+    use_full_frame = (
+        eff_blur_sigma >= 3.35
+        or blur_pad >= 24
+        or patch_area > 0.38 * frame_area
+    )
+    if use_full_frame:
+        x0, y0, x1, y1 = 0, 0, W, H
+        ph, pw = H, W
 
     accum_srgb = np.zeros((ph, pw, 3), dtype=np.float32)
     alpha_acc = np.zeros((ph, pw), dtype=np.float32)
@@ -727,30 +1039,60 @@ def compute_beam_patch(
 
     cx_local = float(centroid_xy[0]) - float(x0)
     cy_local = float(centroid_xy[1]) - float(y0)
+    edge_offset = max(0.0, float(logo_radius_px) * float(cfg.edge_offset_frac))
 
-    for beam, env in active:
-        tint = tints[int(beam.color_layer_idx) % n_layers]
+    for beam, env, hw, hi, br in active:
+        # User BEAM clips in the effects editor may pin an explicit sRGB tint
+        # via ``color_hex``; when set we bypass the layer palette so the
+        # picked colour lands in the rendered beam. Otherwise fall back to the
+        # preset-driven rim tints so analyser-scheduled beams keep their hue
+        # drift.
+        if beam.tint_srgb_override is not None:
+            tint = (
+                int(beam.tint_srgb_override[0]),
+                int(beam.tint_srgb_override[1]),
+                int(beam.tint_srgb_override[2]),
+            )
+        else:
+            tint = tints[int(beam.color_layer_idx) % n_layers]
+        layer_rgb = np.zeros((ph, pw, 3), dtype=np.float32)
+        layer_a = np.zeros((ph, pw), dtype=np.float32)
         _draw_beam_into(
-            accum_srgb,
-            alpha_acc,
+            layer_rgb,
+            layer_a,
             beam=beam,
             env=env,
             cx_local=cx_local,
             cy_local=cy_local,
             rim_rgb_srgb=tint,
+            edge_offset_px=edge_offset,
+            halo_width_mul=float(cfg.halo_width_mul) * float(hw),
+            halo_intensity=max(
+                0.0,
+                min(1.0, float(cfg.halo_intensity) * float(hi)),
+            ),
+            core_white_boost=float(cfg.core_white_boost),
         )
+        # Per-beam blur: long sustain cues use a higher ``br``; blurring the
+        # combined patch with max(br) smeared one beam's afterglow onto every
+        # other and made new beams look pre-lit.
+        eff_blur = float(blur_sigma_px) * max(1.0, float(br))
+        if eff_blur > 0.25:
+            for c in range(3):
+                layer_rgb[..., c] = ndimage.gaussian_filter(
+                    layer_rgb[..., c],
+                    sigma=eff_blur,
+                    mode="constant",
+                    cval=0.0,
+                )
+            layer_a = ndimage.gaussian_filter(
+                layer_a, sigma=eff_blur, mode="constant", cval=0.0
+            )
+        accum_srgb += layer_rgb
+        np.maximum(alpha_acc, layer_a, out=alpha_acc)
 
     if not np.any(alpha_acc > 1e-4):
         return None
-
-    # Light gaussian so the beam edges bloom rather than aliasing along the
-    # pixel grid. ``scipy`` is already a project dep (used by the rim code).
-    if blur_sigma_px > 0.25:
-        for c in range(3):
-            accum_srgb[..., c] = ndimage.gaussian_filter(
-                accum_srgb[..., c], sigma=float(blur_sigma_px)
-            )
-        alpha_acc = ndimage.gaussian_filter(alpha_acc, sigma=float(blur_sigma_px))
 
     patch = _finalize_patch(accum_srgb, alpha_acc)
     return BeamPatchResult(patch=patch, x0=int(x0), y0=int(y0))

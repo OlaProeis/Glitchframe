@@ -299,6 +299,126 @@ class TestComputeBeamPatch(unittest.TestCase):
             float(out_decay.patch[..., 3].max()),
         )
 
+    def test_core_white_boost_brightens_dark_tint(self) -> None:
+        # Regression: without ``core_white_boost`` a dark preset (e.g. deep
+        # blue shadow colour) produced an almost-invisible beam against a
+        # black background. The boost should inject pure white into the hot
+        # axis so even dark tints saturate to a bright core while the halo
+        # keeps the original tint.
+        beam = self._single_beam(
+            t_start=0.0, duration=0.55, angle=0.0, length=800.0, thickness=22.0, is_drop=True
+        )
+        dim_cfg = BeamConfig(core_white_boost=0.0)
+        bright_cfg = BeamConfig()  # defaults include the boost
+        dim = compute_beam_patch(
+            (540, 960),
+            centroid_xy=(480.0, 270.0),
+            t=0.04,
+            scheduled=[beam],
+            rim_rgb=(0, 40, 120),  # dark blue
+            cfg=dim_cfg,
+            logo_radius_px=150.0,
+        )
+        bright = compute_beam_patch(
+            (540, 960),
+            centroid_xy=(480.0, 270.0),
+            t=0.04,
+            scheduled=[beam],
+            rim_rgb=(0, 40, 120),
+            cfg=bright_cfg,
+            logo_radius_px=150.0,
+        )
+        assert dim is not None and bright is not None
+        # Red channel is 0 on the tint side, so any non-zero red in the
+        # output is proof the white-hot boost lit up the core.
+        self.assertLess(int(dim.patch[..., 0].max()), 10)
+        self.assertGreater(int(bright.patch[..., 0].max()), 80)
+        # Alpha invariant still holds (rgb <= alpha per pixel).
+        for c in range(3):
+            self.assertTrue(
+                np.all(bright.patch[..., c] <= bright.patch[..., 3]),
+                msg=f"channel {c} exceeded alpha with core_white_boost",
+            )
+
+
+class TestSustainTimelineShaping(unittest.TestCase):
+    def test_strength_increases_during_ramp(self) -> None:
+        from pipeline import logo_rim_beams as lrb
+
+        D = 1.4
+        self.assertLess(lrb._sustain_strength(0.01, D), lrb._sustain_strength(0.2, D))
+
+    def test_glow_starts_only_after_strength_plateau(self) -> None:
+        from pipeline import logo_rim_beams as lrb
+
+        D = 1.2
+        _r, _p, _f, t2 = lrb._sustain_knots(D)
+        self.assertEqual(lrb._sustain_glow_u(t2 * 0.5, D), 0.0)
+        self.assertGreater(lrb._sustain_glow_u(min(t2 + 0.15, D * 0.5), D), 0.0)
+
+    def test_longer_clip_allows_stronger_halo_swell(self) -> None:
+        from pipeline import logo_rim_beams as lrb
+
+        # Both samples at full glow, late in the clip, before the end fade.
+        w_short, hi_short, br_short = lrb._sustain_halo_scales(0.96, 1.0)
+        w_long, hi_long, br_long = lrb._sustain_halo_scales(3.9, 4.0)
+        self.assertGreater(w_long, w_short)
+        self.assertGreater(hi_long, hi_short)
+        self.assertGreater(br_long, br_short)
+
+    def test_blur_footprint_pad_increases_with_sustain_blur(self) -> None:
+        from pipeline import logo_rim_beams as lrb
+
+        self.assertLess(
+            lrb._gaussian_blur_footprint_pad_px(2.6, max_br=1.0),
+            lrb._gaussian_blur_footprint_pad_px(2.6, max_br=2.5),
+        )
+
+    def test_sustain_energy_mul_boosts_core_after_plateau(self) -> None:
+        from pipeline import logo_rim_beams as lrb
+
+        D = 2.0
+        _r, _p, _f, t2 = lrb._sustain_knots(D)
+        # Still on strength plateau, before g > 0.
+        self.assertAlmostEqual(lrb._sustain_energy_mul(t2 * 0.5, D), 1.0)
+        # Mid build phase: global gain > 1 so core + edge brighten, not just halo.
+        t_mid = min(t2 + 0.75, D * 0.9)
+        self.assertGreater(lrb._sustain_energy_mul(t_mid, D), 1.09)
+
+    def test_sustain_flag_produces_late_bloom_in_patch(self) -> None:
+        """Regression: long user BEAM should glow up toward the end of the cue."""
+        beam = ScheduledBeam(
+            t_start=0.0,
+            duration_s=2.0,
+            angle_rad=0.0,
+            length_px=500.0,
+            thickness_px=20.0,
+            intensity=1.0,
+            color_layer_idx=0,
+            is_drop=True,
+            sustain_shaping=True,
+        )
+        out_early = compute_beam_patch(
+            (540, 960),
+            centroid_xy=(480.0, 270.0),
+            t=0.1,
+            scheduled=[beam],
+            rim_rgb=(255, 80, 180),
+        )
+        out_late = compute_beam_patch(
+            (540, 960),
+            centroid_xy=(480.0, 270.0),
+            t=1.7,
+            scheduled=[beam],
+            rim_rgb=(255, 80, 180),
+        )
+        assert out_early is not None and out_late is not None
+        # Late time should be in the high-glow phase (bloom → larger foot-print).
+        self.assertGreater(
+            float(out_late.patch[..., 3].sum()),
+            float(out_early.patch[..., 3].sum()),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

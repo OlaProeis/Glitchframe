@@ -45,7 +45,22 @@ from orchestrator import (
     orchestrate_full_render,
     orchestrate_preview_10s,
 )
-from pipeline.audio_ingest import ingest_audio_file, preview_value_for_gradio
+from pipeline.audio_ingest import (
+    ANALYSIS_MONO_WAV_NAME,
+    ORIGINAL_WAV_NAME,
+    ingest_audio_file,
+    preview_value_for_gradio,
+)
+from pipeline.effects_editor import (
+    bake_auto_schedule,
+    build_editor_html as build_effects_editor_html,
+    load_editor_state as load_effects_editor_state,
+    save_edited_timeline,
+)
+from pipeline.effects_timeline import (
+    load as load_effects_timeline,
+    save as save_effects_timeline,
+)
 from pipeline.background import (
     BACKGROUND_MODES,
     MODE_ANIMATEDIFF,
@@ -71,9 +86,11 @@ from pipeline.lyrics_editor import (
 )
 from pipeline.reactive_shader import (
     ReactiveShader,
+    composite_premultiplied_rgba_over_rgb,
     resolve_builtin_shader_stem,
     uniforms_at_time,
 )
+from pipeline.voidcat_ascii import build_voidcat_ascii_context, render_voidcat_ascii_rgba
 
 # PRD §3.1 preset ids when no YAML files are present yet
 _DEFAULT_PRESET_CHOICES: list[str] = [
@@ -297,6 +314,7 @@ def _build_render_inputs(
     logo_file: object,
     logo_position: str,
     logo_opacity_pct: float,
+    logo_max_size_pct: float,
     logo_beat_pulse: bool,
     logo_pulse_mode: str,
     logo_pulse_strength: float,
@@ -359,6 +377,7 @@ def _build_render_inputs(
         logo_path=_coerce_path(logo_file),
         logo_position=str(logo_position or "center"),
         logo_opacity_pct=float(logo_opacity_pct),
+        logo_max_size_pct=float(np.clip(logo_max_size_pct, 0.0, 100.0)),
         logo_beat_pulse=bool(logo_beat_pulse),
         logo_pulse_mode=str(logo_pulse_mode or "bass").strip().lower(),
         logo_pulse_strength=float(logo_pulse_strength),
@@ -435,6 +454,7 @@ def _run_preview(
     logo_file: object,
     logo_position: str,
     logo_opacity_pct: float,
+    logo_max_size_pct: float,
     logo_beat_pulse: bool,
     logo_pulse_mode: str,
     logo_pulse_strength: float,
@@ -484,6 +504,7 @@ def _run_preview(
             logo_file=logo_file,
             logo_position=logo_position,
             logo_opacity_pct=logo_opacity_pct,
+            logo_max_size_pct=logo_max_size_pct,
             logo_beat_pulse=logo_beat_pulse,
             logo_pulse_mode=logo_pulse_mode,
             logo_pulse_strength=logo_pulse_strength,
@@ -544,6 +565,7 @@ def _run_render(
     logo_file: object,
     logo_position: str,
     logo_opacity_pct: float,
+    logo_max_size_pct: float,
     logo_beat_pulse: bool,
     logo_pulse_mode: str,
     logo_pulse_strength: float,
@@ -593,6 +615,7 @@ def _run_render(
             logo_file=logo_file,
             logo_position=logo_position,
             logo_opacity_pct=logo_opacity_pct,
+            logo_max_size_pct=logo_max_size_pct,
             logo_beat_pulse=logo_beat_pulse,
             logo_pulse_mode=logo_pulse_mode,
             logo_pulse_strength=logo_pulse_strength,
@@ -681,6 +704,7 @@ def _preview_logo_on_test_frame(
     logo_file: str | gr.utils.NamedString | None,
     position: str,
     opacity_pct: float,
+    max_size_pct: float,
     log: str,
     progress: gr.Progress = gr.Progress(),
 ) -> tuple[np.ndarray | None, str]:
@@ -693,12 +717,21 @@ def _preview_logo_on_test_frame(
         progress(1.0, desc="Idle")
         return None, _append_log(log, "Logo preview: upload a PNG in Branding first.")
     try:
-        out = composite_logo_from_path(base, path, position, opacity_pct)
+        out = composite_logo_from_path(
+            base,
+            path,
+            position,
+            opacity_pct,
+            max_size_pct=float(max_size_pct),
+        )
     except Exception as exc:
         progress(1.0, desc="Idle")
         return None, _append_log(log, f"Logo preview failed: {exc}")
     progress(1.0, desc="Idle")
-    msg = f"Logo preview OK — position={position!r} opacity={opacity_pct:.0f}% size={w}×{h}"
+    msg = (
+        f"Logo preview OK — position={position!r} opacity={opacity_pct:.0f}% "
+        f"size={max_size_pct:.0f}% of frame · canvas {w}×{h}"
+    )
     return out, _append_log(log, msg)
 
 
@@ -722,6 +755,7 @@ def _preview_reactive_frame(
     logo_file: str | gr.utils.NamedString | None,
     logo_position: str,
     logo_opacity: float,
+    logo_max_size_pct: float,
     log: str,
     progress: gr.Progress = gr.Progress(),
 ) -> tuple[np.ndarray | None, str]:
@@ -794,16 +828,32 @@ def _preview_reactive_frame(
         progress(0.5, desc="Reactive preview (GPU)")
         with ReactiveShader(stem, width=w, height=h, palette=palette or None) as reactive:
             rgb = reactive.render_frame_composited_rgb(uniforms, bg)
+        if stem == "void_ascii_bg":
+            ad = dict(analysis)
+            if song_hash:
+                ad.setdefault("song_hash", song_hash)
+            vctx = build_voidcat_ascii_context(ad, palette or None)
+            vox = render_voidcat_ascii_rgba(
+                w, h, 0.0, uniforms=uniforms, ctx=vctx
+            )
+            rgb = composite_premultiplied_rgba_over_rgb(vox, rgb)
 
         logo_path = getattr(logo_file, "name", logo_file) if logo_file else None
         if logo_path and str(logo_path).strip():
-            rgb = composite_logo_from_path(rgb, logo_path, logo_position, logo_opacity)
+            rgb = composite_logo_from_path(
+                rgb,
+                logo_path,
+                logo_position,
+                logo_opacity,
+                max_size_pct=float(logo_max_size_pct),
+            )
 
         progress(1.0, desc="Idle")
         palette_label = f"{len(palette)} colors" if palette else "default palette"
         msg = (
             f"Reactive preview OK — shader={stem!r} intensity={intensity_pct:.0f}% "
             f"palette={palette_label} t=0s resolution={w}×{h}"
+            + (" + ascii" if stem == "void_ascii_bg" else "")
             + (
                 f" | logo={logo_position!r} @ {logo_opacity:.0f}%"
                 if logo_path and str(logo_path).strip()
@@ -852,6 +902,15 @@ _EDITOR_EMPTY_HTML = (
     "<div style='color:#9ca3af;font-family:system-ui,sans-serif;padding:12px;'>"
     "Click <b>Load timeline</b> after ingesting audio and running "
     "<b>Align lyrics</b> to inspect and edit per-word timings.</div>"
+)
+
+_EFFECTS_EDITOR_CONTAINER_ID = "mv_fx_root"
+_EFFECTS_EDITOR_AUDIO_ELEM_ID = "mv_fx_audio"
+_EFFECTS_EDITOR_STATE_JS_VAR = "_musicvids_effects_state"
+_EFFECTS_EDITOR_EMPTY_HTML = (
+    "<div style='color:#9ca3af;font-family:system-ui,sans-serif;padding:12px;'>"
+    "Click <b>Load timeline</b> after ingesting audio and running <b>Analyze</b> "
+    "to inspect and edit the effects timeline.</div>"
 )
 
 
@@ -994,6 +1053,145 @@ def _revert_editor(song_hash: str | None, log: str) -> str:
         return _append_log(log, _format_exception("Revert timeline failed", exc))
 
 
+# ---------------------------------------------------------------------------
+# Effects-timeline editor handlers
+# ---------------------------------------------------------------------------
+
+
+def _resolve_wav_path_for_effects_editor(cache_dir: Path) -> Path:
+    """Prefer ``analysis_mono.wav``, then ``original.wav`` (same as ``_resolve_wav_for_peaks``)."""
+    mono = cache_dir / ANALYSIS_MONO_WAV_NAME
+    if mono.is_file():
+        return mono
+    orig = cache_dir / ORIGINAL_WAV_NAME
+    if orig.is_file():
+        return orig
+    raise FileNotFoundError(
+        f"No {ANALYSIS_MONO_WAV_NAME} or {ORIGINAL_WAV_NAME} in {cache_dir} — run ingest first."
+    )
+
+
+def _load_effects_editor(song_hash: str | None, log: str) -> tuple[str, str]:
+    """Render the effects editor HTML (with its own ``<audio>``) into the tab."""
+    if not song_hash:
+        return (
+            _EFFECTS_EDITOR_EMPTY_HTML,
+            _append_log(log, "Effects timeline: no audio ingested yet."),
+        )
+    try:
+        cache_dir = song_cache_dir(song_hash)
+        state = load_effects_editor_state(cache_dir)
+        audio_abs = _resolve_wav_path_for_effects_editor(cache_dir).resolve()
+        html_blob = build_effects_editor_html(
+            state,
+            audio_url=_editor_audio_url(audio_abs),
+            container_id=_EFFECTS_EDITOR_CONTAINER_ID,
+            state_js_var=_EFFECTS_EDITOR_STATE_JS_VAR,
+            audio_element_id=_EFFECTS_EDITOR_AUDIO_ELEM_ID,
+        )
+        n_clips = len(state.get("clips") or [])
+        n_ghost = len(state.get("ghost_events") or [])
+        msg = (
+            f"Effects timeline ready — hash={state.get('song_hash', song_hash)} | "
+            f"clips={n_clips} | ghost markers={n_ghost}"
+        )
+        return html_blob, _append_log(log, msg)
+    except Exception as exc:  # noqa: BLE001
+        return (
+            _EFFECTS_EDITOR_EMPTY_HTML,
+            _append_log(log, _format_exception("Effects timeline load failed", exc)),
+        )
+
+
+def _save_effects_editor(
+    song_hash: str | None, edited_json: str, log: str
+) -> tuple[str, str]:
+    LOGGER.info(
+        "Save effects timeline: song_hash=%s, payload_len=%d",
+        (song_hash[:8] if song_hash else "<none>"),
+        len(edited_json or ""),
+    )
+    if not song_hash:
+        msg = "Save effects: no song_hash (ingest audio first)."
+        LOGGER.warning(msg)
+        return _EFFECTS_EDITOR_EMPTY_HTML, _append_log(log, msg)
+    if not edited_json or not edited_json.strip() or edited_json.strip() == "{}":
+        msg = (
+            "Save effects: editor payload was empty — click 'Load timeline' first "
+            "so the browser has a state object to read."
+        )
+        LOGGER.warning(msg)
+        return _load_effects_editor(song_hash, _append_log(log, msg))
+    try:
+        cache_dir = song_cache_dir(song_hash)
+        path = save_edited_timeline(
+            cache_dir, edited_json, song_hash_from_dir=song_hash
+        )
+        LOGGER.info("Save effects timeline succeeded: %s", path)
+        return _load_effects_editor(
+            song_hash,
+            _append_log(
+                log, f"Saved effects timeline to {path} (manually edited timings)."
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.exception("Save effects timeline failed")
+        return (
+            _EFFECTS_EDITOR_EMPTY_HTML,
+            _append_log(log, _format_exception("Save effects timeline failed", exc)),
+        )
+
+
+def _bake_effects_editor(song_hash: str | None, log: str) -> tuple[str, str]:
+    if not song_hash:
+        return (
+            _EFFECTS_EDITOR_EMPTY_HTML,
+            _append_log(log, "Bake auto events: no song_hash (ingest audio first)."),
+        )
+    try:
+        cache_dir = song_cache_dir(song_hash)
+        path = bake_auto_schedule(cache_dir)
+        return _load_effects_editor(
+            song_hash,
+            _append_log(
+                log,
+                f"Baked auto events into {path} (new clips merged; duplicates within "
+                f"20 ms skipped).",
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return (
+            _EFFECTS_EDITOR_EMPTY_HTML,
+            _append_log(log, _format_exception("Bake auto events failed", exc)),
+        )
+
+
+def _clear_effects_editor(song_hash: str | None, log: str) -> tuple[str, str]:
+    if not song_hash:
+        return (
+            _EFFECTS_EDITOR_EMPTY_HTML,
+            _append_log(log, "Clear all: no song_hash (ingest audio first)."),
+        )
+    try:
+        cache_dir = song_cache_dir(song_hash)
+        timeline = load_effects_timeline(cache_dir)
+        timeline.clips = []
+        path = save_effects_timeline(cache_dir, timeline)
+        return _load_effects_editor(
+            song_hash,
+            _append_log(
+                log,
+                f"Cleared all clips on {path} (auto toggles and master reactivity "
+                "unchanged).",
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return (
+            _EFFECTS_EDITOR_EMPTY_HTML,
+            _append_log(log, _format_exception("Clear all failed", exc)),
+        )
+
+
 def build_ui() -> gr.Blocks:
     preset_registry = load_preset_registry()
     preset_choices = _preset_choices(preset_registry)
@@ -1058,6 +1256,19 @@ def build_ui() -> gr.Blocks:
                     value=85,
                     step=1,
                     info="Percent (0–100; multiplied with PNG alpha when blending)",
+                )
+                logo_max_size_pct = gr.Slider(
+                    label="Logo size",
+                    minimum=5,
+                    maximum=60,
+                    value=30,
+                    step=1,
+                    info=(
+                        "Percent of the shorter frame edge the logo's longest side "
+                        "is capped to. Keeps the logo the same visual size across "
+                        "720p / 1080p / 4K and prevents it from covering the "
+                        "kinetic-type band. 30% ≈ ⅓ of the screen."
+                    ),
                 )
                 logo_beat_pulse = gr.Checkbox(
                     label="Pulse logo on audio",
@@ -1395,6 +1606,26 @@ def build_ui() -> gr.Blocks:
                     btn_save_editor = gr.Button("Save edited timings")
                     btn_revert_editor = gr.Button("Re-align from scratch")
 
+            with gr.Tab("Effects timeline"):
+                gr.Markdown(
+                    "Visual editor for `effects_timeline.json`: seven colour-coded effect "
+                    "rows over a full-song waveform, ghost markers from the analyser, and "
+                    "a master reactivity slider. **Load timeline** needs ingest plus "
+                    "**Analyze** so `analysis.json` and a cached WAV exist. **Save edits** "
+                    "writes clips and auto settings to the cache. **Bake auto events** "
+                    "turns analyser hints (beams, impact glitches, drop zooms) into clips "
+                    "where auto is enabled, skipping times that already have a clip. "
+                    "**Clear all** removes every clip but keeps your per-row auto "
+                    "checkboxes and the master slider."
+                )
+                btn_load_fx = gr.Button("Load timeline", variant="primary")
+                effects_editor_html = gr.HTML(value=_EFFECTS_EDITOR_EMPTY_HTML)
+                effects_state_buffer = gr.Textbox(visible=False, value="", interactive=True)
+                with gr.Row():
+                    btn_save_fx = gr.Button("Save edits")
+                    btn_bake_fx = gr.Button("Bake auto events")
+                    btn_clear_fx = gr.Button("Clear all")
+
             with gr.Tab("Visual style"):
                 preset_dd = gr.Dropdown(
                     label="Preset",
@@ -1533,6 +1764,7 @@ See `docs/technical/visual-style-presets.md` for the full schema and
             logo_file,
             logo_position,
             logo_opacity,
+            logo_max_size_pct,
             logo_beat_pulse,
             logo_pulse_mode,
             logo_pulse_strength,
@@ -1635,6 +1867,38 @@ See `docs/technical/visual-style-presets.md` for the full schema and
             outputs=[run_log],
         )
 
+        btn_load_fx.click(
+            fn=_load_effects_editor,
+            inputs=[song_hash_state, run_log],
+            outputs=[effects_editor_html, run_log],
+            show_progress="full",
+        )
+        btn_save_fx.click(
+            fn=_save_effects_editor,
+            inputs=[song_hash_state, effects_state_buffer, run_log],
+            outputs=[effects_editor_html, run_log],
+            show_progress="full",
+            js=(
+                "(song_hash, _buf, log) => ["
+                "song_hash, "
+                "JSON.stringify(window." + _EFFECTS_EDITOR_STATE_JS_VAR + " || {}), "
+                "log"
+                "]"
+            ),
+        )
+        btn_bake_fx.click(
+            fn=_bake_effects_editor,
+            inputs=[song_hash_state, run_log],
+            outputs=[effects_editor_html, run_log],
+            show_progress="full",
+        )
+        btn_clear_fx.click(
+            fn=_clear_effects_editor,
+            inputs=[song_hash_state, run_log],
+            outputs=[effects_editor_html, run_log],
+            show_progress="full",
+        )
+
         btn_clear_log.click(fn=_clear_log, inputs=None, outputs=[run_log])
 
         audio_in.change(
@@ -1650,7 +1914,13 @@ See `docs/technical/visual-style-presets.md` for the full schema and
         )
         btn_logo_preview.click(
             fn=_preview_logo_on_test_frame,
-            inputs=[logo_file, logo_position, logo_opacity, run_log],
+            inputs=[
+                logo_file,
+                logo_position,
+                logo_opacity,
+                logo_max_size_pct,
+                run_log,
+            ],
             outputs=[logo_preview_image, run_log],
             show_progress="full",
         )
@@ -1664,6 +1934,7 @@ See `docs/technical/visual-style-presets.md` for the full schema and
                 logo_file,
                 logo_position,
                 logo_opacity,
+                logo_max_size_pct,
                 run_log,
             ],
             outputs=[reactive_preview_image, run_log],

@@ -40,6 +40,8 @@ app.
    * **Space** → play / pause (uses the `<audio>` element in the same
      tab). **+** / **−** → zoom in / out. **Fit** → zoom to fit.
      **Esc** → clear the selection. **Ctrl/⌘+A** → select all words.
+     **Del** / **Backspace** → remove selected word bar(s) from the timeline
+     (save to persist); ignored when focus is in an `input`, `textarea`, or `select`.
 
 **Browser text selection** — The scroll area, stage, word track, and each
 word bar set CSS `user-select: none` (with `-webkit-user-select` where

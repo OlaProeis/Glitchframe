@@ -9,14 +9,22 @@ import numpy as np
 
 from pipeline.beat_pulse import (
     DEFAULT_BASS_BANDS,
+    DEFAULT_SHADER_SHAPE_DEADZONE,
+    DEFAULT_SHADER_SHAPE_GAMMA,
     PulseTrack,
     apply_pulse_deadzone,
     beat_pulse_envelope,
     build_bass_pulse_track,
+    build_hi_transient_track,
+    build_lo_transient_track,
     build_logo_bass_pulse_track,
+    build_mid_transient_track,
     build_rms_impact_pulse_track,
     build_snare_glow_track,
+    kick_punch_scale_and_opacity,
     scale_and_opacity_for_pulse,
+    shape_reactive_envelope,
+    stable_pulse_value,
 )
 
 
@@ -400,6 +408,41 @@ class TestRmsImpactPulseTrack(unittest.TestCase):
         self.assertLess(track.value_at(2.0), 0.15)
 
 
+class TestStablePulseValue(unittest.TestCase):
+    def test_none_fn_returns_zero(self) -> None:
+        self.assertEqual(stable_pulse_value(None, 1.0), 0.0)
+
+    def test_preserves_kick_attack(self) -> None:
+        # Fake pulse: silence for a while, then a sharp spike at t=1.0.
+        def fn(t: float) -> float:
+            return 1.0 if t >= 1.0 else 0.0
+
+        # At t=1.0 the current value is far above the past-window max so the
+        # smoother must pass the full attack through in one frame.
+        self.assertAlmostEqual(stable_pulse_value(fn, 1.0, smooth_sec=0.06), 1.0, places=6)
+
+    def test_smooths_release_noise(self) -> None:
+        # Noisy release: every other frame dips. Without smoothing the logo
+        # would shake; the smoother should blend toward the past average.
+        def fn(t: float) -> float:
+            # Sawtooth flipping between 0.25 and 0.40 at ~30 Hz
+            return 0.25 if int(round(t * 30)) % 2 == 0 else 0.40
+
+        t_query = 0.5
+        raw = fn(t_query)
+        smoothed = stable_pulse_value(fn, t_query, smooth_sec=0.06, n_samples=4)
+        # Output should land between the two extremes (not equal to raw) so
+        # the jitter is demonstrably suppressed.
+        self.assertLess(abs(smoothed - 0.325), 0.1)
+        self.assertNotAlmostEqual(smoothed, raw, places=3)
+
+    def test_zero_window_passthrough(self) -> None:
+        def fn(t: float) -> float:
+            return 0.42
+
+        self.assertAlmostEqual(stable_pulse_value(fn, 1.0, smooth_sec=0.0), 0.42)
+
+
 class TestSnareGlowTrack(unittest.TestCase):
     def test_mid_band_spike_triggers(self) -> None:
         fps = 30.0
@@ -419,6 +462,173 @@ class TestSnareGlowTrack(unittest.TestCase):
         track = build_snare_glow_track(analysis)
         assert track is not None
         self.assertGreater(track.value_at(0.5), 0.25)
+
+
+class TestShapeReactiveEnvelope(unittest.TestCase):
+    def test_below_deadzone_collapses_to_zero(self) -> None:
+        vals = np.array([0.0, 0.05, 0.10, DEFAULT_SHADER_SHAPE_DEADZONE],
+                        dtype=np.float32)
+        shaped = shape_reactive_envelope(vals)
+        self.assertTrue(np.all(shaped == 0.0))
+
+    def test_peak_preserved_near_one(self) -> None:
+        # The shape gate must not clip real hits — that's the whole point of
+        # keeping envelopes in [0, 1] after normalisation.
+        shaped = shape_reactive_envelope(np.array([1.0], dtype=np.float32))
+        self.assertAlmostEqual(float(shaped[0]), 1.0, places=5)
+
+    def test_gamma_compresses_mids_more_than_peaks(self) -> None:
+        # Mid vs peak ratio before shaping: 0.5 vs 1.0 → 0.5. After gamma=1.3
+        # shaping that ratio must drop because mids get compressed harder than
+        # peaks — the whole goal for "calm" shader wobble.
+        vals = np.array([0.5, 1.0], dtype=np.float32)
+        shaped = shape_reactive_envelope(
+            vals, deadzone=0.0, soft_width=1e-6, gamma=1.3
+        )
+        ratio = float(shaped[0]) / float(shaped[1])
+        self.assertLess(ratio, 0.5)
+
+    def test_gamma_one_no_op_when_deadzone_zero(self) -> None:
+        vals = np.linspace(0.0, 1.0, 11, dtype=np.float32)
+        shaped = shape_reactive_envelope(
+            vals, deadzone=0.0, soft_width=1e-6, gamma=1.0
+        )
+        np.testing.assert_allclose(shaped, vals, atol=1e-5)
+
+    def test_monotonic_above_deadzone(self) -> None:
+        # Once past the gate, output must be non-decreasing — a shader driver
+        # that dips mid-ramp would read as visible flicker.
+        vals = np.linspace(0.0, 1.0, 64, dtype=np.float32)
+        shaped = shape_reactive_envelope(vals)
+        diffs = np.diff(shaped)
+        self.assertTrue(np.all(diffs >= -1e-6))
+
+    def test_input_not_mutated(self) -> None:
+        vals = np.array([0.05, 0.4, 0.9], dtype=np.float32)
+        before = vals.copy()
+        shape_reactive_envelope(vals)
+        np.testing.assert_array_equal(vals, before)
+
+
+class TestShapedShaderTransientTracks(unittest.TestCase):
+    """End-to-end: shaped transient tracks must silence chill-section wobble."""
+
+    def test_lo_transient_shape_reduces_between_hit_energy(self) -> None:
+        # Generate jittery kicks with varied attack strength so the
+        # percentile-normalised envelope leaks meaningful mid-amplitude
+        # values between peaks — the "wild" pattern on busy sections.
+        # Shape should compress those mids while preserving the peaks.
+        fps = 30.0
+        frames = 600
+        rng = np.random.default_rng(seed=7)
+        spec = np.zeros((frames, 8), dtype=np.float32)
+        # Dense attack grid: a soft attack every 4 frames, a loud kick
+        # every 30 frames. Overlapping decays between the small attacks
+        # produce the mid-amplitude plateau the shape gate must calm.
+        for idx in range(0, frames, 4):
+            spec[idx, 0] = 0.18 + 0.05 * float(rng.random())
+            spec[idx, 1] = 0.15 + 0.05 * float(rng.random())
+        for idx in range(0, frames, 30):
+            spec[idx, 0] = 1.0
+            spec[idx, 1] = 0.85
+        analysis = {
+            "spectrum": {
+                "num_bands": 8,
+                "fps": fps,
+                "frames": frames,
+                "values": spec.tolist(),
+            }
+        }
+        shaped = build_lo_transient_track(analysis)
+        raw = build_lo_transient_track(analysis, shape=False)
+        assert shaped is not None and raw is not None
+        # Compare mean energy across the whole track — shaping must drop it
+        # noticeably because mids are compressed while peaks stay.
+        mean_raw = float(np.mean(raw.values))
+        mean_shaped = float(np.mean(shaped.values))
+        self.assertGreater(mean_raw, 0.05)
+        self.assertLess(mean_shaped, mean_raw * 0.75)
+        # But peaks still stand up: max ratio is close to unchanged.
+        peak_raw = float(np.max(raw.values))
+        peak_shaped = float(np.max(shaped.values))
+        self.assertGreater(peak_shaped, peak_raw * 0.85)
+
+    def test_shape_false_preserves_legacy_output(self) -> None:
+        # A/B path: opting out must give byte-identical output to the pre-Phase-2
+        # builder so debugging / regression probes can compare cleanly.
+        analysis = _synthetic_kick_analysis()
+        shaped_off = build_mid_transient_track(analysis, shape=False)
+        # Build the same thing by hand via build_band_pulse_track and compare.
+        from pipeline.beat_pulse import (
+            DEFAULT_MID_BAND_HI,
+            DEFAULT_MID_BAND_LO,
+            DEFAULT_MID_DECAY_SEC,
+            build_band_pulse_track,
+        )
+
+        expected = build_band_pulse_track(
+            analysis,
+            band_lo=DEFAULT_MID_BAND_LO,
+            band_hi=DEFAULT_MID_BAND_HI,
+            decay_sec=DEFAULT_MID_DECAY_SEC,
+        )
+        assert shaped_off is not None and expected is not None
+        np.testing.assert_array_equal(shaped_off.values, expected.values)
+
+    def test_hi_track_accepts_shape_kwargs(self) -> None:
+        # Smoke: custom gamma is honoured and peak stays bounded.
+        analysis = _synthetic_kick_analysis()
+        track = build_hi_transient_track(
+            analysis, shape=True, shape_gamma=2.0
+        )
+        assert track is not None
+        self.assertLessEqual(float(track.values.max()), 1.0 + 1e-6)
+
+
+class TestKickPunchScaleAndOpacity(unittest.TestCase):
+    def test_zero_kick_is_neutral(self) -> None:
+        s, o = kick_punch_scale_and_opacity(0.0)
+        self.assertAlmostEqual(s, 1.0)
+        self.assertAlmostEqual(o, 1.0)
+
+    def test_peak_kick_moves_both_axes(self) -> None:
+        s, o = kick_punch_scale_and_opacity(1.0, strength=1.0)
+        # +20% scale and +32% opacity at the default budget / strength=1.
+        self.assertAlmostEqual(s, 1.20, places=2)
+        self.assertAlmostEqual(o, 1.32, places=2)
+
+    def test_peak_kick_bigger_than_logo_pulse_at_same_strength(self) -> None:
+        # Phase 1 promise: cleanly separated kicks should punch harder than
+        # the sustain-aware logo pulse at the same strength setting.
+        s_kick, _ = kick_punch_scale_and_opacity(1.0, strength=1.0)
+        s_pulse, _ = scale_and_opacity_for_pulse(1.0, strength=1.0)
+        self.assertGreater(s_kick, s_pulse)
+
+    def test_strength_two_hits_scale_cap(self) -> None:
+        # strength=2.0 pushes above the nominal budget but must clamp to the
+        # scale cap — no runaway logo explosion.
+        s, o = kick_punch_scale_and_opacity(1.0, strength=2.0)
+        self.assertAlmostEqual(s, 1.35, places=2)  # default max_scale_cap
+        self.assertAlmostEqual(o, 1.55, places=2)  # default max_opacity_cap
+
+    def test_zero_strength_disables(self) -> None:
+        s, o = kick_punch_scale_and_opacity(1.0, strength=0.0)
+        self.assertAlmostEqual(s, 1.0)
+        self.assertAlmostEqual(o, 1.0)
+
+    def test_noise_floor_collapses(self) -> None:
+        # Sub-deadzone kick (noise in the envelope) must produce no motion —
+        # this is why the kick punch uses a lower deadzone than the logo pulse:
+        # transient_lo is already shape-gated, we don't want to double-gate.
+        s, o = kick_punch_scale_and_opacity(0.05, strength=1.0)
+        self.assertAlmostEqual(s, 1.0)
+        self.assertAlmostEqual(o, 1.0)
+
+    def test_default_gamma_constant_is_sane(self) -> None:
+        # Guardrail: if someone ratchets the default gamma past 2 by accident,
+        # mids die entirely and the "smooth reaction" promise breaks.
+        self.assertGreaterEqual(DEFAULT_SHADER_SHAPE_GAMMA, 1.0)
+        self.assertLessEqual(DEFAULT_SHADER_SHAPE_GAMMA, 2.0)
 
 
 if __name__ == "__main__":

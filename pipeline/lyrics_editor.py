@@ -545,6 +545,7 @@ def build_editor_html(
         f"click-and-drag on empty timeline to rubber-band-select. With multiple "
         f"words selected, dragging any of them moves them all together. "
         f"<kbd>Esc</kbd> deselect, <kbd>Ctrl</kbd>+<kbd>A</kbd> select all. "
+        f"<kbd>Del</kbd>/<kbd>Backspace</kbd> remove selected word(s). "
         f"<kbd>Space</kbd> play/pause. <kbd>+</kbd>/<kbd>−</kbd> zoom. "
         f"Colour: green = confident, yellow = low confidence, red = very low, grey = no score."
         f"  </div>"
@@ -742,6 +743,13 @@ _EDITOR_JS = r"""
     if (selected.size === 0) return;
     selected.clear();
     updateSelectionStyling();
+  }
+
+  function deleteSelected() {
+    if (selected.size === 0) return;
+    state.words = state.words.filter((_, i) => !selected.has(i));
+    selected.clear();
+    renderWords();
   }
 
   function updateSelectionInfo() {
@@ -1054,7 +1062,7 @@ _EDITOR_JS = r"""
   }
 
   document.addEventListener("keydown", (ev) => {
-    if (ev.target && /INPUT|TEXTAREA/.test(ev.target.tagName)) { return; }
+    if (ev.target && /INPUT|TEXTAREA|SELECT/.test(ev.target.tagName)) { return; }
     if (!container.offsetParent) { return; }  // hidden tab
     if (ev.code === "Space") {
       ev.preventDefault();
@@ -1063,7 +1071,12 @@ _EDITOR_JS = r"""
     } else if (ev.key === "+" || ev.key === "=") { setZoom(pxPerSec * 1.25); }
     else if (ev.key === "-" || ev.key === "_") { setZoom(pxPerSec / 1.25); }
     else if (ev.key === "Escape") { clearSelection(); }
-    else if ((ev.ctrlKey || ev.metaKey) && (ev.key === "a" || ev.key === "A")) {
+    else if (ev.key === "Delete" || ev.key === "Backspace") {
+      if (selected.size > 0) {
+        ev.preventDefault();
+        deleteSelected();
+      }
+    } else if ((ev.ctrlKey || ev.metaKey) && (ev.key === "a" || ev.key === "A")) {
       ev.preventDefault();
       selected.clear();
       state.words.forEach((_, i) => selected.add(i));
