@@ -5,6 +5,7 @@ Local, GPU-accelerated **music video** generator: upload a track, analyze it, al
 **Examples (progress log, newest = current state):** [voidcat on YouTube](https://www.youtube.com/@voidcatalog)
 
 - **UI:** [Gradio](https://www.gradio.app/) — run `python -m app` and open the URL shown (default [http://127.0.0.1:7860](http://127.0.0.1:7860)).
+- **New to the command line or on Windows?** Start with **[Getting started on Windows](docs/guides/getting-started-windows.md)** (order of installs: Python, optional Git, ffmpeg with winget, then the project).
 - **Deep dive:** [`docs/index.md`](docs/index.md) and [`docs/technical/project-setup-and-config.md`](docs/technical/project-setup-and-config.md).
 
 **License:** [MIT](LICENSE) · **Repository:** [github.com/OlaProeis/Glitchframe](https://github.com/OlaProeis/Glitchframe)
@@ -49,19 +50,27 @@ The following is a short, user-facing summary of work **not yet done** (also tra
 ## Requirements
 
 - **Python** 3.11+ (3.12/3.13 may work; optional deps like `madmom` are pickier on newer Python)
-- **ffmpeg** on your `PATH` (encode/mux; see the [ffmpeg download page](https://ffmpeg.org/download.html))
+- **ffmpeg** on your `PATH` (encode/mux). On **Windows**, install with **winget** (see [Getting started on Windows](docs/guides/getting-started-windows.md)); on other systems use your package manager or [ffmpeg.org](https://ffmpeg.org/download.html) if needed
 - **NVIDIA GPU + CUDA 12.x** recommended for diffusers, analysis, and NVENC; CPU-only is possible for lighter paths but not the main focus
 - **Disk:** model and song caches under `.cache/` and `cache/` (large downloads on first use)
 
 ## Install
 
-### 1. Clone and virtualenv
+**Windows, step-by-step (what to install first, PowerShell, ZIP vs git):** [docs/guides/getting-started-windows.md](docs/guides/getting-started-windows.md).
+
+The short version below matches that guide; on Windows prefer **`py -3.11`** if `python` is not on your `PATH`.
+
+### 1. Get the project and create a virtualenv
+
+**With git:**
 
 ```bash
 git clone https://github.com/OlaProeis/Glitchframe.git
 cd Glitchframe
 python -m venv .venv
 ```
+
+**Without git:** from the [GitHub](https://github.com/OlaProeis/Glitchframe) repo, **Code → Download ZIP**, extract, `cd` into the folder, then `python -m venv .venv` (or `py -3.11 -m venv .venv` on Windows).
 
 Then activate the venv:
 

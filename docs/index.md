@@ -10,6 +10,10 @@
 
 - `ai-context.md` - Core project architecture, rules, and conventions.
 
+## User guides
+
+- `docs/guides/getting-started-windows.md` - Windows: order of installs (Python, optional Git, ffmpeg via winget), PowerShell, ZIP vs git clone, venv, PyTorch, run.
+
 ## Technical Docs
 
 - `docs/technical/project-setup-and-config.md` - Repo layout, pyproject/requirements, config paths and preset registry.
@@ -48,6 +52,7 @@
 - `docs/technical/logo-rim-compositing.md` - `LogoGlowMode`, rim vs classic neon blend order, `composite_logo_onto_frame` kwargs, and compositor `_effective_rim_light_config` / defaults.
 - `docs/technical/logo-rim-branding-ui.md` - Gradio Branding accordion → `OrchestratorInputs` → `resolve_logo_rim_compositor_fields` / `CompositorConfig`; cosmetic-only (no song cache impact).
 - `docs/technical/logo-rim-beams.md` - Pre-choreographed rim beams on drops + snare lead-ins: schedule algorithm, 10 s group gating, per-frame premultiplied RGBA patch, and `BeamConfig` tuning.
+- `docs/technical/rim-beams-bloom-handover.md` - Ongoing investigation handover: beam glow cutoff, rim attachment, tried fixes, and suggested next steps for a future session.
 - `docs/technical/background-stills.md` - SDXL FP16 keyframe generator, section-aware prompts, cached PNGs under `cache/<hash>/background/`, and smoothstep-crossfade `background_frame(t)` API.
 - `docs/technical/background-modes.md` - `BackgroundSource` factory, Ken Burns + AnimateDiff caches, Gradio/orchestrator mode wiring (cross-ref SDXL stills doc).
 - `docs/technical/frame-compositor.md` - Per-frame compositor pipeline: bg + reactive + typography + logo, compositor-scope shader uniforms (`bass_hit`, `transient_lo/mid/hi`, `drop_hold`) built once per render, bounded queue producer/consumer, `bgr24` ffmpeg stdin.
