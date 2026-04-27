@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import sys
 import unicodedata
@@ -2174,29 +2175,79 @@ def _run_whisperx_forced(
     # resolves instead.
     asr_options: dict[str, Any] = dict(_SUNG_VOCALS_ASR_OPTIONS)
     vad_options: dict[str, Any] = dict(_SUNG_VOCALS_VAD_OPTIONS)
+    # Windows: default WhisperX VAD to Silero to avoid Pyannote+cuDNN8 native
+    # load failures (``cudnn_ops_infer64_8.dll`` / error 1920) with torch 2.6+cu124.
+    # Silero is ONNX and runs on CPU. Override: GLITCHFRAME_WHISPERX_VAD_METHOD=pyannote|silero
+    # (or leave unset: Windows → silero, other platforms → WhisperX default / pyannote).
+    _vad_m = (os.environ.get("GLITCHFRAME_WHISPERX_VAD_METHOD") or "").strip().lower()
+    if _vad_m not in ("pyannote", "silero"):
+        _vad_m = "silero" if sys.platform == "win32" else ""
     try:
-        model = whisperx.load_model(
-            model_name,
-            device,
-            compute_type=compute_type,
-            language=language,
-            asr_options=asr_options,
-            vad_options=vad_options,
-        )
+        if _vad_m:
+            model = whisperx.load_model(
+                model_name,
+                device,
+                compute_type=compute_type,
+                language=language,
+                asr_options=asr_options,
+                vad_options=vad_options,
+                vad_method=_vad_m,
+            )
+        else:
+            model = whisperx.load_model(
+                model_name,
+                device,
+                compute_type=compute_type,
+                language=language,
+                asr_options=asr_options,
+                vad_options=vad_options,
+            )
     except TypeError as exc:
-        # Older whisperx builds (< ~3.1) don't accept ``asr_options`` /
-        # ``vad_options`` at load time. Fall back to the plain signature so
-        # the pipeline still runs; log loudly so we notice when the tuned
-        # decoding defaults silently stopped applying (which would look
-        # like a regression in transcription word count).
-        LOGGER.warning(
-            "whisperx.load_model did not accept asr_options/vad_options "
-            "(%s); falling back to plain load. Sung-vocals decoding "
-            "tweaks disabled on this whisperx build — expect lower "
-            "transcribed-word counts.",
-            exc,
-        )
-        model = whisperx.load_model(model_name, device, compute_type=compute_type)
+        if _vad_m:
+            LOGGER.warning(
+                "whisperx.load_model did not accept vad_method=%r (%s); retrying without it.",
+                _vad_m,
+                exc,
+            )
+            try:
+                model = whisperx.load_model(
+                    model_name,
+                    device,
+                    compute_type=compute_type,
+                    language=language,
+                    asr_options=asr_options,
+                    vad_options=vad_options,
+                )
+                if _vad_m == "silero" and sys.platform == "win32":
+                    LOGGER.warning(
+                        "WhisperX ignored vad_method=silero on this build; VAD may still use "
+                        "Pyannote and hit cuDNN DLL errors on Windows. Upgrade: pip install -U whisperx"
+                    )
+            except TypeError as exc2:
+                # Older whisperx builds (< ~3.1) don't accept ``asr_options`` /
+                # ``vad_options`` at load time. Fall back to the plain signature so
+                # the pipeline still runs; log loudly so we notice when the tuned
+                # decoding defaults silently stopped applying (which would look
+                # like a regression in transcription word count).
+                LOGGER.warning(
+                    "whisperx.load_model did not accept asr_options/vad_options "
+                    "(%s); falling back to plain load. Sung-vocals decoding "
+                    "tweaks disabled on this whisperx build — expect lower "
+                    "transcribed-word counts.",
+                    exc2,
+                )
+                model = whisperx.load_model(
+                    model_name, device, compute_type=compute_type
+                )
+        else:
+            LOGGER.warning(
+                "whisperx.load_model did not accept asr_options/vad_options "
+                "(%s); falling back to plain load. Sung-vocals decoding "
+                "tweaks disabled on this whisperx build — expect lower "
+                "transcribed-word counts.",
+                exc,
+            )
+            model = whisperx.load_model(model_name, device, compute_type=compute_type)
 
     # The transcribe model (faster-whisper large-v3 FP16 ≈ 3 GB on CUDA)
     # and VAD are only needed through the ``model.transcribe`` call. Free
