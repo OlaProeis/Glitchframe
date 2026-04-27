@@ -8,6 +8,8 @@ module.exports = {
         venv: "env",
         venv_python: "3.11",
         message: [
+          // Some Pinokio-created venvs have no pip; bootstrap before any pip use.
+          "python -m ensurepip --upgrade",
           "python -m pip install -U pip",
           "python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124",
           "python -m pip install -r requirements.txt",
