@@ -16,6 +16,7 @@
 
 ## Technical Docs
 
+- `docs/technical/pinokio-package.md` - Pinokio one-click install scripts (root `install.js` / `start.js` / `pinokio.js`); venv `env`, optional `[all]`, `ffmpeg` prereq.
 - `docs/technical/project-setup-and-config.md` - Repo layout, pyproject/requirements, config paths and preset registry.
 - `docs/technical/windows-venv-recovery-guide.md` - Windows: step-by-step venv recovery after PyTorch / WhisperX lyrics-align issues (weights_only, cuDNN DLL mismatches).
 - `docs/technical/gradio-ui.md` - Gradio `app.py` tabbed UI, inputs, queue, placeholder actions, and run log.

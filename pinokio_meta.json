@@ -1,0 +1,5 @@
+{
+  "name": "glitchframe",
+  "description": "Local GPU-accelerated music video generator: Gradio UI, analysis, SDXL backgrounds, NVENC output.",
+  "homepage": "https://github.com/OlaProeis/Glitchframe"
+}

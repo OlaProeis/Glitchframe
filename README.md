@@ -126,6 +126,10 @@ python -m app
 
 Open the local URL printed in the console (default port **7860**).
 
+## Pinokio
+
+This repository includes [Pinokio](https://pinokio.co/) scripts (`install.js`, `start.js`, `reset.js`, `update.js`, `pinokio.js`, `icon.png`) so you can install and launch from the Pinokio app via **Download from URL** (paste the Git URL). The installer uses Pinokio&rsquo;s `torch.js`, then `pip` with a virtualenv named **`env`**, matching `python -m app` in `start.js`. You still need **ffmpeg** on your `PATH` and a capable **NVIDIA + CUDA** stack for the intended experience; optional lyrics/vocal extras are `pip install -e ".[all]"` (see [Install](#4-optional-full-analysis--lyrics-stack)). For discovery, add the GitHub topic **`pinokio`**.
+
 ## Troubleshooting
 
 - **Step-by-step (Windows, after PyTorch / lyrics issues):** [docs/technical/windows-venv-recovery-guide.md](docs/technical/windows-venv-recovery-guide.md) — `git pull`, clean `torch`/`torchvision`/`torchaudio` reinstall, extras, test **Align lyrics**.
