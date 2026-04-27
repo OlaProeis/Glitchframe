@@ -4,7 +4,7 @@
 
 | File | Role |
 |------|------|
-| `install.js` | `script.start` → Pinokio `torch.js`, then `pip` in venv `env` with `venv_python` **3.11**: upgrade pip, `requirements.txt`, editable `pip install -e .` |
+| `install.js` | One `shell.run`: venv `env`, `venv_python` **3.11**, then `pip` in README order: PyTorch **cu124** index, `requirements.txt`, `pip install -e .` (no `torch.js`, so the terminal shows real `pip` progress) |
 | `start.js` | Daemon: `python -m app`, capture first `http://…` for **Open Web UI** |
 | `reset.js` | Delete folder `env` (factory reset; reinstall via Install) |
 | `update.js` | `git pull` at repo root |

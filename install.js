@@ -1,16 +1,7 @@
+// Pinokio install: avoid script.start "torch.js" (can appear hung with no terminal output
+// while resolving Python / downloading multi‑GB wheels). Match README: venv 3.11 + PyTorch cu124, then project deps.
 module.exports = {
   run: [
-    {
-      method: "script.start",
-      params: {
-        uri: "torch.js",
-        params: {
-          venv: "env",
-          // Glitchframe targets Python 3.11+ (pyproject). Pinokio 3.3+ respects venv_python on venv creation.
-          venv_python: "3.11",
-        },
-      },
-    },
     {
       method: "shell.run",
       params: {
@@ -18,6 +9,7 @@ module.exports = {
         venv_python: "3.11",
         message: [
           "python -m pip install -U pip",
+          "python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124",
           "python -m pip install -r requirements.txt",
           "python -m pip install -e .",
         ],
