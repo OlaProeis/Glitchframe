@@ -151,12 +151,12 @@ class BeamConfig:
     attack_sec: float = 0.04
     """Envelope rise time (linear to 1.0)."""
 
-    halo_width_mul: float = 3.5
+    halo_width_mul: float = 2.75
     """Halo gaussian sigma as a multiple of the beam's core ``thickness_px``.
     The halo sits under the core at lower intensity so the beam feels
     bloomed / afterglowing instead of a hard stroke."""
 
-    halo_intensity: float = 0.70
+    halo_intensity: float = 0.50
     """Peak intensity of the halo layer (``[0, 1]``) relative to the core.
     Lower values keep the core crisp; higher values push bloom."""
 
@@ -673,9 +673,9 @@ def _sustain_halo_scales(age: float, D: float) -> tuple[float, float, float]:
     hi = 1.0 + g * 0.38 * min(1.0, extra / 3.5)
     blur = 1.0 + 0.14 * min(2.0, extra) * (0.2 + 0.8 * g)
     # Cap very long BEAMs so a single cue does not smother the whole frame.
-    w = min(w, 1.78)
-    hi = min(hi, 1.50)
-    blur = min(blur, 1.55)
+    w = min(w, 1.45)
+    hi = min(hi, 1.25)
+    blur = min(blur, 1.30)
     return w, hi, blur
 
 
@@ -775,8 +775,10 @@ def _patch_bounds(
 
 
 def _draw_beam_into(
-    accum_linear: np.ndarray,
-    alpha_accum: np.ndarray,
+    layer_core_rgb: np.ndarray,
+    layer_core_a: np.ndarray,
+    layer_halo_rgb: np.ndarray,
+    layer_halo_a: np.ndarray,
     *,
     beam: ScheduledBeam,
     env: float,
@@ -787,20 +789,22 @@ def _draw_beam_into(
     halo_width_mul: float,
     halo_intensity: float,
     core_white_boost: float = 0.0,
+    sustain_axial_white: float = 0.0,
 ) -> None:
-    """Add one beam's energy into linear-RGB + alpha accumulators (in place).
+    """Add one beam as **separate** core and halo layers (in place).
 
-    The beam is drawn as a rectangular coordinate system: ``u`` along the beam
-    axis (``edge_offset_px`` at the logo edge, ``L`` at the tip) and ``v``
-    across its width (``0`` on the axis, ``±`` outward). Two profiles are
-    accumulated: a crisp core at ``sigma = thickness_px`` and a softer halo
-    at ``halo_width_mul * thickness_px`` so the beam reads as a bloomed
-    afterglow rather than a hard stroke. Along ``u`` the beam starts at the
-    logo edge (``edge_offset_px``) and fades toward the tip; pixels with
-    ``u < edge_offset_px`` get zero so the beam is strictly outside the logo
-    centroid disc.
+    Core uses a flatter (supergaussian) falloff in ``v`` for a straighter
+    *laser* read; the halo is softer and rises **slower** along ``u`` so the
+    attach point is not a bright, wide blob. The old 2D rim **endcap** (which
+    max'ed a fat Gaussian into the halo) is removed: it read as a rectangular
+    glow and fought the true rim. A narrow ``halo_u_gate`` softens the forward
+    half-plane near ``u = 0`` (mostly under the logo, occluded by the mark) so
+    a hard straight **cut** is less visible. Long sustain beams can pass
+    ``sustain_axial_white > 0`` to push the white-hot **core** along the
+    ray as ``g`` increases (tip reads whiter, halo is blurred separately in
+    :func:`compute_beam_patch`).
     """
-    h, w = accum_linear.shape[:2]
+    h, w = layer_core_rgb.shape[:2]
     if h == 0 or w == 0:
         return
     ang = float(beam.angle_rad)
@@ -812,95 +816,72 @@ def _draw_beam_into(
     ys, xs = np.indices((h, w), dtype=np.float32)
     dx = xs - float(cx_local)
     dy = ys - float(cy_local)
-    u_raw = dx * cos_a + dy * sin_a      # along beam axis, px from centroid
-    v = -dx * sin_a + dy * cos_a         # perpendicular distance, px
+    u_raw = dx * cos_a + dy * sin_a
+    v = -dx * sin_a + dy * cos_a
 
-    # Shift along-axis origin so ``u = 0`` sits at the logo edge, not the
-    # centroid. The effective length is the remaining span out to the tip.
     offset = max(0.0, float(edge_offset_px))
     u = u_raw - offset
     L_eff = max(1.0, L - offset)
 
-    # Along-axis profile: short rise just past the logo edge, then a gentle
-    # tail toward the tip. Pixels behind the edge (``u < 0``) get zero so
-    # the beam root sits on the logo rim, not in the middle of the glyph.
-    # ``tail`` is raised to < 1 so the core holds most of its peak intensity
-    # across the majority of the beam length and only fades close to the
-    # nominal tip; combined with ``*_length_frac_edge > 1`` this lets the
-    # visible core reach the actual frame edge before it dims out.
+    # Along-axis: core and halo share the same length tail; core stays tight to u>=0.
     rise_core = np.clip(u / max(1.0, 0.08 * L_eff), 0.0, 1.0)
     tail = np.clip(1.0 - (u / L_eff), 0.0, 1.0)
     axial_core = rise_core * (tail ** 0.85)
     axial_core = np.where(u >= 0.0, axial_core, 0.0)
 
-    # Core + halo gaussians. The halo fades faster near the rim and slower
-    # near the tip so the afterglow feels smokey rather than flat.
-    radial_core = np.exp(-0.5 * (v / sigma) ** 2)
+    # Flatter, straighter *laser* cross-section (p > 2 → narrower bright core).
+    p_core = 3.0
+    radial_core = np.exp(
+        -0.5 * (np.abs(v / sigma) ** p_core)
+    )
+
+    # Halo: wider gaussian, **slow** rise along the ray so the rim is not the
+    # brightest part of the bloom (peaks past ~0.1·L from the edge).
     sigma_halo = max(sigma + 1.0, sigma * float(halo_width_mul))
     radial_halo = np.exp(-0.5 * (v / sigma_halo) ** 2)
-    # Halo stays on the forward half (``u >= 0``) only. Back-bleed along ``u`` was
-    # removed: it read as light spilling *through* the mark to the far side. The
-    # compositor draws beams *under* the logo so the glyph occludes; softening
-    # at the screen edge is handled by the gaussian margin + padding in
-    # :func:`_patch_bounds`.
-    rise_halo = np.clip(u / max(1.0, 0.05 * L_eff), 0.0, 1.0)
-    axial_halo = rise_halo * (tail ** 0.6)
-    axial_halo = np.where(u >= 0.0, axial_halo, 0.0)
+    halo_rise = 0.13 * L_eff
+    rise_halo = (np.clip(u / max(1.0, halo_rise), 0.0, 1.0) ** 1.12)
+    # Soft forward gate: removes the harshest half-plane for the diffuse term only
+    # (1–1.2 px in ``u`` under the logo, occluded by the glyph).
+    edge_w = 1.2
+    halo_u_gate = (np.clip((u + 0.2 * edge_w) / edge_w, 0.0, 1.0) ** 1.05) * (u > -0.3)
+    axial_halo = rise_halo * (tail ** 0.62) * halo_u_gate
     halo_gain = max(0.0, min(1.0, float(halo_intensity)))
 
     profile_core = (axial_core * radial_core).astype(np.float32, copy=False)
     profile_halo = (axial_halo * radial_halo * halo_gain).astype(np.float32, copy=False)
-    # Round off the "flat" u>=0 cut (a straight isocontour in screen space) with a
-    # small 2D cap in (u, v) at the rim: isophotes are curves near the attach point
-    # instead of an infinite line in v. ``u + shift`` offsets the lobe slightly
-    # inward (toward the centroid) so it tucks under the solid logo; compositor
-    # still draws the mark on top, so it does not read as a wash over the glyph.
-    sig_r = max(2.5, min(0.48 * float(sigma_halo), 0.18 * L_eff + 0.5))
-    u_t = u + 0.32 * float(sig_r)
-    v_r = v / 1.12
-    endcap = np.exp(
-        -0.5 * ((u_t / max(float(sig_r), 0.1)) ** 2 + (v_r / max(float(sig_r), 0.1)) ** 2)
-    ).astype(np.float32, copy=False)
-    endcap = (endcap * float(halo_gain) * 0.68).astype(np.float32, copy=False)
-    profile_halo = np.maximum(profile_halo, endcap)
-    # Optional micro-feather on the hot core (same rim zone only)
-    nudge = 0.18 * endcap
-    profile_core = np.maximum(profile_core, nudge)
-
-    profile = np.maximum(profile_core, profile_halo)
-    if not np.any(profile > 1e-4):
+    if not np.any((profile_core + profile_halo) > 1e-5):
         return
 
     gain = float(env)
     if gain <= 0.0:
         return
 
-    # Straight sRGB accumulation; the final patch stores ``rgb = alpha * tint``
-    # so the premultiplied invariant (``rgb <= alpha``) holds by construction.
-    # Working in sRGB keeps the math cheap and matches the downstream blend
-    # helper (``_blend_premult_rgba_patch``) which does normalised float math
-    # on uint8 bytes without an intermediate linearisation.
     r = float(rim_rgb_srgb[0]) / 255.0
     g = float(rim_rgb_srgb[1]) / 255.0
     b = float(rim_rgb_srgb[2]) / 255.0
 
-    contrib = profile * gain
-    accum_linear[..., 0] += contrib * r
-    accum_linear[..., 1] += contrib * g
-    accum_linear[..., 2] += contrib * b
-    # White-hot core: push pure white into all three channels where the
-    # crisp core profile peaks. This saturates the beam's axis toward white
-    # even when the tint is dark (dark shadow presets otherwise produce a
-    # barely-visible dim beam on a black background). The ``profile_core``
-    # weighting ensures only the hot axis whitens -- the halo keeps its
-    # tint so the afterglow still reads as the preset colour.
+    c_core = (profile_core * gain).astype(np.float32, copy=False)
+    c_halo = (profile_halo * gain).astype(np.float32, copy=False)
+    for i, t in enumerate((r, g, b)):
+        layer_core_rgb[..., i] += c_core * t
+        layer_halo_rgb[..., i] += c_halo * t
+    # White-hot core: default ``core_white_boost``; on long sustains, ``saw``
+    # also lifts white **along the ray** (``u / L``), not at the attach point.
     wb = max(0.0, float(core_white_boost))
-    if wb > 1e-4:
-        white = (profile_core * gain * wb).astype(np.float32, copy=False)
-        accum_linear[..., 0] += white
-        accum_linear[..., 1] += white
-        accum_linear[..., 2] += white
-    np.maximum(alpha_accum, contrib, out=alpha_accum)
+    saw = max(0.0, float(sustain_axial_white))
+    base_wb = max(wb, saw * 0.48)
+    u_norm = np.clip(u / L_eff, 0.0, 1.0)
+    w_axial = base_wb * (1.0 + saw * (u_norm ** 1.35))
+    if base_wb > 1e-5 or saw > 1e-4:
+        white = (profile_core * gain * w_axial * np.where(u > 0.0, 1.0, 0.0)).astype(
+            np.float32, copy=False
+        )
+        layer_core_rgb[..., 0] += white
+        layer_core_rgb[..., 1] += white
+        layer_core_rgb[..., 2] += white
+    np.maximum(layer_core_a, c_core, out=layer_core_a)
+    np.maximum(layer_halo_a, c_halo, out=layer_halo_a)
 
 
 def _finalize_patch(
@@ -985,43 +966,17 @@ def compute_beam_patch(
         for b, env, hw, hi, br in active_raw
     ]
 
-    max_br = 1.0
-    for _b, _e, _w, _h, br in active:
-        max_br = max(max_br, float(br))
-    blur_pad = _gaussian_blur_footprint_pad_px(
-        float(blur_sigma_px), max_br=max_br
-    )
-
-    bounds = _patch_bounds(
-        active,
-        centroid_xy=centroid_xy,
-        frame_hw=frame_hw,
-        base_halo_width_mul=float(cfg.halo_width_mul),
-        blur_pad_px=blur_pad,
-    )
-    if bounds is None:
-        return None
-    x0, y0, x1, y1 = bounds
-    ph, pw = y1 - y0, x1 - x0
-    if ph <= 0 or pw <= 0:
-        return None
-
     H, W = int(frame_hw[0]), int(frame_hw[1])
-    eff_blur_sigma = float(blur_sigma_px) * max_br
-    patch_area = float(ph * pw)
-    frame_area = float(max(1, H * W))
-    # Tight sub-rect + large gaussian leaves non-negligible alpha on the inner
-    # edge of the buffer (horizontal/vertical "shelf" in the frame). When the
-    # blur is strong or the bbox already covers most of the frame, raster the
-    # whole frame so only the *video* edges taper to black.
-    use_full_frame = (
-        eff_blur_sigma >= 3.35
-        or blur_pad >= 24
-        or patch_area > 0.38 * frame_area
-    )
-    if use_full_frame:
-        x0, y0, x1, y1 = 0, 0, W, H
-        ph, pw = H, W
+    if H <= 0 or W <= 0:
+        return None
+    # Always raster into a **full-size** off-screen buffer, then place at
+    # ``(0, 0)``. Tight AABBs + ``gaussian_filter(..., cval=0)`` at any inner
+    # patch edge were still producing a straight "shelf" for wide halos. Full
+    # frame is O(frame) but is the only reliable fix for the inner clip; the
+    # *video* border still tapers from the same constant edge mode, which
+    # matches how other full-frame effects behave.
+    x0, y0, x1, y1 = 0, 0, W, H
+    ph, pw = H, W
 
     accum_srgb = np.zeros((ph, pw, 3), dtype=np.float32)
     alpha_acc = np.zeros((ph, pw), dtype=np.float32)
@@ -1055,11 +1010,19 @@ def compute_beam_patch(
             )
         else:
             tint = tints[int(beam.color_layer_idx) % n_layers]
-        layer_rgb = np.zeros((ph, pw, 3), dtype=np.float32)
-        layer_a = np.zeros((ph, pw), dtype=np.float32)
+        sustain_ax = 0.0
+        if bool(beam.sustain_shaping):
+            age_b = t - float(beam.t_start)
+            sustain_ax = 1.12 * _sustain_glow_u(age_b, float(beam.duration_s))
+        layer_c_rgb = np.zeros((ph, pw, 3), dtype=np.float32)
+        layer_c_a = np.zeros((ph, pw), dtype=np.float32)
+        layer_h_rgb = np.zeros((ph, pw, 3), dtype=np.float32)
+        layer_h_a = np.zeros((ph, pw), dtype=np.float32)
         _draw_beam_into(
-            layer_rgb,
-            layer_a,
+            layer_c_rgb,
+            layer_c_a,
+            layer_h_rgb,
+            layer_h_a,
             beam=beam,
             env=env,
             cx_local=cx_local,
@@ -1072,24 +1035,40 @@ def compute_beam_patch(
                 min(1.0, float(cfg.halo_intensity) * float(hi)),
             ),
             core_white_boost=float(cfg.core_white_boost),
+            sustain_axial_white=sustain_ax,
         )
-        # Per-beam blur: long sustain cues use a higher ``br``; blurring the
-        # combined patch with max(br) smeared one beam's afterglow onto every
-        # other and made new beams look pre-lit.
-        eff_blur = float(blur_sigma_px) * max(1.0, float(br))
-        if eff_blur > 0.25:
+        # Per-beam, asymmetric blur: tight core (laser), wider halo.
+        eff_b = float(blur_sigma_px) * max(1.0, float(br))
+        sig_c = max(0.0, eff_b * 0.36)
+        sig_h = max(0.0, eff_b * 1.0)
+        if sig_c > 0.1:
             for c in range(3):
-                layer_rgb[..., c] = ndimage.gaussian_filter(
-                    layer_rgb[..., c],
-                    sigma=eff_blur,
+                layer_c_rgb[..., c] = ndimage.gaussian_filter(
+                    layer_c_rgb[..., c],
+                    sigma=sig_c,
                     mode="constant",
                     cval=0.0,
                 )
-            layer_a = ndimage.gaussian_filter(
-                layer_a, sigma=eff_blur, mode="constant", cval=0.0
+            layer_c_a = ndimage.gaussian_filter(
+                layer_c_a, sigma=sig_c, mode="constant", cval=0.0
             )
+        if sig_h > 0.1:
+            for c in range(3):
+                layer_h_rgb[..., c] = ndimage.gaussian_filter(
+                    layer_h_rgb[..., c],
+                    sigma=sig_h,
+                    mode="constant",
+                    cval=0.0,
+                )
+            layer_h_a = ndimage.gaussian_filter(
+                layer_h_a, sigma=sig_h, mode="constant", cval=0.0
+            )
+        a_c = np.clip(layer_c_a, 0.0, 1.0)
+        a_h = np.clip(layer_h_a, 0.0, 1.0)
+        a_comb = 1.0 - (1.0 - a_c) * (1.0 - a_h)
+        layer_rgb = layer_c_rgb + layer_h_rgb
         accum_srgb += layer_rgb
-        np.maximum(alpha_acc, layer_a, out=alpha_acc)
+        np.maximum(alpha_acc, a_comb, out=alpha_acc)
 
     if not np.any(alpha_acc > 1e-4):
         return None
