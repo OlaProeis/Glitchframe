@@ -157,10 +157,11 @@ You may still see a **PyTorch warning** about `weights_only=False` and pickle se
 - Confirm `git pull` brought in `pipeline\torch_checkpoint_compat.py`.
 - Confirm you restarted the app **after** the pull (Step 7 again).
 
-### B) `Could not locate cudnn_ops_infer64_8.dll`
+### B) `Could not locate` / `Could not load library` `cudnn_ops_infer64_8.dll` (or error `1920`)
 
-1. Repeat **Step 5** exactly (uninstall all three, reinstall all three from the **same** index).
-2. If it persists, try pinning ctranslate2 (reported workaround for DLL name mismatches):
+1. On **Windows**, extras `all` / `lyrics` / `analysis` pin **`ctranslate2==4.4.0`** in `pyproject.toml`. After `git pull`, run `python -m pip install -e ".[all]"` (or your extra) so pip applies the pin.
+2. Repeat **Step 5** exactly (uninstall all three, reinstall all three from the **same** index).
+3. If it persists, pin ctranslate2 manually (reported workaround for DLL name mismatches):
 
 ```powershell
 python -m pip install "ctranslate2==4.4.0"
@@ -168,7 +169,7 @@ python -m pip install "ctranslate2==4.4.0"
 
 Then run **Align lyrics** again.
 
-3. Last resort: see the **Troubleshooting** section in the repo **README.md** (cuDNN 8.9 + CUDA 12 copy instructions).
+4. Last resort: see the **Troubleshooting** section in the repo **README.md** (cuDNN 8.9 + CUDA 12 copy instructions).
 
 ### C) CUDA disappeared after `pip install whisperx`
 
