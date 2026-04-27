@@ -41,7 +41,7 @@ module.exports = {
         ];
       }
       return [
-        { icon: "fa-solid fa-power-off", text: "Start", href: "start.js" },
+        { default: true, icon: "fa-solid fa-power-off", text: "Start", href: "start.js" },
         { icon: "fa-solid fa-rotate", text: "Update", href: "update.js" },
         { icon: "fa-solid fa-plug", text: "Reinstall", href: "install.js" },
         { icon: "fa-solid fa-broom", text: "Factory Reset", href: "reset.js" },

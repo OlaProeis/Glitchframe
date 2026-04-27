@@ -12,6 +12,8 @@ module.exports = {
           "python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124",
           "python -m pip install -r requirements.txt",
           "python -m pip install -e .",
+          // README "full analysis + lyrics" optional extra (Demucs, WhisperX, …)
+          'python -m pip install -e ".[all]"',
         ],
       },
     },
@@ -19,7 +21,7 @@ module.exports = {
       method: "notify",
       params: {
         html:
-          "Core install complete. For <b>Demucs + WhisperX</b> (vocal stem + lyrics), run in this app&rsquo;s terminal: <code>python -m pip install -e &quot;.[all]&quot;</code> &mdash; see README. Open the <b>Start</b> tab; you need <code>ffmpeg</code> on your PATH.",
+          "Python deps are installed (including <b>Demucs + WhisperX</b>). Pinokio does <b>not</b> auto-launch the server &mdash; click <b>Start</b> in the sidebar. You need <code>ffmpeg</code> on your <code>PATH</code> for video encode; see README if Start fails.",
       },
     },
   ],
