@@ -5,7 +5,7 @@
 | File | Role |
 |------|------|
 | `install.js` | One `shell.run`: venv `env`, `venv_python` **3.11**, then `ensurepip` (some Pinokio venvs ship without `pip`), then `pip`: PyTorch **cu124** index, `requirements.txt`, `pip install -e .`, `pip install -e ".[all]"` |
-| `start.js` | Daemon: `python -m app`, capture first `http://…` for **Open Web UI** |
+| `start.js` | Daemon: `python -m app` with `env.GLITCHFRAME_WHISPERX_VAD_METHOD=silero` (WhisperX VAD; avoids Pyannote+cuDNN issues on some Windows installs). First `http://…` → **Open Web UI** |
 | `reset.js` | Delete folder `env` (factory reset; reinstall via Install) |
 | `update.js` | `git pull` at repo root |
 | `pinokio.js` | Sidebar: Install / Start / Update / Reinstall / Reset; prerequisite hint for **ffmpeg** |
@@ -16,4 +16,4 @@
 
 **Discoverability:** Add the GitHub topic `pinokio` so the app can appear on Pinokio&rsquo;s discover page.
 
-These files are independent of the Python package and Gradio app; they do not change runtime behavior when you run `python -m app` outside Pinokio.
+Running **outside Pinokio** (``python -m app`` from a normal shell) does **not** set that env var unless you add it to ``.env``; behaviour matches a stock local install.

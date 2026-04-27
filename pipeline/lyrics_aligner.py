@@ -2175,13 +2175,12 @@ def _run_whisperx_forced(
     # resolves instead.
     asr_options: dict[str, Any] = dict(_SUNG_VOCALS_ASR_OPTIONS)
     vad_options: dict[str, Any] = dict(_SUNG_VOCALS_VAD_OPTIONS)
-    # Windows: default WhisperX VAD to Silero to avoid Pyannote+cuDNN8 native
-    # load failures (``cudnn_ops_infer64_8.dll`` / error 1920) with torch 2.6+cu124.
-    # Silero is ONNX and runs on CPU. Override: GLITCHFRAME_WHISPERX_VAD_METHOD=pyannote|silero
-    # (or leave unset: Windows → silero, other platforms → WhisperX default / pyannote).
+    # Optional ``vad_method`` for :func:`whisperx.load_model` (``pyannote`` | ``silero``).
+    # Unset → WhisperX default (pyannote). Pinokio sets ``GLITCHFRAME_WHISPERX_VAD_METHOD=silero``
+    # in ``start.js`` to avoid Pyannote+cuDNN8 DLL issues on Windows without changing local dev.
     _vad_m = (os.environ.get("GLITCHFRAME_WHISPERX_VAD_METHOD") or "").strip().lower()
     if _vad_m not in ("pyannote", "silero"):
-        _vad_m = "silero" if sys.platform == "win32" else ""
+        _vad_m = ""
     try:
         if _vad_m:
             model = whisperx.load_model(
@@ -2218,10 +2217,10 @@ def _run_whisperx_forced(
                     asr_options=asr_options,
                     vad_options=vad_options,
                 )
-                if _vad_m == "silero" and sys.platform == "win32":
+                if _vad_m == "silero":
                     LOGGER.warning(
                         "WhisperX ignored vad_method=silero on this build; VAD may still use "
-                        "Pyannote and hit cuDNN DLL errors on Windows. Upgrade: pip install -U whisperx"
+                        "Pyannote (e.g. cuDNN DLL issues on Windows). Upgrade: pip install -U whisperx"
                     )
             except TypeError as exc2:
                 # Older whisperx builds (< ~3.1) don't accept ``asr_options`` /
