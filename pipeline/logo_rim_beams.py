@@ -51,6 +51,33 @@ from scipy import ndimage
 from pipeline.beat_pulse import PulseTrack
 from pipeline.logo_rim_lights import _layer_srgb_tints
 
+# Internal supersample factor for beam rasterisation: draw + blur at this
+# resolution, then box-average down to output pixels. Keeps length/thickness
+# (in output px) identical while reducing stair-stepping on diagonals.
+_BEAM_ANTIALIAS_SUPERSAMPLE: int = 2
+
+
+def _downsample_accum_box(
+    accum_srgb: np.ndarray,
+    alpha_acc: np.ndarray,
+    factor: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Box-average float RGB + alpha accumulators from ``factor``× to base size."""
+    if factor <= 1:
+        return accum_srgb, alpha_acc
+    h, w = int(accum_srgb.shape[0]), int(accum_srgb.shape[1])
+    fh = h // factor
+    fw = w // factor
+    if fh <= 0 or fw <= 0:
+        return accum_srgb, alpha_acc
+    acc_c = accum_srgb[: fh * factor, : fw * factor]
+    a_c = alpha_acc[: fh * factor, : fw * factor]
+    acc_out = acc_c.reshape(fh, factor, fw, factor, 3).mean(axis=(1, 3))
+    a_out = a_c.reshape(fh, factor, fw, factor).mean(axis=(1, 3))
+    return acc_out.astype(np.float32, copy=False), a_out.astype(
+        np.float32, copy=False
+    )
+
 
 def _hsv_to_srgb_u8(h: float, s: float, v: float) -> tuple[int, int, int]:
     """Convert HSV in ``[0, 1]`` to an sRGB triple in ``0..255``."""
@@ -969,14 +996,15 @@ def compute_beam_patch(
     H, W = int(frame_hw[0]), int(frame_hw[1])
     if H <= 0 or W <= 0:
         return None
+    ss = max(1, int(_BEAM_ANTIALIAS_SUPERSAMPLE))
     # Always raster into a **full-size** off-screen buffer, then place at
     # ``(0, 0)``. Tight AABBs + ``gaussian_filter(..., cval=0)`` at any inner
     # patch edge were still producing a straight "shelf" for wide halos. Full
     # frame is O(frame) but is the only reliable fix for the inner clip; the
     # *video* border still tapers from the same constant edge mode, which
     # matches how other full-frame effects behave.
-    x0, y0, x1, y1 = 0, 0, W, H
-    ph, pw = H, W
+    x0, y0 = 0, 0
+    ph, pw = H * ss, W * ss
 
     accum_srgb = np.zeros((ph, pw, 3), dtype=np.float32)
     alpha_acc = np.zeros((ph, pw), dtype=np.float32)
@@ -992,9 +1020,11 @@ def compute_beam_patch(
         hue_drift_per_sec=float(hue_drift_per_sec),
     )
 
-    cx_local = float(centroid_xy[0]) - float(x0)
-    cy_local = float(centroid_xy[1]) - float(y0)
-    edge_offset = max(0.0, float(logo_radius_px) * float(cfg.edge_offset_frac))
+    cx_local = (float(centroid_xy[0]) - float(x0)) * float(ss)
+    cy_local = (float(centroid_xy[1]) - float(y0)) * float(ss)
+    edge_offset = (
+        max(0.0, float(logo_radius_px) * float(cfg.edge_offset_frac)) * float(ss)
+    )
 
     for beam, env, hw, hi, br in active:
         # User BEAM clips in the effects editor may pin an explicit sRGB tint
@@ -1018,12 +1048,17 @@ def compute_beam_patch(
         layer_c_a = np.zeros((ph, pw), dtype=np.float32)
         layer_h_rgb = np.zeros((ph, pw, 3), dtype=np.float32)
         layer_h_a = np.zeros((ph, pw), dtype=np.float32)
+        beam_hi = replace(
+            beam,
+            length_px=float(beam.length_px) * float(ss),
+            thickness_px=float(beam.thickness_px) * float(ss),
+        )
         _draw_beam_into(
             layer_c_rgb,
             layer_c_a,
             layer_h_rgb,
             layer_h_a,
-            beam=beam,
+            beam=beam_hi,
             env=env,
             cx_local=cx_local,
             cy_local=cy_local,
@@ -1038,7 +1073,9 @@ def compute_beam_patch(
             sustain_axial_white=sustain_ax,
         )
         # Per-beam, asymmetric blur: tight core (laser), wider halo.
-        eff_b = float(blur_sigma_px) * max(1.0, float(br))
+        # Sigmas are in **raster** pixels; scale with ``ss`` so blur footprint
+        # matches the pre-downsample grid (output-sized blur_sigma unchanged).
+        eff_b = float(blur_sigma_px) * max(1.0, float(br)) * float(ss)
         sig_c = max(0.0, eff_b * 0.36)
         sig_h = max(0.0, eff_b * 1.0)
         if sig_c > 0.1:
@@ -1073,6 +1110,8 @@ def compute_beam_patch(
     if not np.any(alpha_acc > 1e-4):
         return None
 
+    if ss > 1:
+        accum_srgb, alpha_acc = _downsample_accum_box(accum_srgb, alpha_acc, ss)
     patch = _finalize_patch(accum_srgb, alpha_acc)
     return BeamPatchResult(patch=patch, x0=int(x0), y0=int(y0))
 

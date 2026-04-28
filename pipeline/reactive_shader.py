@@ -19,7 +19,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, MutableMapping, Sequence
 
 import moderngl
 import numpy as np
@@ -48,6 +48,11 @@ ONSET_ENV_NORM_PERCENTILE = 95.0
 # dict. Caching is keyed by ``id(strength_list)`` so a swapped-in analysis
 # bundle with a new ``strength`` array naturally misses and recomputes.
 ONSET_ENV_CACHE_KEY = "_onset_env_cache"
+
+# Memoise synthetic downbeats derived from the beat list (``beats_per_bar`` stride)
+# on the in-memory analysis dict for the duration of a render — avoids O(n)
+# Python list builds thousands of times per song.
+_BAR_PHASE_SYNTH_CACHE_KEY = "_gf_bar_phase_synth_v1"
 
 # Palette uniform layout. Must match ``uniform vec3 u_palette[PALETTE_SLOTS]``
 # in every fragment shader that reads the preset palette. PALETTE_SLOTS is a
@@ -269,6 +274,22 @@ def _interp_scalar_series(
     return float((1.0 - frac) * float(values[i0]) + frac * float(values[i1]))
 
 
+def _interp_scalar_series_1d_np(values: np.ndarray, t: float, fps: float) -> float:
+    """Like :func:`_interp_scalar_series` but samples a 1D float array without ``tolist()``."""
+    if values.size == 0 or fps <= 0.0:
+        return 0.0
+    idx_f = float(t) * float(fps)
+    if idx_f <= 0.0:
+        return float(values[0])
+    n = int(values.size)
+    if idx_f >= n - 1:
+        return float(values[-1])
+    i0 = int(idx_f)
+    i1 = min(i0 + 1, n - 1)
+    frac = idx_f - i0
+    return float((1.0 - frac) * float(values[i0]) + frac * float(values[i1]))
+
+
 def _interp_bands(
     values: Any,
     t: float,
@@ -402,7 +423,7 @@ def _interp_onset_strength(analysis: Mapping[str, Any], t: float) -> float:
 
     if normalised.size == 0:
         return 0.0
-    return _interp_scalar_series(normalised.tolist(), float(t), rate)
+    return _interp_scalar_series_1d_np(normalised, float(t), rate)
 
 
 def _bar_phase_at(
@@ -412,6 +433,7 @@ def _bar_phase_at(
     beats_per_bar: int = 4,
     bpm: float | None = None,
     beats: Sequence[float] | None = None,
+    cache_parent: MutableMapping[str, Any] | None = None,
 ) -> float:
     """
     Phase within the current ``beats_per_bar``-beat bar in ``[0, 1)``.
@@ -450,12 +472,12 @@ def _bar_phase_at(
             phase = delta / period
         return float(np.clip(phase, 0.0, 1.0)) % 1.0
 
-    # 1. Downbeat grid
+    # 1. Downbeat grid (use the live sequence — no per-frame list copy).
     if downbeats:
-        db = [float(x) for x in downbeats]
+        db = downbeats
         idx = _bisect_right_floats(db, t_f)
         if 0 < idx < len(db):
-            return _phase_in_span(db[idx - 1], db[idx])
+            return _phase_in_span(float(db[idx - 1]), float(db[idx]))
         if len(db) >= 2:
             spans = np.diff(np.asarray(db, dtype=np.float64))
             period = float(np.median(spans))
@@ -467,11 +489,37 @@ def _bar_phase_at(
 
     # 2. Beat grid — treat every beats_per_bar-th beat as a synthetic downbeat.
     if beats:
-        synth = [float(beats[i]) for i in range(0, len(beats), beats_per_bar)]
+        n_beats = len(beats)
+        synth: Sequence[float]
+        cached: Any = None
+        if cache_parent is not None:
+            try:
+                cached = cache_parent.get(_BAR_PHASE_SYNTH_CACHE_KEY)
+            except Exception:  # noqa: BLE001
+                cached = None
+        if (
+            isinstance(cached, dict)
+            and cached.get("beats_id") == id(beats)
+            and cached.get("step") == beats_per_bar
+            and cached.get("n_beats") == n_beats
+        ):
+            synth = cached["synth"]
+        else:
+            synth = tuple(float(beats[i]) for i in range(0, n_beats, beats_per_bar))
+            if cache_parent is not None:
+                try:
+                    cache_parent[_BAR_PHASE_SYNTH_CACHE_KEY] = {
+                        "beats_id": id(beats),
+                        "step": beats_per_bar,
+                        "n_beats": n_beats,
+                        "synth": synth,
+                    }
+                except (TypeError, KeyError):
+                    pass
         if synth:
             idx = _bisect_right_floats(synth, t_f)
             if 0 < idx < len(synth):
-                return _phase_in_span(synth[idx - 1], synth[idx])
+                return _phase_in_span(float(synth[idx - 1]), float(synth[idx]))
             if len(synth) >= 2:
                 spans = np.diff(np.asarray(synth, dtype=np.float64))
                 period = float(np.median(spans))
@@ -509,17 +557,21 @@ def uniforms_at_time(
     if num_bands <= 0:
         raise ValueError(f"num_bands must be positive, got {num_bands}")
 
-    beats = list(analysis.get("beats") or [])
-    downbeats = list(analysis.get("downbeats") or [])
+    beats_raw = analysis.get("beats")
+    beats: Sequence[float] = beats_raw if beats_raw else ()
+    down_raw = analysis.get("downbeats")
+    downbeats: Sequence[float] = down_raw if down_raw else ()
     tempo = analysis.get("tempo") or {}
     bpm = float(tempo.get("bpm") or 0.0)
     beat_phase = _beat_phase_at(beats, float(t), bpm=bpm)
+    cache_parent = analysis if isinstance(analysis, dict) else None
     bar_phase = _bar_phase_at(
         float(t),
         downbeats,
         beats_per_bar=4,
         bpm=bpm if bpm > 0.0 else None,
-        beats=beats,
+        beats=beats if beats else None,
+        cache_parent=cache_parent,
     )
 
     spec = analysis.get("spectrum") or {}
@@ -617,6 +669,8 @@ class ReactiveShader:
         self._shader_name = str(shader_name)
         # Parse palette up front so bad hex fails construction, not rendering.
         self._palette_flat, self._palette_size = _build_palette_uniform(palette)
+        # Reused every frame in :meth:`_apply_uniforms` (avoid ``list(...)`` alloc).
+        self._palette_uniform_list: list[float] = list(self._palette_flat)
 
         root = Path(shaders_dir) if shaders_dir is not None else SHADERS_DIR
         frag_path = root / f"{shader_name}.frag"
@@ -882,7 +936,7 @@ class ReactiveShader:
             # Palette is sticky per instance (set once at construction), but we
             # re-upload it every frame so a future reset path can't desync the
             # GPU state.
-            "u_palette": list(self._palette_flat),
+            "u_palette": self._palette_uniform_list,
             "u_palette_size": int(self._palette_size),
         }
 
@@ -905,6 +959,11 @@ class ReactiveShader:
         self, uniforms: Mapping[str, Any] | None = None
     ) -> np.ndarray:
         """Render one frame and return an ``(H, W, 4)`` ``uint8`` RGBA array."""
+        effective = dict(uniforms) if uniforms else {}
+        return self._render_frame_with_effective(effective)
+
+    def _render_frame_with_effective(self, effective: dict[str, Any]) -> np.ndarray:
+        """Internal: mutate ``effective`` for feedback uniforms then draw."""
         if self._ctx is None or self._fbo is None or self._vao is None:
             raise RuntimeError("ReactiveShader has been closed")
 
@@ -912,7 +971,6 @@ class ReactiveShader:
         # produced at least one frame, and make the previous-frame texture
         # sampleable before the draw call. ``setdefault`` preserves any
         # explicit override the caller passes in (handy for manual tests).
-        effective: dict[str, Any] = dict(uniforms) if uniforms else {}
         if self._feedback_enabled:
             effective.setdefault(
                 "u_has_prev", 1.0 if self._has_prev_frame else 0.0
@@ -960,9 +1018,9 @@ class ReactiveShader:
         ``(H, W, 3)`` ``uint8`` RGB (opaque) for downstream typography / compositor.
         """
         self.write_background_rgb(background_rgb)
-        u: dict[str, Any] = dict(uniforms or {})
-        u["u_comp_background"] = 1.0
-        rgba = self.render_frame(u)
+        effective: dict[str, Any] = dict(uniforms or {})
+        effective["u_comp_background"] = 1.0
+        rgba = self._render_frame_with_effective(effective)
         return rgba[:, :, :3].copy()
 
     # -- lifecycle ----------------------------------------------------------

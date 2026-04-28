@@ -26,6 +26,7 @@ silent fallbacks that would ship a blank typography pass.
 
 from __future__ import annotations
 
+import bisect
 import json
 import logging
 import math
@@ -469,6 +470,12 @@ class KineticTypographyLayer:
         self._line_layouts: list[_LineLayout] = [
             self._layout_line(line) for line in self._lines
         ]
+        # ``t_start - intro`` per line, sorted with ``_lines`` — used for O(log n)
+        # "current line" lookup instead of scanning from line 0 every frame
+        # (which degraded to O(n) per frame late in long lyrics).
+        self._line_intro_thresholds: tuple[float, ...] = tuple(
+            ln.t_start - self._intro_seconds for ln in self._lines
+        )
 
         # Pre-allocate the RGBA backing buffer; reused each frame to avoid
         # per-frame allocations in the hot path.
@@ -608,12 +615,9 @@ class KineticTypographyLayer:
             return []
 
         # Current line: the latest line whose ``t_start - intro`` <= t.
-        current: int | None = None
-        for i, line in enumerate(self._lines):
-            if t >= line.t_start - self._intro_seconds:
-                current = i
-            else:
-                break
+        thr = self._line_intro_thresholds
+        idx = bisect.bisect_right(thr, float(t)) - 1
+        current: int | None = idx if idx >= 0 else None
 
         visible: list[tuple[int, float]] = []
 
@@ -662,7 +666,7 @@ class KineticTypographyLayer:
         if t < 0:
             raise ValueError(f"t must be non-negative, got {t}")
 
-        u = dict(uniforms) if uniforms else {}
+        u: Mapping[str, Any] = uniforms if uniforms is not None else {}
 
         # Reset backing buffer to fully transparent.
         self._pixels.fill(0)
