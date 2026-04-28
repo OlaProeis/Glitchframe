@@ -140,6 +140,123 @@ DEFAULT_SHADER_BASS_DECAY_SEC = 0.34
 
 ProgressFn = Callable[[float, str], None]
 
+# How often the encoder-feed (request thread) loop emits a progress(...) call
+# to the UI. 250 ms keeps the bar lively without spamming Gradio's internal
+# update queue. Throttling is critical: at 1080p with NVENC we hit ~30 fps,
+# 30 progress calls/s is enough to make Gradio's WebSocket choke noticeably.
+_PROGRESS_TICK_SEC = 0.25
+
+
+def _format_eta_compositor(seconds: float) -> str:
+    """Human-readable ETA used inside the compositor progress message.
+
+    Duplicated from ``app._format_eta`` because the compositor is imported
+    from contexts (CLI, tests) that don't pull in Gradio. Kept identical in
+    output so the progress-bar text matches whatever the UI shows already.
+    """
+    seconds = max(0.0, float(seconds))
+    if seconds < 1.0:
+        return "<1s"
+    total = int(round(seconds))
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}h{m:02d}m{s:02d}s"
+    if m:
+        return f"{m}m{s:02d}s"
+    return f"{s}s"
+
+
+@dataclass
+class _CompositorStats:
+    """Cross-thread state shared between the render producer and the
+    encoder-feed consumer.
+
+    Why this exists: the producer renders frames on a daemon thread, but the
+    encoder-feed loop runs on the request thread (``render_full_video``'s
+    caller). Gradio's :class:`gr.Progress` object only reliably propagates
+    updates when called from the request thread — calls made from a daemon
+    background thread are silently dropped by Gradio's internal asyncio
+    queue. Symptom: UI stuck on the orchestrator's outer "Compositing
+    video..." message at 40 % for the entire render even though the
+    producer's per-frame ``progress(...)`` calls are firing.
+
+    Solution: producer writes its phase string + a frame counter into this
+    object (no progress callback), consumer reads the object every
+    ``_PROGRESS_TICK_SEC`` seconds and forwards to ``progress``. All fields
+    are scalars whose individual reads/writes are atomic under the GIL, so
+    no lock is needed for these particular access patterns. The string is
+    treated as opaque (Python ``str`` rebinding is atomic — no torn read
+    is possible).
+
+    ``frames_encoded`` is the canonical "done" counter for the UI because
+    it's measured at the encoder pipe — that's where the actual bottleneck
+    sits when NVENC is unavailable and we fall back to libx264.
+    """
+
+    total_frames: int
+    started_at: float
+    frames_produced: int = 0  # how many frames the renderer has finished
+    frames_encoded: int = 0  # how many frames have been pushed to ffmpeg stdin
+    layer_label: str = ""
+    phase: str = "starting"  # human-readable phase ("warming up", "encoding")
+
+    def progress_pair(self) -> tuple[float, str]:
+        """Compute ``(p, msg)`` for the UI from the current stats snapshot.
+
+        Reads several scalar fields without a lock; under the GIL each read
+        is atomic but the *combination* could in principle be torn (e.g.
+        frames_encoded read just after producer bumped frames_produced).
+        That's fine — the UI value is approximate and self-corrects on the
+        next tick.
+        """
+        total = max(1, self.total_frames)
+        encoded = self.frames_encoded
+        elapsed = max(1e-6, time.monotonic() - self.started_at)
+        p = encoded / total
+        if encoded > 0:
+            fps = encoded / elapsed
+            remaining = max(0, self.total_frames - encoded)
+            eta = remaining / fps if fps > 0 else 0.0
+            msg = (
+                f"Compositing {encoded}/{self.total_frames} "
+                f"({100.0 * p:.1f}%) - {fps:.2f} fps - "
+                f"ETA {_format_eta_compositor(eta)}"
+            )
+            if self.layer_label:
+                msg = f"{msg} - {self.layer_label}"
+        else:
+            # No frames encoded yet -- show producer phase (e.g. "warming
+            # up", "preparing typography") so the user knows something is
+            # happening during the warmup that can take 10-30s on big runs.
+            msg = (
+                f"Compositing 0/{self.total_frames} - {self.phase}"
+                if self.phase
+                else f"Compositing 0/{self.total_frames}"
+            )
+            if self.layer_label:
+                msg = f"{msg} - {self.layer_label}"
+        return p, msg
+
+
+@dataclass(frozen=True)
+class CompositorRenderStats:
+    """Headline stats from one ``render_full_video`` invocation.
+
+    Attached to :class:`CompositorResult` so :mod:`app` can append a
+    one-liner like
+    ``Compositor: 4923 frames in 41m23s - avg 1.98 fps - encoder=h264_nvenc``
+    to the in-app run log when the render finishes.
+    Pinokio terminals are read-only on Windows so this is the **only** way
+    fork users can see whether NVENC actually engaged.
+    """
+
+    frame_count: int
+    elapsed_sec: float
+    avg_fps: float
+    video_codec: str
+    ffmpeg_path: str | None
+
 
 @dataclass(frozen=True)
 class CompositorResult:
@@ -151,6 +268,7 @@ class CompositorResult:
     frame_count: int
     audio_path: Path
     thumbnail_png: Path | None = None
+    render_stats: CompositorRenderStats | None = None
 
 
 @dataclass
@@ -1732,6 +1850,18 @@ def render_full_video(
     producer_error: list[BaseException] = []
     stop_event = threading.Event()
 
+    # Shared progress state. Initialised on the request thread *before* the
+    # producer starts so the consumer's progress poll has valid totals from
+    # the very first tick. ``started_at`` is reset in the producer once it
+    # begins the actual frame loop (so warmup time isn't billed against the
+    # rendering FPS shown to the user).
+    stats = _CompositorStats(
+        total_frames=frame_count,
+        started_at=time.monotonic(),
+        layer_label="",
+        phase="initializing",
+    )
+
     has_typography = bool(aligned_words)
     has_title = title_rgba is not None
     has_logo = logo_rgba_prepared is not None and logo_position_norm is not None
@@ -1770,10 +1900,17 @@ def render_full_video(
             _probe,
         )
 
+    # Update stats.layer_label up-front so the consumer's first progress
+    # tick already shows the correct layer info.
+    stats.layer_label = layer_label
+
     def _produce() -> None:
         try:
-            if progress is not None:
-                progress(0.0, "Initializing GPU shader context…")
+            # NB: NEVER call ``progress(...)`` from this function. Producer
+            # runs on a daemon thread and Gradio drops cross-thread progress
+            # calls. Update ``stats.phase`` instead -- the consumer (request
+            # thread) polls stats and emits progress at ``_PROGRESS_TICK_SEC``.
+            stats.phase = "initializing GPU shader context"
             with ReactiveShader(
                 cfg.shader_name,
                 width=cfg.width,
@@ -1783,11 +1920,10 @@ def render_full_video(
             ) as reactive:
                 typo_layer: KineticTypographyLayer | None = None
                 if has_typography:
-                    if progress is not None:
-                        progress(
-                            0.0,
-                            f"Preparing kinetic typography ({len(aligned_words or [])} words)…",
-                        )
+                    stats.phase = (
+                        f"preparing kinetic typography "
+                        f"({len(aligned_words or [])} words)"
+                    )
                     typo_layer = KineticTypographyLayer(
                         list(aligned_words or ()),
                         motion=cfg.typography_motion,
@@ -1802,11 +1938,11 @@ def render_full_video(
                 try:
                     render_started = time.monotonic()
                     last_log_t = render_started
-                    if progress is not None:
-                        progress(
-                            0.0,
-                            f"Rendering frame 0/{frame_count} · warming up · {layer_label}",
-                        )
+                    # Reset the FPS-measurement clock now that warmup is
+                    # done -- the displayed fps should reflect rendering
+                    # rate, not (renderer + warmup) rate.
+                    stats.started_at = render_started
+                    stats.phase = "warming up"
                     for i in range(frame_count):
                         if stop_event.is_set():
                             return
@@ -1848,20 +1984,16 @@ def render_full_video(
                         frame_q.put(bgr.tobytes())
 
                         done = i + 1
+                        # Producer-side counter for the throttled INFO log
+                        # below; the UI uses ``frames_encoded`` (consumer).
+                        stats.frames_produced = done
+                        # First produced frame -> exit the "warming up" phase.
+                        if done == 1:
+                            stats.phase = "encoding"
+
                         now = time.monotonic()
                         elapsed = max(1e-6, now - render_started)
                         avg_fps = done / elapsed
-                        if progress is not None:
-                            remaining = max(0, frame_count - done)
-                            eta_sec = remaining / avg_fps if avg_fps > 0 else 0.0
-                            progress(
-                                done / float(frame_count),
-                                (
-                                    f"Rendering frame {done}/{frame_count} "
-                                    f"· {_format_render_fps(avg_fps)} · "
-                                    f"{layer_label} · frame ETA {int(eta_sec)}s"
-                                ),
-                            )
                         # Throttle INFO logs to roughly once every 5 seconds
                         # so terminal output stays readable on long renders
                         # without hiding progress on minute-long stalls.
@@ -1902,9 +2034,50 @@ def render_full_video(
         assert proc.stdin is not None
         stdin_fd = proc.stdin.fileno()
         producer.start()
+
+        # Consumer feed loop. Two responsibilities:
+        # 1. Pull frames off the queue and pipe them to ffmpeg stdin.
+        # 2. Emit progress(...) updates to the UI from THIS thread (request
+        #    thread). Gradio's progress mechanism only reliably propagates
+        #    cross-thread when called from the request thread, hence the
+        #    move from producer-side progress() calls.
+        #
+        # We use ``frame_q.get(timeout=_PROGRESS_TICK_SEC)`` so the consumer
+        # wakes up even when the queue is empty (during warmup before the
+        # first frame is produced, or during a long ffmpeg stall) and can
+        # still tick the progress bar -- otherwise the UI would freeze on
+        # the last-shown message until the next frame arrives.
+        last_progress_t = 0.0
+
+        def _emit_progress(force: bool = False) -> None:
+            nonlocal last_progress_t
+            if progress is None:
+                return
+            now = time.monotonic()
+            if not force and (now - last_progress_t) < _PROGRESS_TICK_SEC:
+                return
+            last_progress_t = now
+            p, msg = stats.progress_pair()
+            try:
+                progress(p, msg)
+            except Exception as exc:  # noqa: BLE001 - UI must never break encode
+                LOGGER.debug("Compositor progress callback raised: %s", exc)
+
+        # Push an initial tick so the bar shows the warmup phase string
+        # immediately rather than the orchestrator's stale "Compositing
+        # video..." label.
+        _emit_progress(force=True)
+
         try:
             while True:
-                chunk = frame_q.get()
+                try:
+                    chunk = frame_q.get(timeout=_PROGRESS_TICK_SEC)
+                except queue.Empty:
+                    # No frame yet (warmup or encoder stall) -- still tick
+                    # the UI so the user sees "warming up", "preparing
+                    # typography", etc., as the producer transitions phases.
+                    _emit_progress()
+                    continue
                 if chunk is None:
                     break
                 try:
@@ -1920,6 +2093,12 @@ def render_full_video(
                         raise
                     stop_event.set()
                     break
+                stats.frames_encoded += 1
+                _emit_progress()
+            # Flush a final 100%-ish tick so the bar's last visible state
+            # matches the actual encoded count rather than whatever was
+            # there ~250ms before the queue closed.
+            _emit_progress(force=True)
         except BaseException:
             stop_event.set()
             raise
@@ -1958,6 +2137,16 @@ def render_full_video(
             palette=list(thumbnail_palette) if thumbnail_palette is not None else None,
         )
 
+    elapsed_sec = max(1e-6, time.monotonic() - stats.started_at)
+    avg_fps = stats.frames_encoded / elapsed_sec if elapsed_sec > 0 else 0.0
+    render_stats = CompositorRenderStats(
+        frame_count=stats.frames_encoded,
+        elapsed_sec=elapsed_sec,
+        avg_fps=avg_fps,
+        video_codec=codec,
+        ffmpeg_path=ffmpeg_bin,
+    )
+
     return CompositorResult(
         run_id=rid,
         output_dir=out_dir,
@@ -1965,6 +2154,7 @@ def render_full_video(
         frame_count=frame_count,
         audio_path=audio_p,
         thumbnail_png=thumb_path,
+        render_stats=render_stats,
     )
 
 
@@ -1973,6 +2163,7 @@ __all__: Sequence[str] = [
     "PULSE_MODE_BASS",
     "PULSE_MODE_BEATS",
     "CompositorConfig",
+    "CompositorRenderStats",
     "CompositorResult",
     "ProgressFn",
     "PulseFn",

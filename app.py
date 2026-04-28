@@ -468,6 +468,17 @@ def _summarise_render(result: RenderResult) -> str:
         parts.append(f"thumbnail={result.compositor.thumbnail_png.name}")
     if result.av_sync is not None:
         parts.append(result.av_sync.message)
+    # Compositor render stats: surface NVENC vs CPU fallback + average fps.
+    # On Pinokio (Windows) the terminal is read-only, so this is the only
+    # in-app signal a fork user has that NVENC actually engaged. Helps us
+    # answer "why is my render slow" remotely from a screenshot of the log.
+    rs = result.compositor.render_stats
+    if rs is not None:
+        parts.append(
+            f"compositor: {rs.frame_count} frames in "
+            f"{_format_eta(rs.elapsed_sec)} · avg {rs.avg_fps:.2f} fps · "
+            f"encoder={rs.video_codec}"
+        )
     return " | ".join(parts)
 
 
@@ -2084,6 +2095,16 @@ def _log_runtime_python_and_optional_deps() -> None:
                     )
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("Could not read ctranslate2 version: %s", exc)
+
+    # Resolved ffmpeg path + version banner — surfaces conda env activation
+    # shadowing the user's PATH ffmpeg, which is otherwise invisible from the
+    # log and silently breaks NVENC on Pinokio. See pipeline/ffmpeg_tools.py.
+    try:
+        from pipeline.ffmpeg_tools import log_ffmpeg_diagnostics
+
+        log_ffmpeg_diagnostics()
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("ffmpeg diagnostics failed: %s", exc)
 
 
 def main() -> None:
