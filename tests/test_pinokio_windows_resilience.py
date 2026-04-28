@@ -730,14 +730,79 @@ class TestTorchXpuCompat(unittest.TestCase):
 
     def test_stub_exposes_amp_namespace(self) -> None:
         """diffusers/transformers reach into ``torch.xpu.amp.*`` even when
-        XPU is unused (e.g. ``hasattr(torch.xpu.amp, "autocast")``). A bare
-        ``ModuleType`` with no ``amp`` would AttributeError on attribute
-        access. Confirm the stub provides it."""
+        XPU is unused (e.g. ``hasattr(torch.xpu.amp, "autocast")``). The
+        stub's ``__getattr__`` synthesises an ``amp`` sub-stub on demand."""
         from pipeline._torch_xpu_compat import patch_torch_xpu
 
         torch = self._install_fake_torch_without_xpu()
         patch_torch_xpu()
         self.assertTrue(hasattr(torch.xpu, "amp"))  # type: ignore[attr-defined]
+        self.assertIs(
+            sys.modules.get("torch.xpu.amp"),
+            torch.xpu.amp,  # type: ignore[attr-defined]
+            "amp sub-stub must be registered in sys.modules so 'import "
+            "torch.xpu.amp' works",
+        )
+
+    def test_stub_supports_manual_seed_dispatch(self) -> None:
+        """diffusers/utils/torch_utils.py builds a ``{device: seed_fn}``
+        dispatch table at module load time::
+
+            "xpu": torch.xpu.manual_seed,
+
+        The stub must expose ``manual_seed`` (and the related ``seed`` /
+        ``manual_seed_all`` / ``seed_all`` family) as callables that
+        accept a seed and return without raising. This was the actual
+        failure that broke AnimateDiff SDXL render after the v1 stub
+        landed (which only had is_available / device_count / synchronize)."""
+        from pipeline._torch_xpu_compat import patch_torch_xpu
+
+        torch = self._install_fake_torch_without_xpu()
+        patch_torch_xpu()
+
+        for name in ("manual_seed", "manual_seed_all", "seed", "seed_all"):
+            fn = getattr(torch.xpu, name)  # type: ignore[attr-defined]
+            self.assertTrue(
+                callable(fn),
+                f"torch.xpu.{name} must be callable for diffusers seed "
+                f"dispatch tables",
+            )
+            self.assertIsNone(
+                fn(42),
+                f"torch.xpu.{name}(42) must accept a seed and return None",
+            )
+
+    def test_stub_synthesises_unknown_attributes_on_demand(self) -> None:
+        """Newer diffusers / transformers / peft releases probe additional
+        ``torch.xpu.*`` symbols at import time. The stub's ``__getattr__``
+        must return a no-op callable for any unrecognised attribute so
+        future library upgrades don't reintroduce this bug class."""
+        from pipeline._torch_xpu_compat import patch_torch_xpu
+
+        torch = self._install_fake_torch_without_xpu()
+        patch_torch_xpu()
+
+        # Anything goes — we don't care what diffusers asks for tomorrow.
+        for name in ("future_thing", "another_seed_fn", "some_new_probe"):
+            fn = getattr(torch.xpu, name)  # type: ignore[attr-defined]
+            self.assertTrue(callable(fn), f"torch.xpu.{name} must be callable")
+            self.assertIsNone(fn("whatever", and_a_kwarg=1))
+
+        # Sub-namespace passthrough: torch.xpu.random.foo must also work.
+        torch.xpu.random.bar(99)  # type: ignore[attr-defined]
+
+    def test_stub_dunders_still_raise_attribute_error(self) -> None:
+        """``__getattr__`` must NOT synthesise dunders — pretending to
+        support ``__reduce__`` / ``__init_subclass__`` / etc. confuses
+        copy.deepcopy, pickling, debuggers, and isinstance checks."""
+        from pipeline._torch_xpu_compat import patch_torch_xpu
+
+        torch = self._install_fake_torch_without_xpu()
+        patch_torch_xpu()
+
+        # AttributeError, not a synthesised callable:
+        with self.assertRaises(AttributeError):
+            torch.xpu.__some_dunder__  # type: ignore[attr-defined]
 
 
 class TestAppPyAppliesTorchXpuPatch(unittest.TestCase):
