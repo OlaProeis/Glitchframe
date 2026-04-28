@@ -2059,6 +2059,26 @@ def _log_runtime_python_and_optional_deps() -> None:
                 "integrations have missing optional deps (k2 / flair).",
                 exc,
             )
+        # whisperx + faster-whisper download models via huggingface_hub. On
+        # Windows non-admin / no Developer Mode the snapshot-dir symlinks
+        # fail with WinError 1314. Patch huggingface_hub now (BEFORE any
+        # download is triggered) so the cache uses copies instead. See
+        # pipeline/_huggingface_symlink_compat.py for the full rationale.
+        try:
+            from pipeline._huggingface_symlink_compat import (
+                patch_huggingface_disable_symlinks,
+            )
+
+            patch_huggingface_disable_symlinks()
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "Could not apply huggingface_hub symlink-disable patch: %s "
+                "-- model downloads may fail with WinError 1314 on Windows "
+                "non-admin installs (faster-whisper-large-v3, alignment "
+                "models). Workaround: enable Developer Mode in Windows "
+                "Settings or run Pinokio as administrator.",
+                exc,
+            )
         try:
             import ctranslate2
 

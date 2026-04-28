@@ -578,6 +578,19 @@ def _import_whisperx() -> Any:
 
     ensure_windows_cuda_dll_paths()
     apply_whisperx_torch_load_compat()
+    # Defense in depth: app.py applies this at startup, but if whisperx is
+    # imported through some other path (tests, embedded use, an alternate
+    # entry point) we still need huggingface_hub's snapshot symlinks
+    # disabled BEFORE faster-whisper-large-v3 starts downloading.
+    # WinError 1314 otherwise. See pipeline/_huggingface_symlink_compat.py.
+    try:
+        from pipeline._huggingface_symlink_compat import (
+            patch_huggingface_disable_symlinks,
+        )
+
+        patch_huggingface_disable_symlinks()
+    except Exception:  # noqa: BLE001 - never block import on a compat patch
+        pass
     try:
         import whisperx  # type: ignore
 

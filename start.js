@@ -14,6 +14,15 @@ module.exports = {
           // Align lyrics uses CPU for WhisperX only — slower but reliable. To try GPU align, delete
           // this line or set GLITCHFRAME_WHISPERX_DEVICE=cuda and fix your cuDNN stack (see README).
           GLITCHFRAME_WHISPERX_DEVICE: "cpu",
+          // Windows non-admin / no-developer-mode users can't create symlinks
+          // (WinError 1314 / SeCreateSymbolicLinkPrivilege). HF_HUB_DISABLE_SYMLINKS=1
+          // tells huggingface_hub >= 0.36 to copy blobs into snapshot dirs instead.
+          // pipeline/_huggingface_symlink_compat.py belt-and-braces patches older
+          // huggingface_hub versions where this env var is ignored. The companion
+          // _WARNING var silences the "machine doesn't support symlinks" warning
+          // emitted by every download on a non-admin Windows install.
+          HF_HUB_DISABLE_SYMLINKS: "1",
+          HF_HUB_DISABLE_SYMLINKS_WARNING: "1",
         },
         message: ["python -m app"],
         on: [

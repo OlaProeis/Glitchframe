@@ -1176,5 +1176,239 @@ class TestAppPyAppliesSpeechbrainPatch(unittest.TestCase):
         )
 
 
+class TestHuggingfaceSymlinkPatch(unittest.TestCase):
+    """``patch_huggingface_disable_symlinks`` must force HF to copy blobs
+    into snapshot dirs instead of symlinking them on Windows.
+
+    Why: the ``Align lyrics`` step on Pinokio Windows downloads
+    ``Systran/faster-whisper-large-v3``; the **blob** download succeeds
+    but the per-snapshot relative symlink ``..\\..\\blobs\\<sha>`` fails
+    with ``WinError 1314`` (``SeCreateSymbolicLinkPrivilege`` missing)
+    on any non-admin / no-developer-mode install. ``faster-whisper``
+    has no recovery path; the whole alignment crashes.
+
+    The patch monkey-patches ``huggingface_hub.file_download.are_symlinks_supported``
+    to always return ``False`` on Windows, which makes ``hf_hub_download``
+    populate the snapshot dir by copy. Trade-off: extra disk for
+    deduplication when multiple revisions are cached.
+    """
+
+    def setUp(self) -> None:
+        # Force a clean reload between tests so the sentinel and the cache
+        # dict don't leak across test cases (the patch is idempotent in
+        # production, which is why the sentinel is sticky).
+        for mod_name in (
+            "pipeline._huggingface_symlink_compat",
+            "huggingface_hub",
+            "huggingface_hub.file_download",
+        ):
+            sys.modules.pop(mod_name, None)
+
+    def tearDown(self) -> None:
+        # Same hygiene as setUp.
+        for mod_name in (
+            "pipeline._huggingface_symlink_compat",
+            "huggingface_hub",
+            "huggingface_hub.file_download",
+        ):
+            sys.modules.pop(mod_name, None)
+
+    def _make_fake_hf(
+        self,
+        *,
+        original_returns: bool = True,
+        cache_state: dict | None = None,
+    ) -> tuple[ModuleType, ModuleType]:
+        """Build a minimal fake huggingface_hub package with a fake
+        ``file_download`` submodule that the patch can grab onto."""
+        hf_hub = ModuleType("huggingface_hub")
+        fd = ModuleType("huggingface_hub.file_download")
+
+        def original_are_symlinks_supported(cache_dir: Any = None) -> bool:
+            return original_returns
+
+        fd.are_symlinks_supported = original_are_symlinks_supported  # type: ignore[attr-defined]
+        fd._are_symlinks_supported_in_dir = (  # type: ignore[attr-defined]
+            cache_state if cache_state is not None else {}
+        )
+        hf_hub.file_download = fd  # type: ignore[attr-defined]
+        sys.modules["huggingface_hub"] = hf_hub
+        sys.modules["huggingface_hub.file_download"] = fd
+        return hf_hub, fd
+
+    def test_patch_forces_are_symlinks_supported_to_false_on_windows(
+        self,
+    ) -> None:
+        _, fd = self._make_fake_hf(original_returns=True)
+        with mock.patch("sys.platform", "win32"):
+            from pipeline._huggingface_symlink_compat import (
+                patch_huggingface_disable_symlinks,
+            )
+
+            applied = patch_huggingface_disable_symlinks()
+        self.assertTrue(applied)
+        self.assertFalse(fd.are_symlinks_supported())
+        self.assertFalse(fd.are_symlinks_supported("/some/cache/dir"))
+
+    def test_patch_invalidates_cached_true_results(self) -> None:
+        """If ``are_symlinks_supported`` was already called and cached
+        ``True`` for some cache dir, the patch must wipe that or
+        ``_create_symlink`` would skip our patched function and call
+        ``os.symlink()`` directly, hitting WinError 1314 again."""
+        cache_state = {
+            "C:\\pinokio\\api\\Glitchframe.git\\cache\\HF_HOME": True,
+            "C:\\Users\\someone\\.cache\\huggingface\\hub": True,
+        }
+        _, fd = self._make_fake_hf(
+            original_returns=True, cache_state=cache_state
+        )
+        with mock.patch("sys.platform", "win32"):
+            from pipeline._huggingface_symlink_compat import (
+                patch_huggingface_disable_symlinks,
+            )
+
+            patch_huggingface_disable_symlinks()
+        for v in fd._are_symlinks_supported_in_dir.values():
+            self.assertFalse(
+                v,
+                "Patch must invalidate every cached True so subsequent "
+                "_create_symlink calls take the copy fallback path",
+            )
+
+    def test_patch_is_idempotent(self) -> None:
+        """Calling twice must not raise and must leave the patch active."""
+        _, fd = self._make_fake_hf(original_returns=True)
+        with mock.patch("sys.platform", "win32"):
+            from pipeline._huggingface_symlink_compat import (
+                patch_huggingface_disable_symlinks,
+            )
+
+            self.assertTrue(patch_huggingface_disable_symlinks())
+            self.assertTrue(patch_huggingface_disable_symlinks())
+        self.assertFalse(fd.are_symlinks_supported())
+
+    def test_patch_is_a_noop_on_linux(self) -> None:
+        """POSIX hosts can create symlinks without privilege. Patching
+        there would just waste disk for no benefit."""
+        _, fd = self._make_fake_hf(original_returns=True)
+        with mock.patch("sys.platform", "linux"):
+            from pipeline._huggingface_symlink_compat import (
+                patch_huggingface_disable_symlinks,
+            )
+
+            applied = patch_huggingface_disable_symlinks()
+        self.assertFalse(applied)
+        # Original function must still be in place.
+        self.assertTrue(fd.are_symlinks_supported())
+
+    def test_patch_is_a_noop_when_huggingface_hub_is_absent(self) -> None:
+        """Without huggingface_hub installed, the patch must not raise --
+        Glitchframe's CPU-only / smoke-test contexts skip the lyrics extras."""
+        # Make ``import huggingface_hub`` fail by leaving it out of
+        # sys.modules and shadowing it via a finder-less namespace.
+        sys.modules.pop("huggingface_hub", None)
+        sys.modules.pop("huggingface_hub.file_download", None)
+
+        # Force ImportError on import.
+        original_import = __builtins__["__import__"] if isinstance(
+            __builtins__, dict
+        ) else __import__
+
+        def _raise_for_hf(name, *args, **kwargs):
+            if name.startswith("huggingface_hub"):
+                raise ImportError("mocked: huggingface_hub not installed")
+            return original_import(name, *args, **kwargs)
+
+        with mock.patch("sys.platform", "win32"), mock.patch(
+            "builtins.__import__", side_effect=_raise_for_hf
+        ):
+            from pipeline._huggingface_symlink_compat import (
+                patch_huggingface_disable_symlinks,
+            )
+
+            applied = patch_huggingface_disable_symlinks()
+        self.assertFalse(applied)
+
+    def test_patch_sets_hf_hub_disable_symlinks_env_var(self) -> None:
+        """Belt-and-braces: set ``HF_HUB_DISABLE_SYMLINKS=1`` so newer
+        ``huggingface_hub`` versions (PR #4032, Apr 2026) ALSO take the
+        copy path even if our monkey-patch ever stops working. ``setdefault``
+        so we don't clobber an explicit user override."""
+        import os
+
+        self._make_fake_hf(original_returns=True)
+        # Save and clear so we observe the side-effect deterministically.
+        saved = os.environ.pop("HF_HUB_DISABLE_SYMLINKS", None)
+        try:
+            with mock.patch("sys.platform", "win32"):
+                from pipeline._huggingface_symlink_compat import (
+                    patch_huggingface_disable_symlinks,
+                )
+
+                patch_huggingface_disable_symlinks()
+            self.assertEqual(os.environ.get("HF_HUB_DISABLE_SYMLINKS"), "1")
+            self.assertEqual(
+                os.environ.get("HF_HUB_DISABLE_SYMLINKS_WARNING"), "1"
+            )
+        finally:
+            if saved is not None:
+                os.environ["HF_HUB_DISABLE_SYMLINKS"] = saved
+            else:
+                os.environ.pop("HF_HUB_DISABLE_SYMLINKS", None)
+            os.environ.pop("HF_HUB_DISABLE_SYMLINKS_WARNING", None)
+
+    def test_app_py_applies_hf_symlink_patch_at_startup(self) -> None:
+        """Static check: ``app.py`` must call the HF symlink patch in the
+        diagnostic block AFTER ``import whisperx`` -- huggingface_hub is
+        a transitive dep of whisperx, so we patch only after we've
+        confirmed it can be imported."""
+        text = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
+        whisperx_idx = text.find("import whisperx  # noqa")
+        patch_idx = text.find("patch_huggingface_disable_symlinks()")
+        self.assertGreater(
+            patch_idx,
+            -1,
+            "app.py must call patch_huggingface_disable_symlinks() at startup",
+        )
+        self.assertGreater(
+            patch_idx,
+            whisperx_idx,
+            "HF symlink patch must run AFTER 'import whisperx' check so "
+            "huggingface_hub is loadable",
+        )
+
+    def test_lyrics_aligner_applies_hf_symlink_patch_before_whisperx_import(
+        self,
+    ) -> None:
+        """Defense in depth: even when whisperx is imported through a
+        non-app.py entry point (tests, CLI, embedded use), the patch
+        must run before the import so the eventual model download
+        takes the copy path."""
+        text = (
+            REPO_ROOT / "pipeline" / "lyrics_aligner.py"
+        ).read_text(encoding="utf-8")
+        patch_idx = text.find("patch_huggingface_disable_symlinks()")
+        whisperx_import_idx = text.find("import whisperx  # type: ignore")
+        self.assertGreater(
+            patch_idx,
+            -1,
+            "lyrics_aligner._import_whisperx() must call the HF symlink patch",
+        )
+        self.assertGreater(
+            whisperx_import_idx,
+            patch_idx,
+            "Patch must run BEFORE 'import whisperx' inside _import_whisperx",
+        )
+
+    def test_start_js_exports_hf_hub_disable_symlinks(self) -> None:
+        """Pinokio start.js must set ``HF_HUB_DISABLE_SYMLINKS=1`` for
+        recent huggingface_hub versions that respect it -- so even if our
+        Python monkey-patch never runs (alternate launch path, broken
+        import order), the cache still uses copies on Windows."""
+        text = (REPO_ROOT / "start.js").read_text(encoding="utf-8")
+        self.assertIn("HF_HUB_DISABLE_SYMLINKS", text)
+        self.assertIn('"1"', text)
+
+
 if __name__ == "__main__":
     unittest.main()
