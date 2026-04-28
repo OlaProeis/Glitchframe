@@ -119,6 +119,13 @@ Run **Glitchframe** from **Pinokio** (`install.js` / `start.js` / …) on **Wind
 
 Do this once and send the artefacts to whoever is debugging — no guessing about “same” installs.
 
+### Pinokio does not give you a shell — use Windows
+
+Pinokio often has **no** interactive terminal for the venv (only install log output). That is **not** a mistake on your side.
+
+- **To fix deps from a new commit:** in Pinokio use **Update** then **Install** / **Reinstall** — no commands.
+- **To run `pip` or `pip freeze` yourself:** use **File Explorer → open folder `…\Glitchframe.git`** → address bar → type **`cmd`** → Enter → `env\Scripts\activate.bat` (see [`pinokio-package.md`](pinokio-package.md) § *No interactive terminal*).
+
 ### A) Full traceback (exact failure line)
 
 Goal: preserve the **entire** exception, not only the last DLL name.
@@ -157,27 +164,23 @@ Include **20–40 lines minimum** ending with `Error:` or DLL message. If Window
 
 ### B) `pip freeze` from the Pinokio `env`
 
-Use the **same** `python.exe` that Pinokio uses for Install/Start (`env`), not global Python.
+Use the **same** `python.exe` that Pinokio uses for Install/Start (`env`), not global Python. Pinokio usually has **no** built-in terminal — open **cmd** via Explorer (see § *Pinokio does not give you a shell* above), then **`env\Scripts\activate.bat`** once so `python` and `pip` point at the Pinokio venv.
 
-1. Open **PowerShell**.
-2. `cd` to the Pinokio Glitchframe project root (same folder as `env\`).
-3. Run **exactly** (note: `\` path on Windows):
+**Command Prompt (`cmd`)** — after activating:
 
-   ```powershell
-   .\env\Scripts\python.exe -c "import sys; print(sys.executable)"
-   ```
+```bat
+python -c "import sys; print(sys.executable)"
+pip freeze > "%USERPROFILE%\Desktop\pinokio-glitchframe-freeze.txt"
+```
 
-   Keep that printed path visible — confirm it ends with `...\env\Scripts\python.exe`.
+**PowerShell** — from the same folder (`env\` present):
 
-4. Write the full freeze to a text file:
+```powershell
+.\env\Scripts\python.exe -c "import sys; print(sys.executable)"
+.\env\Scripts\pip.exe freeze > $HOME\Desktop\pinokio-glitchframe-freeze.txt
+```
 
-   ```powershell
-   .\env\Scripts\pip.exe freeze > $HOME\Desktop\pinokio-glitchframe-freeze.txt
-   ```
-
-   (Change `$HOME\Desktop` to any folder you prefer, e.g. `G:\TEMP\`.)
-
-5. Open `pinokio-glitchframe-freeze.txt` — it should list **hundreds** of lines (`torch==`, `ctranslate2==`, etc.). Attach that file or paste **all** lines (not a screenshot).
+Open `pinokio-glitchframe-freeze.txt` — it should list **hundreds** of lines (`torch==`, `ctranslate2==`, etc.). Attach that file or paste **all** lines (not a screenshot).
 
 ### C) `pip freeze` from local (working or broken) `.venv`
 

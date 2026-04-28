@@ -14,6 +14,23 @@
 
 **Launch:** After install, the user must click **Start** in Pinokio; the app does not auto-run. **ffmpeg** must be on the user&rsquo;s `PATH` (Pinokio cannot install system encoders for you). **Windows + Align lyrics:** the installer pins a **coherent cu121** stack (see `pyproject.toml` optional deps). ``start.js`` still defaults **CPU** WhisperX so broken setups complete; opt into **GPU** alignment by clearing or overriding ``GLITCHFRAME_WHISPERX_DEVICE`` per README. If `.[all]` fails on a given machine, use **Factory reset** or trim `install.js` locally (see README).
 
+### No interactive terminal inside Pinokio?
+
+That is normal. Pinokio usually only shows **install output** (streaming log), not an ongoing shell where you type `pip` — you are **not** missing an obvious button.
+
+**Apply repo fixes without typing any command:**
+
+1. In Pinokio, use **Update** (`git pull` at repo root) so you have the latest `install.js`.
+2. Run **Install** or **Reinstall** so Pinokio re-executes the install script (`shell.run`). That reinstalls/fixes deps from the repo — **no manual `pip` needed**.
+
+**If you truly need one-off commands** (`pip freeze`, manual repair scripts): use **Windows**, not Pinokio:
+
+1. Open **File Explorer** and go to the Pinokio app folder — often `C:\pinokio\api\Glitchframe.git` (yours may differ; find the folder that contains an **`env`** subfolder next to `install.js`).
+2. Click the address bar once, type **`cmd`**, press **Enter**. (Windows opens **Command Prompt** already `cd`'d into that folder — no need to memorize paths.)
+3. Run **`env\Scripts\activate.bat`** then **`pip`** / **`python`** as needed.
+
+Alternatively: **Shift+right-click** in an empty spot in that folder → **Open in Terminal** / **Open PowerShell window here** (wording varies by Windows version).
+
 **Discoverability:** Add the GitHub topic `pinokio` so the app can appear on Pinokio&rsquo;s discover page.
 
 Running **outside Pinokio** (``python -m app`` from a normal shell) does **not** set that env var unless you add it to ``.env``; behaviour matches a stock local install.
