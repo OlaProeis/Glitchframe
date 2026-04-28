@@ -375,8 +375,19 @@ def _pick_device(preferred: str | None) -> str:
             "faster on GPU if cuDNN/ctranslate2 work"
         )
         return "cpu"
+    # Programmatic caller may force a device (tests, future API).
     if preferred:
         return preferred
+    # Windows + pip PyTorch cu124: CTranslate2 GPU often fails to load
+    # cudnn_ops_infer64_8.dll beside torch. Default Align lyrics to CPU here so
+    # it works without Pinokio env / start.js — opt into GPU with
+    # GLITCHFRAME_WHISPERX_DEVICE=cuda (handled above) after fixing the stack.
+    if sys.platform == "win32":
+        LOGGER.info(
+            "Align lyrics: WhisperX on cpu (Windows default). "
+            "Set GLITCHFRAME_WHISPERX_DEVICE=cuda to try GPU alignment."
+        )
+        return "cpu"
     try:
         import torch  # type: ignore
 
