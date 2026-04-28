@@ -312,16 +312,32 @@ conversion (audio ingest, demucs, whisperx) is undefined behaviour.
 `install.js` after the extras install (same pattern used for markupsafe/pillow
 to survive `--force-reinstall` torch reinstalls).
 
-### Bug C — `nvidia-cudnn-cu12` (unversioned) installed cuDNN 9, ctranslate2 4.4.0 needs cuDNN 8
+### Bug C — Standalone `nvidia-cudnn-cu12` wheels are toxic on Track A
 
-`install.js` had `pip install nvidia-cudnn-cu12` with no version. PyPI's latest
-is **cuDNN 9** (DLL names `cudnn_ops64_9.dll`, no `infer/train` split), which
-**does not** satisfy the cuDNN 8 lookups inside ctranslate2 4.4.0. Pin
-`nvidia-cudnn-cu12==8.9.7.29` so the optional `nvidia\cudnn\bin` site-packages
-folder actually contains `cudnn_ops_infer64_8.dll` & friends. This is
-belt-and-braces — torch 2.2.2+cu121 already ships cuDNN 8 in `torch\lib`, and
-`scripts/windows_provision_cudnn_next_to_ctranslate2.py` copies them next to
-`ctranslate2`, but the explicit cuDNN 8 wheel removes ambiguity.
+This took two iterations to resolve:
+
+* **Iteration 1.** `install.js` originally had `pip install nvidia-cudnn-cu12`
+  with no version. PyPI's latest is **cuDNN 9** (DLL names `cudnn_ops64_9.dll`,
+  no `infer/train` split) which **does not** satisfy the cuDNN 8 lookups inside
+  ctranslate2 4.4.0 — Align lyrics fails on the GPU path with
+  `Could not load library cudnn_ops_infer64_8.dll`.
+* **Iteration 2.** Pinning `nvidia-cudnn-cu12==8.9.7.29` (the latest cuDNN 8.9
+  wheel on PyPI) instead caused **`WinError 127: The specified procedure could
+  not be found`** during `import whisperx`. Mechanism: ctranslate2 4.4.0's
+  resolved import table (built against torch 2.2.2's bundled cuDNN minor
+  ~8.9.2) references symbols that are not exported in the same way by
+  8.9.7.29's standalone DLLs. Windows finds the DLL, fails to bind a function,
+  refuses to load the module.
+
+**Final policy: do NOT install `nvidia-cudnn-cu12` at all.** Torch 2.2.2+cu121
+ships cuDNN 8.9.x in `torch\lib`; that's the build ctranslate2 4.4.0 was
+released against. `scripts/windows_provision_cudnn_next_to_ctranslate2.py`
+copies those DLLs next to the `ctranslate2` package so `LoadLibrary` finds
+them regardless of PATH ordering quirks. `install.js` also runs
+`pip uninstall -y nvidia-cudnn-cu12` to purge wheels left over from prior
+install attempts. The resilience test
+(`tests/test_pinokio_windows_resilience.py`) pins this policy so a future
+helpful refactor doesn't re-add the install step.
 
 ### Bug D — GPU alignment had no automatic fallback
 

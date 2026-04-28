@@ -45,11 +45,17 @@ def main() -> int:
         roots = [Path(sys.prefix) / "Lib" / "site-packages"]
 
     dll_names = (
+        # cuDNN 8.x (Track A: torch 2.2.2+cu121 ships these in torch\lib).
+        # ctranslate2 4.4.0 looks for the *_8 family at runtime; copying the full
+        # set next to ctranslate2 ensures Windows LoadLibrary finds them via the
+        # ctranslate2 package directory regardless of PATH ordering quirks.
         "cudnn64_8.dll",
         "cudnn_ops_infer64_8.dll",
         "cudnn_ops_train64_8.dll",
         "cudnn_cnn_infer64_8.dll",
+        "cudnn_cnn_train64_8.dll",
         "cudnn_adv_infer64_8.dll",
+        "cudnn_adv_train64_8.dll",
     )
 
     sources: list[Path] = []

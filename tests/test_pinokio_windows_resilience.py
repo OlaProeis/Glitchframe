@@ -118,17 +118,52 @@ class TestNumpyAbiPinned(unittest.TestCase):
         )
 
 
-class TestInstallJsCudnn8Pin(unittest.TestCase):
-    """``ctranslate2==4.4.0`` looks for cuDNN 8 (cudnn_ops_infer64_8.dll). pip's
-    unversioned ``nvidia-cudnn-cu12`` resolves to cuDNN 9 (different DLL names)
-    which does NOT satisfy ct2 4.4. Pin the cuDNN 8.9.7 wheel explicitly."""
+class TestInstallJsCudnnPolicy(unittest.TestCase):
+    """``install.js`` must NOT install ``nvidia-cudnn-cu12`` and must actively
+    uninstall any prior wheel.
 
-    def test_install_js_pins_cudnn_8_9_7(self) -> None:
+    History (do not re-add the install step):
+
+    * Unversioned ``nvidia-cudnn-cu12`` resolves to cuDNN 9 (DLL names
+      ``cudnn_ops64_9.dll``) which does NOT satisfy ctranslate2 4.4.0's cuDNN 8
+      lookups — Align lyrics fails on the GPU path with
+      ``Could not load library cudnn_ops_infer64_8.dll``.
+    * Pinning ``nvidia-cudnn-cu12==8.9.7.29`` instead caused
+      ``WinError 127: The specified procedure could not be found`` on
+      ``import whisperx`` — the standalone 8.9.7 wheel exports a different
+      symbol set than torch 2.2.2+cu121's bundled 8.9.x DLLs (which is what
+      ctranslate2 4.4.0 was actually resolved against on PyPI).
+
+    Torch 2.2.2+cu121 ALREADY ships the right cuDNN 8.9.x in ``torch\\lib``;
+    ``scripts/windows_provision_cudnn_next_to_ctranslate2.py`` copies them
+    next to ctranslate2 for LoadLibrary. That's enough.
+    """
+
+    def test_install_js_does_not_install_nvidia_cudnn(self) -> None:
+        text = (REPO_ROOT / "install.js").read_text(encoding="utf-8")
+        # Catch any `pip install ... nvidia-cudnn-cu12 ...` line (any version).
+        # We tolerate the literal in comments, so match only inside install commands.
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("//"):
+                continue
+            self.assertNotRegex(
+                stripped,
+                r'pip\s+install[^"\']*nvidia-cudnn-cu12',
+                f"install.js must NOT install nvidia-cudnn-cu12 (line: {line!r}). "
+                "Standalone cuDNN wheels conflict with torch 2.2.2's bundled cuDNN 8.9.x.",
+            )
+
+    def test_install_js_uninstalls_prior_nvidia_cudnn(self) -> None:
+        """Existing Pinokio envs from earlier install runs may have cuDNN 9 or
+        cuDNN 8.9.7 left over; the install must clean them up so torch's
+        bundled cuDNN wins the loader race for ctranslate2."""
         text = (REPO_ROOT / "install.js").read_text(encoding="utf-8")
         self.assertRegex(
             text,
-            r'nvidia-cudnn-cu12==8\.9\.7\.\d+',
-            "install.js must pin nvidia-cudnn-cu12==8.9.7.x to match ctranslate2 4.4.0",
+            r'pip\s+uninstall\s+-y\s+nvidia-cudnn-cu12',
+            "install.js must `pip uninstall -y nvidia-cudnn-cu12` to remove "
+            "wheels left over from prior install runs (cuDNN 9 or 8.9.7).",
         )
 
 

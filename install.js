@@ -6,10 +6,15 @@
 // Pinning rationale (do not "modernise" without retesting Pinokio end-to-end on Windows):
 //   * torch 2.2.2 wheels were built against NumPy 1.x → must keep numpy<2 or torch
 //     prints "_ARRAY_API not found" and silently breaks tensor<->numpy interop.
-//   * ctranslate2 4.4.0 expects cuDNN 8 (cudnn_ops_infer64_8.dll); torch 2.2.2+cu121
-//     ships those DLLs in torch\lib. Optional nvidia-cudnn-cu12==8.9.7.29 wheel
-//     adds a clean copy under site-packages\nvidia\cudnn\bin (NOT cuDNN 9 which is
-//     pip's default for unversioned `nvidia-cudnn-cu12` and would NOT satisfy ct2 4.4).
+//   * ctranslate2 4.4.0 expects cuDNN 8 (cudnn_ops_infer64_8.dll). torch 2.2.2+cu121
+//     ALREADY ships matching cuDNN 8.9.x DLLs inside torch\lib, and
+//     scripts/windows_provision_cudnn_next_to_ctranslate2.py copies them next to
+//     the ctranslate2 package for LoadLibrary. We deliberately do NOT install
+//     `nvidia-cudnn-cu12` — the standalone wheel introduced WinError 127 on import
+//     (cuDNN 8.9.7 minor differs from torch's 8.9.x bundle and ctranslate2 4.4.0's
+//     resolved exports — see docs/technical/pinokio-lyrics-align-windows-handover.md).
+//     We also `pip uninstall -y nvidia-cudnn-cu12` to clean up envs that picked up
+//     the wheel from a prior install run.
 //   * MarkupSafe 3 + Pillow 12 break Gradio 4.x — re-pin after any torch reinstall.
 //   * Speechbrain LazyModule (transitive via whisperx→pyannote-audio) crashes on
 //     attribute probes when k2 is missing; app.py pre-stubs `k2` in sys.modules.
@@ -38,10 +43,12 @@ module.exports = {
           "python -m pip install --force-reinstall --no-deps \"numpy>=1.26.0,<2.0\"",
           "python -m pip install \"markupsafe>=2.0,<3\" \"pillow>=10,<11\"",
           "python -m pip install \"whisperx==3.3.0\" \"faster-whisper==1.1.0\" \"ctranslate2==4.4.0\"",
-          // Belt-and-braces: pin cuDNN 8.9.7 wheel (matches ctranslate2 4.4.0). Without
-          // a version constraint pip pulls cuDNN 9 which uses different DLL names
-          // (cudnn_ops64_9.dll) and does NOT satisfy ctranslate2 4.4's cuDNN 8 lookups.
-          "python -m pip install \"nvidia-cudnn-cu12==8.9.7.29\"",
+          // Remove any standalone cuDNN wheel left over from a prior install (cuDNN 9
+          // from unversioned `nvidia-cudnn-cu12`, or cuDNN 8.9.7 from a previous pin).
+          // Both classes broke imports / GPU usage on Pinokio venvs; torch's bundled
+          // cuDNN 8.9.x in torch\lib is what ctranslate2 4.4.0 resolves against.
+          // `pip uninstall -y` is a no-op (exit 0) when the wheel isn't installed.
+          "python -m pip uninstall -y nvidia-cudnn-cu12",
           "python scripts/windows_provision_cudnn_next_to_ctranslate2.py",
         ],
       },
