@@ -1,5 +1,7 @@
 // Pinokio install: avoid script.start "torch.js" (can appear hung with no terminal output
-// while resolving Python / downloading multi‑GB wheels). Match README: venv 3.11 + PyTorch cu124, then project deps.
+// while resolving Python / downloading multi‑GB wheels).
+// Windows + Python 3.11 (Pinokio venv): use the repo's pinned CUDA 12.1 lyrics stack —
+// torch 2.2.2+cu121, WhisperX 3.3.0, ctranslate2 4.4.0 — matching DLL expectations for GPU Align lyrics.
 module.exports = {
   run: [
     {
@@ -11,16 +13,17 @@ module.exports = {
           // Some Pinokio-created venvs have no pip; bootstrap before any pip use.
           "python -m ensurepip --upgrade",
           "python -m pip install -U pip",
-          "python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124",
+          // Windows lyrics GPU stack (must stay ahead of generic torch>= from requirements / -e .)
+          "python -m pip install torch==2.2.2+cu121 torchvision==0.17.2+cu121 torchaudio==2.2.2+cu121 --index-url https://download.pytorch.org/whl/cu121",
           "python -m pip install -r requirements.txt",
           "python -m pip install -e .",
-          // README "full analysis + lyrics" optional extra (Demucs, WhisperX, …)
           'python -m pip install -e ".[all]"',
-          // Align with PyTorch cu124: ctranslate2>=4.5 uses cuDNN9-style DLLs; older 4.4.x
-          // looks for cudnn_ops_infer64_8.dll and can fail after Silero VAD (Windows).
-          'python -m pip install -U "ctranslate2>=4.5.0,<5"',
-          // Optional: NVIDIA cuDNN wheel into site-packages (helps some Windows ctranslate2 DLL paths).
+          // Ensure cu121 trio wins if any dependency pulled a different torch build.
+          "python -m pip install --force-reinstall torch==2.2.2+cu121 torchvision==0.17.2+cu121 torchaudio==2.2.2+cu121 --index-url https://download.pytorch.org/whl/cu121",
+          "python -m pip install \"whisperx==3.3.0\" \"faster-whisper==1.1.0\" \"ctranslate2==4.4.0\"",
+          // Optional: extra cuDNN DLLs in site-packages; script copies next to ctranslate2 for LoadLibrary.
           "python -m pip install nvidia-cudnn-cu12",
+          "python scripts/windows_provision_cudnn_next_to_ctranslate2.py",
         ],
       },
     },
@@ -28,7 +31,7 @@ module.exports = {
       method: "notify",
       params: {
         html:
-          "Python deps are installed (including <b>Demucs + WhisperX</b>). Pinokio does <b>not</b> auto-launch the server &mdash; click <b>Start</b> in the sidebar. You need <code>ffmpeg</code> on your <code>PATH</code> for video encode; see README if Start fails.",
+          "Python deps are installed (including <b>Demucs + WhisperX</b> on the <b>cu121</b> stack). Pinokio does <b>not</b> auto-launch the server &mdash; click <b>Start</b> in the sidebar. You need <code>ffmpeg</code> on your <code>PATH</code> for video encode; see README. Align lyrics may use GPU if you clear <code>GLITCHFRAME_WHISPERX_DEVICE=cpu</code> from <code>start.js</code> or set <code>cuda</code> in <code>.env</code>.",
       },
     },
   ],

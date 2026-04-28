@@ -1991,17 +1991,33 @@ def _log_runtime_python_and_optional_deps() -> None:
             import ctranslate2
 
             cv = str(getattr(ctranslate2, "__version__", "")).strip() or "unknown"
-            LOGGER.info("ctranslate2 %s — for Align lyrics on Windows use >=4.5 with PyTorch cu124", cv)
+            LOGGER.info("ctranslate2 %s", cv)
             if sys.platform == "win32" and cv != "unknown":
                 try:
                     parts = cv.split(".")
                     major, minor = int(parts[0]), int(parts[1]) if len(parts) > 1 else 0
                 except (ValueError, IndexError):
                     major, minor = 0, 0
-                if major < 4 or (major == 4 and minor < 5):
+                py_lt_313 = sys.version_info < (3, 13)
+                # Track A (README / pyproject): Win + py3.11–3.12 pins ctranslate2 4.4.x + torch cu121.
+                # Track B: Win + py3.13 uses ctranslate2>=4.5 + cu124 — do not tell Track A users to "upgrade".
+                if py_lt_313 and major == 4 and minor == 4:
+                    LOGGER.info(
+                        "ctranslate2 %s matches the Windows pinned lyrics stack (WhisperX 3.3.0 / cu121). "
+                        "If Align lyrics still fails with cudnn DLL errors, your Pinokio env differs from "
+                        "a working local venv — run `pip freeze` in both and compare; see README troubleshooting.",
+                        cv,
+                    )
+                elif not py_lt_313 and (major < 4 or (major == 4 and minor < 5)):
                     LOGGER.warning(
-                        "ctranslate2 is below 4.5 (have %s) — upgrade: %s -m pip install -U "
-                        '"ctranslate2>=4.5.0,<5" (or update Glitchframe and use Pinokio Install).',
+                        "ctranslate2 %s — for Python 3.13+ on Windows use >=4.5 with PyTorch cu124: "
+                        '%s -m pip install -U "ctranslate2>=4.5.0,<5"',
+                        cv,
+                        sys.executable,
+                    )
+                elif py_lt_313 and (major < 4 or (major == 4 and minor < 4)):
+                    LOGGER.warning(
+                        "ctranslate2 %s is unusually old — reinstall extras: %s -m pip install -e \".[all]\"",
                         cv,
                         sys.executable,
                     )

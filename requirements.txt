@@ -1,4 +1,6 @@
-# Glitchframe — install PyTorch with CUDA 12.x from PyTorch index, then the rest:
+# Glitchframe — install PyTorch from *one* official CUDA wheel index, then the rest.
+#   Windows + Python 3.11/3.12 (stable Align lyrics / WhisperX stack): see README §2 — cu121 + pinned extras.
+#   Other setups:
 #   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
 #   pip install -r requirements.txt
 #

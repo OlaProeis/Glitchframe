@@ -176,7 +176,9 @@ When the venv is active, your prompt often starts with `(.venv)`.
 
 ### 7. PyTorch with CUDA (recommended on NVIDIA)
 
-Install **GPU** PyTorch **before** the rest of the project packages:
+For **GPU “Align lyrics”** on **Python 3.11 or 3.12**, prefer the **cu121** pinned stack from the [README](../../README.md) (Install §2 — `torch==2.2.2+cu121`, WhisperX **3.3.0**, ctranslate2 **4.4.0**). **Python 3.13** and the **cu124** path are also described there.
+
+Install **GPU** PyTorch **before** the rest of the project packages (generic **cu124** one-liner if you are not using the **cu121** lyrics stack):
 
 ```powershell
 python -m pip install --upgrade pip

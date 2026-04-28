@@ -90,9 +90,25 @@ It should print `True`.
 
 ---
 
-## Step 5 — Reinstall PyTorch (CUDA 12.4 wheels) as a matched set
+## Step 5 — Reinstall PyTorch as a matched set (pick **one** track)
 
-This avoids mixed cuDNN / partial upgrades. Use the **same** CUDA index you used when you first installed (here: **cu124**; if you use **cu121**, replace the URL in both uninstall/reinstall steps with `https://download.pytorch.org/whl/cu121`).
+This avoids mixed cuDNN / partial upgrades.
+
+### Track A — Windows, Python 3.11 or 3.12 (pinned “Align lyrics” GPU stack)
+
+Use **CUDA 12.1** wheels and the versions in `pyproject.toml` **all** / **lyrics** extras (**torch 2.2.2+cu121**, **WhisperX 3.3.0**, **ctranslate2 4.4.0**, **faster-whisper 1.1.0**):
+
+```powershell
+python -m pip install --upgrade pip
+python -m pip uninstall -y torch torchvision torchaudio
+python -m pip install torch==2.2.2+cu121 torchvision==0.17.2+cu121 torchaudio==2.2.2+cu121 --index-url https://download.pytorch.org/whl/cu121
+```
+
+Then reinstall extras (Step 6): `python -m pip install -e ".[all]"` so markers apply. Optionally: `pip install nvidia-cudnn-cu12` then `python scripts/windows_provision_cudnn_next_to_ctranslate2.py`.
+
+### Track B — Windows (Python 3.13+), Linux, macOS, or any install using **cu124**
+
+Use the **CUDA 12.4** index (replace **cu124** with **cu121** in both uninstall/install commands **only** if you deliberately standardized on Track A everywhere):
 
 ```powershell
 python -m pip install --upgrade pip
@@ -159,12 +175,13 @@ You may still see a **PyTorch warning** about `weights_only=False` and pickle se
 
 ### B) `Could not locate` / `Could not load library` `cudnn_ops_infer64_8.dll` (or error `1920`) — including **after** Silero VAD runs
 
-1. If you still have **old** `ctranslate2` **4.4.x** (looks for **cuDNN8**-named DLLs) next to **PyTorch 2.5+ / cu124** (often **cuDNN9**-style names in `torch\lib`), upgrade:  
-   `python -m pip install -U "ctranslate2>=4.5.0,<5"`, then `python -m pip install -e ".[all]"` (or the extra you use). **Do not** install `4.4.0` for new Glitchframe/WhisperX 3.8+ stacks — `pyproject.toml` now enforces `ctranslate2>=4.5.0` on Windows for the lyrics extras.
-2. Repeat **Step 5** exactly (uninstall all three, reinstall all three from the **same** index), then the command in (1) again.
-3. The app also registers `torch\lib` for DLL search on Windows before loading WhisperX (`pipeline/win_cuda_path.py`).
+1. **If you use Track A (Windows, Python 3.11/3.12, cu121 + WhisperX 3.3.0):** keep **ctranslate2==4.4.0** and the PyTorch **2.2.2+cu121** trio — **do not** upgrade ctranslate2 to 4.5+ unless you also move to **cu124** and newer WhisperX (see `pyproject.toml` or README §2 Track B). Run `python scripts/windows_provision_cudnn_next_to_ctranslate2.py` after `pip install nvidia-cudnn-cu12` if DLL resolution still fails.
+2. **If you use Track B (cu124 + Python 3.13 or Linux/macOS):** a mismatched **4.4.x** ctranslate2 next to **PyTorch cu124** can cause this — upgrade:  
+   `python -m pip install -U "ctranslate2>=4.5.0,<5"`, then `python -m pip install -e ".[all]"` (or the extra you use).
+3. Repeat **Step 5** for your chosen **track** (uninstall all three, reinstall all three from the **same** index), then reinstall extras.
+4. The app also registers `torch\lib` for DLL search on Windows before loading WhisperX (`pipeline/win_cuda_path.py`).
 
-4. Last resort: see the **Troubleshooting** section in the repo **README.md** (optional `nvidia-cudnn-cu12`, PATH, or manual cuDNN copy).
+5. Last resort: see the **Troubleshooting** section in the repo **README.md** (optional `nvidia-cudnn-cu12`, PATH, or manual cuDNN copy from NVIDIA).
 
 ### C) CUDA disappeared after `pip install whisperx`
 

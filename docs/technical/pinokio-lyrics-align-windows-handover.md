@@ -112,3 +112,130 @@ Run **Glitchframe** from **Pinokio** (`install.js` / `start.js` / …) on **Wind
 - **Fix that actually stops the churn:** ``pipeline/lyrics_aligner.py`` **``_pick_device``** defaults **CPU** on ``win32`` whenever ``GLITCHFRAME_WHISPERX_DEVICE`` is unset, so Align lyrics works **without** relying on Pinokio ``start.js`` (old clones / ``Glitchframe2.git`` / missing env). ``GLITCHFRAME_WHISPERX_DEVICE=cuda`` opts into GPU. Pinokio **`start.js`** still sets the env for documentation parity.
 
 *Created for session handover; update only when the investigation changes materially.*
+
+---
+
+## Runbook: capture traceback + pip freeze (Pinokio vs local)
+
+Do this once and send the artefacts to whoever is debugging — no guessing about “same” installs.
+
+### A) Full traceback (exact failure line)
+
+Goal: preserve the **entire** exception, not only the last DLL name.
+
+**Option 1 — Pinokio terminal / log pane**
+
+1. Click **Align lyrics** once and wait until it errors (or start the app and reproduce).
+2. In Pinokio, open wherever **stdout/stderr** from `python -m app` appears (often the run panel below **Start**, or **Logs** depending on Pinokio version).
+3. **Scroll up** until you see either `Traceback (most recent call last):` or the **first** line mentioning `whisperx` / `ctranslate2` / `cudnn` / `Error`.
+4. Select from `Traceback` (or first relevant line) through the **final** exception line (`...Error:` / `Could not load library...`).
+5. Copy and paste into a plain text file, or paste directly into the chat/issue.
+
+**Option 2 — Run Glitchframe from a normal terminal (same Pinokio venv)**
+
+This often produces easier copy/paste than the embedded Pinokio UI.
+
+1. Find the Pinokio project folder — usually under something like:
+   `C:\pinokio\api\<YourGitFolderName>`  
+   Inside it you should see an `env` folder (the Pinokio venv) plus the repo files.
+2. Open **PowerShell** (Win+X → Windows Terminal / PowerShell).
+3. `cd` to that folder, e.g.  
+   `cd C:\pinokio\api\Glitchframe.git`  
+   (replace with **your** path; GitHub ZIP clones may differ.)
+4. Activate the venv:
+   ```powershell
+   .\env\Scripts\Activate.ps1
+   ```
+5. Run the app and reproduce:
+   ```powershell
+   python -m app
+   ```
+6. In the browser, trigger **Align lyrics** until it fails.
+7. In that same terminal window, select **all traceback output**, copy it.
+
+Include **20–40 lines minimum** ending with `Error:` or DLL message. If Windows shows **`Error code 1920`**, include that line too.
+
+### B) `pip freeze` from the Pinokio `env`
+
+Use the **same** `python.exe` that Pinokio uses for Install/Start (`env`), not global Python.
+
+1. Open **PowerShell**.
+2. `cd` to the Pinokio Glitchframe project root (same folder as `env\`).
+3. Run **exactly** (note: `\` path on Windows):
+
+   ```powershell
+   .\env\Scripts\python.exe -c "import sys; print(sys.executable)"
+   ```
+
+   Keep that printed path visible — confirm it ends with `...\env\Scripts\python.exe`.
+
+4. Write the full freeze to a text file:
+
+   ```powershell
+   .\env\Scripts\pip.exe freeze > $HOME\Desktop\pinokio-glitchframe-freeze.txt
+   ```
+
+   (Change `$HOME\Desktop` to any folder you prefer, e.g. `G:\TEMP\`.)
+
+5. Open `pinokio-glitchframe-freeze.txt` — it should list **hundreds** of lines (`torch==`, `ctranslate2==`, etc.). Attach that file or paste **all** lines (not a screenshot).
+
+### C) `pip freeze` from local (working or broken) `.venv`
+
+1. Open **PowerShell**.
+2. `cd` into your Git clone directory (e.g. `G:\DEV\MusicVids`).
+3. Activate your local venv:
+
+   ```powershell
+   .\.venv\Scripts\Activate.ps1
+   ```
+
+4. Confirm interpreter:
+
+   ```powershell
+   python -c "import sys; print(sys.executable)"
+   ```
+
+   Expect `...\MusicVids\.venv\Scripts\python.exe` (not `Program Files\Python`).
+
+5. Write freeze:
+
+   ```powershell
+   pip freeze > $HOME\Desktop\local-glitchframe-freeze.txt
+   ```
+
+### D) Minimal “diff-focused” excerpt (optional but helpful)
+
+If full freezes are huge, grep these names in **both** files so we see versions side by side:
+
+In **PowerShell** (after each freeze exists, or paste into grep):
+
+Filters that matter most for Align lyrics/WINDOWS DLL issues:
+
+- `torch`
+- `torchvision`
+- `torchaudio`
+- `ctranslate2`
+- `faster-whisper`
+- `whisperx`
+- `cuda` wheel packages (anything `nvidia-`)
+
+Manual check: search inside each freeze file for lines starting with:
+
+`torch==`, `ctranslate2==`, `whisperx==`, `faster-whisper==`, `cuda==` (there may be no bare `cuda`).
+
+### E) Checklist — what to send
+
+| Item | Done? |
+|------|--------|
+| Full traceback text (multi-line), not only the cudnn DLL filename | □ |
+| `pinokio-glitchframe-freeze.txt` from `env\Scripts\pip.exe freeze` | □ |
+| `local-glitchframe-freeze.txt` from `.venv` `pip freeze` | □ |
+| Optional: Pinokio’s `sys.executable` line from step B3 | □ |
+
+With (1)+(2)+(3), the next step is **line-by-line** version comparison — not another blind pin bump.
+
+---
+
+### 2026 — Pinned Windows (3.11/3.12) stack in-repo
+
+`pyproject.toml` optional extras (`all` / `lyrics` / `analysis`) now define **Track A**: **torch 2.2.2+cu121**, **whisperx 3.3.0**, **faster-whisper 1.1.0**, **ctranslate2 4.4.0** (PEP 508: Windows + `python_version < "3.13"`). **Python 3.13** on Windows uses **Track B** (cu124 + `ctranslate2>=4.5`) because WhisperX 3.3.0 does not support 3.13. Pinokio `install.js` installs Track A explicitly; `scripts/windows_provision_cudnn_next_to_ctranslate2.py` copies CUDNN DLLs next to `ctranslate2` after `nvidia-cudnn-cu12`.

@@ -16,55 +16,53 @@
 
 ## Current Task
 
-### Task Master #55 — Implement scanline_tear renderer
+### Lyrics alignment: automatic CPU fallback when WhisperX / CTranslate2 GPU path fails
 
-- **ID:** 55
-- **Status:** pending (set to **in-progress** when you start)
-- **Priority:** medium
-- **Complexity:** 7 (recommendedSubtasks: 2)
-- **Dependencies:** #43 (per Task Master graph)
+**Goal.** When **Align lyrics** selects **GPU** (CUDA) for WhisperX (faster-whisper / CTranslate2) but the process hits a **native load or runtime failure** typical of Windows (e.g. `cudnn_ops_infer64_8.dll`, error 1920, similar CTranslate2/cuDNN messages), **retry the same alignment pipeline once on CPU** so the user gets a result without manual env edits. Do **not** change global CUDA visibility for the rest of the app (Demucs, SDXL, AnimateDiff, compositor must keep using the GPU as today).
 
-**Description.** Create `pipeline/scanline_tear.py` for horizontal row-offset distortion driven by active `SCANLINE_TEAR` clips.
+**Background.** See `docs/technical/pinokio-lyrics-align-windows-handover.md` for the investigation notes (PyTorch cu124 vs CTranslate2 cuDNN naming, Pinokio vs repo install). Today `_pick_device` may default or pin devices via `GLITCHFRAME_WHISPERX_DEVICE`; this task adds **recovery** when GPU was chosen or available but **fails mid-alignment**.
 
-**Implementation notes (from Task Master).**
+**Requirements (implementation outline; you implement in a follow-up session).**
 
-- API shape: `apply_scanline_tear(frame: np.ndarray, t: float, clips: list[EffectClip], song_hash: str) -> np.ndarray`
-- Find active `SCANLINE_TEAR` clips at `t`; early-return input frame if none (no in-place mutation — compositor frame-queue invariant).
-- Per-clip settings: `intensity` (0..1, max horizontal offset as fraction of frame width), `band_count` (int, number of torn horizontal bands; default in 3–6 range when unset), `band_height_px` (optional), `wrap_mode` (`wrap` | `clamp` | `black`, default `wrap`).
-- Per-frame seed: `hash(song_hash + clip.id + round(t*1000))` — pick band y-positions and per-band `dx` from a deterministic RNG; apply horizontal shift per band (e.g. `np.roll` along axis=1 per band).
-- Overlapping clips: **later clips stack on earlier** (accumulate).
-- Bound shifts to **± intensity × W × 0.25** so tears never exceed a quarter-frame displacement.
-- Reference: deterministic seeding like `pipeline/logo_rim_beams.py`; ndarray contract like `pipeline/chromatic_aberration.py`.
+1. **Scope the catch** to alignment only: wrap the WhisperX work in `pipeline/lyrics_aligner.py` (the path that calls `_run_whisperx_forced` / `load_model` / `transcribe` / `align`), not a global `torch` or `CUDA_VISIBLE_DEVICES` change for the whole process.
+2. **Retry once** on CPU with the correct **compute type** for CPU (e.g. match existing `_default_compute_type("cpu")` / `int8` behavior already in the module). Log at **WARNING** with a short reason so support can see "GPU align failed, retried CPU".
+3. **Detect failures** in a way that is specific enough not to mask unrelated bugs: prefer checking exception message substrings for cudnn / ctranslate / `LoadLibrary` / `dll` / `1920` (case-insensitive), or a small allowlist of exception types, rather than a bare `except Exception` that swallows everything. If uncertain, log the original exception before retry.
+4. **Do not** call `torch.set_default_tensor_type`, do not clear `CUDA_VISIBLE_DEVICES` for the whole process, and do not move background generation or other stages to CPU as part of this change.
+5. **Tests:** Add or extend `tests/test_lyrics_aligner.py` (or a focused test) with **mocked** `_run_whisperx_forced` raising a cudnn-like error on first call and succeeding on second call with `device="cpu"`, so the retry path is covered without downloading models.
+6. **Docs:** Touch `docs/technical/lyrics-aligner.md` (short "GPU failure / CPU retry" paragraph) and `docs/index.md` only if you add a new doc file (prefer updating existing lyrics-aligner doc). Optional one-line in `.env.example` / README if a new env var is introduced (prefer **no** new env var if behavior is fully automatic).
 
-**Test strategy (from Task Master).** Frame bit-identical to input when no clip active. With one clip and `intensity > 0`: exactly `band_count` bands shifted horizontally; R/G/B move together (no channel split); dtype/shape preserved. Deterministic for fixed `song_hash` + `clip.id` + `t`. `intensity=0` returns input unchanged.
+**Non-goals.** Changing Task Master #55 (scanline_tear) or other effects work unless this task is done and you pick up scanline separately.
 
 ## Key Files
 
-- `pipeline/scanline_tear.py` — **create** (core API and NumPy implementation)
-- `pipeline/compositor.py` — wire into `_apply_frame_effects` after chromatic aberration, before colour invert; remove the `SCANLINE_TEAR` placeholder warning once the renderer exists
-- `pipeline/effects_timeline.py` — `EffectKind.SCANLINE_TEAR`, `EFFECT_SETTINGS_KEYS` (already defined)
-- `pipeline/chromatic_aberration.py` — patterns for active-clip sampling, cap/bounds, non-mutation, tests
-- `tests/test_scanline_tear.py` — **add** per test strategy
-- `docs/technical/scanline-tear-renderer.md` — **create** (match `chromatic-aberration-renderer.md` / `screen-shake-renderer.md` style)
-- `docs/technical/effects-timeline-compositor.md`, `docs/technical/effects-timeline-renderers.md`, `docs/technical/effects-timeline-test-suite.md`, `docs/technical/effects-timeline-editor.md` — drop placeholder-only wording for this kind once implemented
-- `docs/index.md` — one bullet for the new renderer doc
+- `pipeline/lyrics_aligner.py` — `_pick_device`, `_run_whisperx_forced`, `align_lyrics` (primary integration point for try GPU → except → retry CPU)
+- `pipeline/gpu_memory.py` — ensure VRAM release / `move_to_cpu` patterns stay consistent across retry so GPU memory is not leaked between attempts
+- `docs/technical/lyrics-aligner.md` — user-facing behavior
+- `docs/technical/pinokio-lyrics-align-windows-handover.md` — context only; update only if the implementation changes the story materially
 
 ## Context
 
-- Post-stack order: zoom → shake → chromatic → **scanline** → invert — keep consistent with `docs/technical/effects-timeline-compositor.md`.
-- `_FrameEffectsContext` already carries `scanline_clips`; compositor currently logs a warning when those clips exist.
+- WhisperX uses **faster-whisper / CTranslate2** on GPU for the transcribe model; wav2vec align model uses `device=` separately. Confirm both legs behave if only the first leg retries on CPU (may need to retry the full `_run_whisperx_forced` or split carefully so you do not half-run GPU then CPU inconsistently).
+- Linux/macOS users with working GPU should see **no** extra CPU path unless the GPU path actually raises.
 
 ## Verification
 
 - `.\.venv\Scripts\python.exe -m compileall <repo-root> -q`
 - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v`
+- Manual smoke (optional): on Windows with a reproducing env, Align lyrics should complete after one WARNING log when GPU Whisper fails.
 
 ## Task Master
 
-- **Current:** #55. Use `get_task --id=55` / `next_task` MCP tools for the live JSON.
+- Add or link a Task Master item for this work if the project tracks it; there may be no numeric ID yet.
 
 ## Checklist (this handover)
 
-- [ ] Task 55: set **in-progress** / **done** in Task Master as appropriate
-- [ ] Renderer + compositor wiring + tests + docs as per spec
+- [ ] GPU alignment failure triggers **one** CPU retry with clear logging
+- [ ] Background / SDXL / Demucs / render paths unchanged (no global CUDA disable)
+- [ ] Tests cover retry behavior with mocks
+- [ ] `lyrics-aligner.md` updated
 - [ ] Run compileall + unittest
+
+## Other open work (not in scope for this handover)
+
+- Task Master **#55** (scanline_tear renderer) remains in the project backlog; see Task Master for details.

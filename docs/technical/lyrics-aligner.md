@@ -4,6 +4,10 @@ Feature: align user-pasted lyrics to the demucs `vocals.wav` using WhisperX
 word-level timestamps, and persist `cache/<hash>/lyrics.aligned.json` for the
 kinetic typography layer to consume.
 
+## Dependencies (platform)
+
+On **Windows** with **Python 3.11 or 3.12**, the `lyrics` / `all` / `analysis` extras pin **WhisperX 3.3.0**, **faster-whisper 1.1.0**, **ctranslate2 4.4.0**, and **PyTorch 2.2.2+cu121** (CUDA 12.1) so faster-whisper / CTranslate2 and PyTorch agree on cuDNN DLL names. **Python 3.13** on Windows and **Linux/macOS** use the looser pins in `pyproject.toml` (typically **cu124** and **ctranslate2≥4.5**). Runtime code still tolerates older WhisperX builds that omit `vad_method` / `asr_options`.
+
 ## Flow
 
 The aligner uses **forced alignment against the user's pasted lyrics** — the

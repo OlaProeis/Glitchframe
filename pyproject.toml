@@ -22,28 +22,48 @@ dependencies = [
 # --- "Cargo-style" one-shot for this repo: core app + vocal stem + lyrics align (no BeatNet/madmom). ---
 #   .venv\Scripts\python.exe -m pip install -e ".[all]"
 # Same dependency set as `analysis` (kept for backwards compatibility).
+#
+# Windows + Python 3.11–3.12: pyproject pins a coherent GPU-friendly lyrics stack —
+# PyTorch 2.2.2+cu121, WhisperX 3.3.0 (faster-whisper 1.1.0), ctranslate2 4.4.0 — so CTranslate2
+# and PyTorch ship matching cuDNN-era DLL names (see README / windows-venv-recovery-guide).
+# Windows + Python ≥3.13: WhisperX 3.3.0 does not support 3.13; use the newer cu124 + ctranslate2≥4.5 path.
+# Linux/macOS: unchanged loose pins.
 all = [
     "demucs>=4.0.0",
-    "torchaudio>=2.0.0",
-    "whisperx>=3.1.0",
     "silero-vad>=5.1",
-    # Windows: ctranslate2<4.5 looks for cuDNN *8* DLL names; PyTorch 2.5+ cu124 wheels ship
-    # cuDNN 9–style names — mismatch => cudnn_ops_infer64_8.dll load errors. WhisperX 3.8+ requires
-    # ctranslate2>=4.5.0. Do not pin 4.4.x on Windows (older whisperX#899 workaround; obsolete here).
-    "ctranslate2>=4.5.0; platform_system == 'Windows'",
+    "whisperx>=3.1.0; platform_system != 'Windows'",
+    "torchaudio>=2.0.0; platform_system != 'Windows'",
+    "whisperx>=3.1.0; platform_system == 'Windows' and python_version >= '3.13'",
+    "torchaudio>=2.0.0; platform_system == 'Windows' and python_version >= '3.13'",
+    "ctranslate2>=4.5.0,<5; platform_system == 'Windows' and python_version >= '3.13'",
+    "torch==2.2.2+cu121; platform_system == 'Windows' and python_version < '3.13'",
+    "torchvision==0.17.2+cu121; platform_system == 'Windows' and python_version < '3.13'",
+    "torchaudio==2.2.2+cu121; platform_system == 'Windows' and python_version < '3.13'",
+    "whisperx==3.3.0; platform_system == 'Windows' and python_version < '3.13'",
+    "faster-whisper==1.1.0; platform_system == 'Windows' and python_version < '3.13'",
+    "ctranslate2==4.4.0; platform_system == 'Windows' and python_version < '3.13'",
 ]
 # demucs + torchaudio: vocal stem only (Analyze).
 vocals = [
     "demucs>=4.0.0",
-    "torchaudio>=2.0.0",
+    "torchaudio>=2.0.0; platform_system != 'Windows'",
+    "torchaudio>=2.0.0; platform_system == 'Windows' and python_version >= '3.13'",
+    "torchaudio==2.2.2+cu121; platform_system == 'Windows' and python_version < '3.13'",
 ]
 # WhisperX alignment ("Align lyrics") only. silero-vad tightens whisper's
 # VAD on vocal stems; it's tiny (~1 MB ONNX, no GPU) and the aligner falls
 # back cleanly when absent, so including it here is a quality win.
 lyrics = [
-    "whisperx>=3.1.0",
     "silero-vad>=5.1",
-    "ctranslate2>=4.5.0; platform_system == 'Windows'",
+    "whisperx>=3.1.0; platform_system != 'Windows'",
+    "whisperx>=3.1.0; platform_system == 'Windows' and python_version >= '3.13'",
+    "ctranslate2>=4.5.0,<5; platform_system == 'Windows' and python_version >= '3.13'",
+    "torch==2.2.2+cu121; platform_system == 'Windows' and python_version < '3.13'",
+    "torchvision==0.17.2+cu121; platform_system == 'Windows' and python_version < '3.13'",
+    "torchaudio==2.2.2+cu121; platform_system == 'Windows' and python_version < '3.13'",
+    "whisperx==3.3.0; platform_system == 'Windows' and python_version < '3.13'",
+    "faster-whisper==1.1.0; platform_system == 'Windows' and python_version < '3.13'",
+    "ctranslate2==4.4.0; platform_system == 'Windows' and python_version < '3.13'",
 ]
 # Optional beat detectors (BeatNet → madmom). madmom often needs Cython / wheels and may not build on every Python (e.g. 3.13). Analyzer falls back to librosa without these.
 beats = [
@@ -53,10 +73,18 @@ beats = [
 # Full ML stack for Analyze + Align lyrics (same as `all`).
 analysis = [
     "demucs>=4.0.0",
-    "torchaudio>=2.0.0",
-    "whisperx>=3.1.0",
     "silero-vad>=5.1",
-    "ctranslate2>=4.5.0; platform_system == 'Windows'",
+    "whisperx>=3.1.0; platform_system != 'Windows'",
+    "torchaudio>=2.0.0; platform_system != 'Windows'",
+    "whisperx>=3.1.0; platform_system == 'Windows' and python_version >= '3.13'",
+    "torchaudio>=2.0.0; platform_system == 'Windows' and python_version >= '3.13'",
+    "ctranslate2>=4.5.0,<5; platform_system == 'Windows' and python_version >= '3.13'",
+    "torch==2.2.2+cu121; platform_system == 'Windows' and python_version < '3.13'",
+    "torchvision==0.17.2+cu121; platform_system == 'Windows' and python_version < '3.13'",
+    "torchaudio==2.2.2+cu121; platform_system == 'Windows' and python_version < '3.13'",
+    "whisperx==3.3.0; platform_system == 'Windows' and python_version < '3.13'",
+    "faster-whisper==1.1.0; platform_system == 'Windows' and python_version < '3.13'",
+    "ctranslate2==4.4.0; platform_system == 'Windows' and python_version < '3.13'",
 ]
 # Tests / tooling (not required to run the app).
 dev = [
