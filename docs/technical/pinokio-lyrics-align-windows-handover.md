@@ -393,14 +393,62 @@ ingest) crashed first. Anyone debugging only the **alignment** path missed the
 **ingest** crash above it. Future investigations: scroll above the alignment
 log and scan for `ImportError: Lazy import of LazyModule(...)`.
 
+### Bug E — Newer `diffusers` references `torch.xpu` at import time
+
+After Bugs A–D were fixed, lyrics aligned successfully but **rendering**
+failed with:
+
+```
+RuntimeError: AnimateDiff SDXL requires a recent diffusers install with
+AnimateDiffSDXLPipeline and DDIMScheduler ... Import failed: module 'torch'
+has no attribute 'xpu'
+```
+
+**Mechanism.** PyTorch added the `torch.xpu` submodule (Intel discrete GPU
+support) in **2.3.0**. Track A pins `torch==2.2.2+cu121` so cuDNN-era DLL
+names match what ctranslate2 4.4.0 expects — there's no `torch.xpu` there.
+Newer `diffusers` releases (≈ 0.30+) reference `torch.xpu` at import time
+without guarding the access with `hasattr(torch, "xpu")`. So the very first
+`from diffusers import AnimateDiffSDXLPipeline` in `_import_animatediff_sdxl`
+explodes before any model code runs. Same upstream pattern as the
+speechbrain bug — **library code probes a possibly-absent attribute** —
+just on a different module. The HuggingFace transformers project hit the
+same issue ([transformers#37838][hf-37838]) and fixed it with the
+`hasattr` guard; diffusers hasn't (yet).
+
+[hf-37838]: https://github.com/huggingface/transformers/issues/37838
+
+**Fix.** `pipeline/_torch_xpu_compat.py` ships `patch_torch_xpu()` which
+installs a tiny `torch.xpu` stub (a `ModuleType` with `is_available()` →
+`False`, `device_count()` → `0`, plus `is_initialized` / `is_bf16_supported`
+/ `synchronize` / `empty_cache` / nested `amp` so any reasonable probe
+returns the "no XPU" answer). The stub is also registered in
+`sys.modules["torch.xpu"]` so `import torch.xpu` works. Newer torch
+(Track B, ≥ 2.4) has the real submodule already — `patch_torch_xpu` checks
+`getattr(torch, "xpu", None)` first and never overwrites it.
+
+The patch runs in two places (idempotent — safe to call twice):
+
+* `app.py` `_log_runtime_python_and_optional_deps()` — right after the
+  diagnostic `import torch` succeeds, so any subsequent diffusers import
+  (model load, gradio worker, anything) finds a `torch.xpu` to probe.
+* `pipeline/background_animatediff._import_animatediff_sdxl()` — belt-and-
+  braces, in case some code path imports diffusers before app startup
+  completes.
+
+Render runs on CUDA exactly as before; the stub only exists so the
+**import-time** XPU probe doesn't crash on Track A.
+
 ### Files changed in this fix
 
 | File | What |
 |------|------|
 | `pipeline/_speechbrain_compat.py` | **NEW** — monkey-patches `LazyModule.ensure_module` so its `inspect.py` guard works on Windows (root-cause fix; cures k2/flair/etc. in one shot) |
-| `app.py` | Calls `patch_speechbrain_lazy_module()` after `import whisperx`; pre-stubs `sys.modules['k2']` as belt-and-braces |
+| `pipeline/_torch_xpu_compat.py` | **NEW** — installs a `torch.xpu` stub when PyTorch < 2.3 lacks it; cures `diffusers` AnimateDiff SDXL import on Track A |
+| `app.py` | Calls `patch_speechbrain_lazy_module()` after `import whisperx`; calls `patch_torch_xpu()` after diagnostic `import torch`; pre-stubs `sys.modules['k2']` as belt-and-braces |
+| `pipeline/background_animatediff.py` | `_import_animatediff_sdxl` calls `patch_torch_xpu()` immediately before `from diffusers import AnimateDiffSDXLPipeline` |
 | `pipeline/lyrics_aligner.py` | `_is_cudnn_class_error` + single CPU retry around `_run_whisperx_forced` |
 | `pyproject.toml` | `numpy>=1.26.0,<2.0` in `[project]` dependencies |
 | `requirements.txt` | `numpy>=1.26.0,<2.0` |
 | `install.js` | Explicit `numpy<2` force-reinstall step + `pip uninstall -y nvidia-cudnn-cu12` (no standalone cuDNN wheel) |
-| `tests/test_pinokio_windows_resilience.py` | Pins all five behaviours (LazyModule patch, k2 stub, NumPy ABI, cuDNN policy, CPU retry) so a future refactor cannot quietly regress |
+| `tests/test_pinokio_windows_resilience.py` | Pins all six behaviours (LazyModule patch, k2 stub, NumPy ABI, cuDNN policy, CPU retry, torch.xpu stub) so a future refactor cannot quietly regress |

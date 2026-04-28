@@ -295,6 +295,19 @@ def _require_cuda() -> str:
 def _import_animatediff_sdxl() -> tuple[Any, Any, Any]:
     try:
         import torch  # type: ignore
+
+        # Track A pins torch 2.2.2 (no torch.xpu); newer diffusers references
+        # torch.xpu at import time without a hasattr() guard. Apply our stub
+        # before the diffusers import so AnimateDiff SDXL can load on Track A.
+        # No-op when torch.xpu already exists (Track B / torch >= 2.3) or the
+        # stub was already installed at startup by _log_runtime_python_and_optional_deps.
+        try:
+            from pipeline._torch_xpu_compat import patch_torch_xpu
+
+            patch_torch_xpu()
+        except Exception:  # noqa: BLE001
+            pass
+
         from diffusers import AnimateDiffSDXLPipeline, DDIMScheduler  # type: ignore
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(

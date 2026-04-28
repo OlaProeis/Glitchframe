@@ -609,6 +609,199 @@ class TestSpeechbrainLazyModulePatch(unittest.TestCase):
         )
 
 
+class TestTorchXpuCompat(unittest.TestCase):
+    """``patch_torch_xpu`` must:
+
+    * Install a ``torch.xpu`` stub when torch is loaded but lacks ``torch.xpu``
+      (Track A: torch 2.2.2 < 2.3, no Intel XPU support).
+    * Be a no-op when torch already has a real ``torch.xpu`` (Track B: torch
+      ≥ 2.3 / 2.4).
+    * Be a no-op when torch isn't loaded yet (returns False, doesn't raise).
+    * Idempotent — second call doesn't replace the existing stub.
+
+    Without this stub, newer ``diffusers`` releases that reference
+    ``torch.xpu`` at import time crash AnimateDiff SDXL pipeline loading
+    with ``AttributeError: module 'torch' has no attribute 'xpu'``.
+    """
+
+    def setUp(self) -> None:
+        # Save & remove any current torch / torch.xpu so each test starts clean.
+        self._saved = {
+            k: sys.modules[k]
+            for k in list(sys.modules)
+            if k == "torch" or k == "torch.xpu"
+        }
+        for k in self._saved:
+            del sys.modules[k]
+
+    def tearDown(self) -> None:
+        # Drop any fakes we registered.
+        for k in ("torch", "torch.xpu"):
+            if k in sys.modules and k not in self._saved:
+                del sys.modules[k]
+        for k, v in self._saved.items():
+            sys.modules[k] = v
+
+    def _install_fake_torch_without_xpu(self) -> ModuleType:
+        torch = ModuleType("torch")
+        torch.__version__ = "2.2.2+cu121"  # type: ignore[attr-defined]
+        # Critically, do NOT set torch.xpu — this simulates Track A.
+        sys.modules["torch"] = torch
+        return torch
+
+    def _install_fake_torch_with_real_xpu(self) -> tuple[ModuleType, ModuleType]:
+        torch = ModuleType("torch")
+        torch.__version__ = "2.4.0+cu124"  # type: ignore[attr-defined]
+        real_xpu = ModuleType("torch.xpu")
+        real_xpu.is_available = lambda: True  # type: ignore[attr-defined]
+        torch.xpu = real_xpu  # type: ignore[attr-defined]
+        sys.modules["torch"] = torch
+        sys.modules["torch.xpu"] = real_xpu
+        return torch, real_xpu
+
+    def test_no_op_when_torch_absent(self) -> None:
+        from pipeline._torch_xpu_compat import patch_torch_xpu
+
+        self.assertNotIn("torch", sys.modules)
+        result = patch_torch_xpu()
+        self.assertFalse(
+            result,
+            "patch_torch_xpu must return False when torch not loaded",
+        )
+
+    def test_installs_stub_when_missing(self) -> None:
+        from pipeline._torch_xpu_compat import _PATCH_MARKER, patch_torch_xpu
+
+        torch = self._install_fake_torch_without_xpu()
+        result = patch_torch_xpu()
+
+        self.assertTrue(result, "Stub install must return True on success")
+        self.assertTrue(hasattr(torch, "xpu"))
+        self.assertFalse(
+            torch.xpu.is_available(),  # type: ignore[attr-defined]
+            "Stub torch.xpu.is_available() must return False so consumer "
+            "code skips the XPU path",
+        )
+        self.assertEqual(torch.xpu.device_count(), 0)  # type: ignore[attr-defined]
+        self.assertTrue(
+            getattr(torch.xpu, _PATCH_MARKER, False),
+            "Stub must carry the patch marker for downstream identification",
+        )
+        self.assertIs(
+            sys.modules.get("torch.xpu"),
+            torch.xpu,  # type: ignore[attr-defined]
+            "Stub must also be registered in sys.modules so 'import "
+            "torch.xpu' works",
+        )
+
+    def test_does_not_clobber_real_xpu(self) -> None:
+        from pipeline._torch_xpu_compat import _PATCH_MARKER, patch_torch_xpu
+
+        torch, real_xpu = self._install_fake_torch_with_real_xpu()
+        result = patch_torch_xpu()
+
+        self.assertTrue(result)
+        self.assertIs(
+            torch.xpu,  # type: ignore[attr-defined]
+            real_xpu,
+            "Real torch.xpu (Track B) must NOT be overwritten by the stub",
+        )
+        self.assertFalse(
+            getattr(real_xpu, _PATCH_MARKER, False),
+            "Real torch.xpu must not carry the stub marker",
+        )
+
+    def test_idempotent(self) -> None:
+        from pipeline._torch_xpu_compat import patch_torch_xpu
+
+        torch = self._install_fake_torch_without_xpu()
+        first_result = patch_torch_xpu()
+        first_xpu = torch.xpu  # type: ignore[attr-defined]
+        second_result = patch_torch_xpu()
+        second_xpu = torch.xpu  # type: ignore[attr-defined]
+
+        self.assertTrue(first_result)
+        self.assertTrue(second_result)
+        self.assertIs(
+            first_xpu,
+            second_xpu,
+            "Second patch call must not replace the stub",
+        )
+
+    def test_stub_exposes_amp_namespace(self) -> None:
+        """diffusers/transformers reach into ``torch.xpu.amp.*`` even when
+        XPU is unused (e.g. ``hasattr(torch.xpu.amp, "autocast")``). A bare
+        ``ModuleType`` with no ``amp`` would AttributeError on attribute
+        access. Confirm the stub provides it."""
+        from pipeline._torch_xpu_compat import patch_torch_xpu
+
+        torch = self._install_fake_torch_without_xpu()
+        patch_torch_xpu()
+        self.assertTrue(hasattr(torch.xpu, "amp"))  # type: ignore[attr-defined]
+
+
+class TestAppPyAppliesTorchXpuPatch(unittest.TestCase):
+    """Static check: ``app.py`` must call ``patch_torch_xpu`` immediately
+    after the diagnostic ``import torch`` so any subsequent diffusers import
+    finds a ``torch.xpu`` to probe."""
+
+    def test_app_py_calls_patch_after_torch_import(self) -> None:
+        text = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
+        torch_import_idx = text.find("import torch\n")
+        patch_idx = text.find("patch_torch_xpu()")
+        self.assertGreater(
+            torch_import_idx,
+            -1,
+            "app.py must keep its diagnostic 'import torch' probe",
+        )
+        self.assertGreater(
+            patch_idx,
+            -1,
+            "app.py must call patch_torch_xpu() at startup",
+        )
+        self.assertGreater(
+            patch_idx,
+            torch_import_idx,
+            "Patch must run AFTER 'import torch' so torch is in sys.modules",
+        )
+
+
+class TestAnimateDiffImportCallsXpuPatch(unittest.TestCase):
+    """Static check: ``background_animatediff._import_animatediff_sdxl``
+    must call ``patch_torch_xpu`` BEFORE the ``from diffusers import
+    AnimateDiffSDXLPipeline, DDIMScheduler`` line. This is the safety net
+    for any code path that imports diffusers before app startup completes."""
+
+    def test_animatediff_calls_xpu_patch_before_diffusers_import(self) -> None:
+        text = (
+            REPO_ROOT / "pipeline" / "background_animatediff.py"
+        ).read_text(encoding="utf-8")
+        # Locate the function body.
+        fn_idx = text.find("def _import_animatediff_sdxl")
+        self.assertGreater(fn_idx, -1, "Function must exist")
+        body = text[fn_idx:]
+        # First occurrence of each must be in the right order:
+        patch_idx = body.find("patch_torch_xpu()")
+        diffusers_idx = body.find("from diffusers import AnimateDiffSDXLPipeline")
+        self.assertGreater(
+            patch_idx,
+            -1,
+            "background_animatediff._import_animatediff_sdxl must call "
+            "patch_torch_xpu() before importing diffusers",
+        )
+        self.assertGreater(
+            diffusers_idx,
+            -1,
+            "diffusers import line must still be present in the function",
+        )
+        self.assertLess(
+            patch_idx,
+            diffusers_idx,
+            "patch_torch_xpu() must be called BEFORE 'from diffusers import "
+            "AnimateDiffSDXLPipeline'",
+        )
+
+
 class TestAppPyAppliesSpeechbrainPatch(unittest.TestCase):
     """Static check: ``app.py`` must call ``patch_speechbrain_lazy_module``
     after the diagnostic ``import whisperx`` (so speechbrain is in sys.modules
