@@ -1,4 +1,9 @@
 module.exports = {
+  // Mirror install.js: declare the "ai" bundle requirement so Pinokio ensures
+  // the system CUDA toolkit + cuDNN are present before launching the app.
+  requires: {
+    bundle: "ai",
+  },
   daemon: true,
   run: [
     {

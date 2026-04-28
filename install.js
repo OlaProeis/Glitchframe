@@ -19,6 +19,15 @@
 //   * Speechbrain LazyModule (transitive via whisperx→pyannote-audio) crashes on
 //     attribute probes when k2 is missing; app.py pre-stubs `k2` in sys.modules.
 module.exports = {
+  // Tell Pinokio this app needs the bundled AI stack (CUDA toolkit + cuDNN in
+  // ~/pinokio/bin). Without this, Pinokio only installs the bundle if some
+  // OTHER app on the system already triggered it, which made fresh-install
+  // reproductions unpredictable. Our cuDNN 8.9.x DLLs still come from
+  // torch\lib for ctranslate2 4.4.0 (the bundle ships cuDNN 9 with different
+  // filenames, so it can't accidentally satisfy our cuDNN 8 lookup).
+  requires: {
+    bundle: "ai",
+  },
   run: [
     {
       method: "shell.run",
