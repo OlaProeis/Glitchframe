@@ -16,6 +16,11 @@ module.exports = {
           "python -m pip install -e .",
           // README "full analysis + lyrics" optional extra (Demucs, WhisperX, …)
           'python -m pip install -e ".[all]"',
+          // Align with PyTorch cu124: ctranslate2>=4.5 uses cuDNN9-style DLLs; older 4.4.x
+          // looks for cudnn_ops_infer64_8.dll and can fail after Silero VAD (Windows).
+          'python -m pip install -U "ctranslate2>=4.5.0,<5"',
+          // Optional: NVIDIA cuDNN wheel into site-packages (helps some Windows ctranslate2 DLL paths).
+          "python -m pip install nvidia-cudnn-cu12",
         ],
       },
     },

@@ -354,6 +354,27 @@ def _default_compute_type(device: str) -> str:
 
 
 def _pick_device(preferred: str | None) -> str:
+    # Pinokio / Windows: set GLITCHFRAME_WHISPERX_DEVICE=cpu to avoid
+    # ctranslate2 GPU + cudnn_ops_infer64_8.dll load failures (slow but works).
+    env_dev = (os.environ.get("GLITCHFRAME_WHISPERX_DEVICE") or "").strip().lower()
+    if env_dev in ("cpu", "cuda"):
+        if env_dev == "cuda":
+            try:
+                import torch  # type: ignore
+
+                if not torch.cuda.is_available():
+                    LOGGER.warning(
+                        "GLITCHFRAME_WHISPERX_DEVICE=cuda but CUDA is unavailable; using cpu"
+                    )
+                    return "cpu"
+            except Exception:  # noqa: BLE001
+                return "cpu"
+            return "cuda"
+        LOGGER.info(
+            "Align lyrics: WhisperX on cpu (GLITCHFRAME_WHISPERX_DEVICE) — slow; "
+            "faster on GPU if cuDNN/ctranslate2 work"
+        )
+        return "cpu"
     if preferred:
         return preferred
     try:
@@ -503,7 +524,9 @@ def _interp_fill(values: list[float | None]) -> None:
 
 def _import_whisperx() -> Any:
     from pipeline.torch_checkpoint_compat import apply_whisperx_torch_load_compat
+    from pipeline.win_cuda_path import ensure_windows_cuda_dll_paths
 
+    ensure_windows_cuda_dll_paths()
     apply_whisperx_torch_load_compat()
     try:
         import whisperx  # type: ignore
@@ -2181,6 +2204,12 @@ def _run_whisperx_forced(
     _vad_m = (os.environ.get("GLITCHFRAME_WHISPERX_VAD_METHOD") or "").strip().lower()
     if _vad_m not in ("pyannote", "silero"):
         _vad_m = ""
+    LOGGER.info(
+        "WhisperX load_model: version=%s, GLITCHFRAME_WHISPERX_VAD_METHOD=%r, effective_vad=%s",
+        getattr(whisperx, "__version__", "unknown"),
+        os.environ.get("GLITCHFRAME_WHISPERX_VAD_METHOD"),
+        _vad_m or "default(whisperx uses pyannote for VAD)",
+    )
     try:
         if _vad_m:
             model = whisperx.load_model(

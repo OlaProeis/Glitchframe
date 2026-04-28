@@ -1950,6 +1950,20 @@ See `docs/technical/visual-style-presets.md` for the full schema and
 def _log_runtime_python_and_optional_deps() -> None:
     """Log which interpreter runs the UI (Windows ``py -m app`` often ignores ``.venv``)."""
     LOGGER.info("Python executable (use this for pip install): %s", sys.executable)
+    # So Pinokio users see versions in the app console without a shell (and so
+    # ctranslate2 can resolve torch\\lib before whisperx/ctranslate2 import).
+    try:
+        from pipeline.win_cuda_path import ensure_windows_cuda_dll_paths
+
+        ensure_windows_cuda_dll_paths()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        import torch
+
+        LOGGER.info("torch %s (CUDA: %s)", torch.__version__, torch.cuda.is_available())
+    except Exception:  # noqa: BLE001
+        pass
     try:
         import demucs  # noqa: F401
         import torchaudio  # noqa: F401
@@ -1973,6 +1987,26 @@ def _log_runtime_python_and_optional_deps() -> None:
         )
     else:
         LOGGER.info("whisperx import OK (lyrics alignment can run)")
+        try:
+            import ctranslate2
+
+            cv = str(getattr(ctranslate2, "__version__", "")).strip() or "unknown"
+            LOGGER.info("ctranslate2 %s — for Align lyrics on Windows use >=4.5 with PyTorch cu124", cv)
+            if sys.platform == "win32" and cv != "unknown":
+                try:
+                    parts = cv.split(".")
+                    major, minor = int(parts[0]), int(parts[1]) if len(parts) > 1 else 0
+                except (ValueError, IndexError):
+                    major, minor = 0, 0
+                if major < 4 or (major == 4 and minor < 5):
+                    LOGGER.warning(
+                        "ctranslate2 is below 4.5 (have %s) — upgrade: %s -m pip install -U "
+                        '"ctranslate2>=4.5.0,<5" (or update Glitchframe and use Pinokio Install).',
+                        cv,
+                        sys.executable,
+                    )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("Could not read ctranslate2 version: %s", exc)
 
 
 def main() -> None:

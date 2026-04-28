@@ -98,4 +98,17 @@ Run **Glitchframe** from **Pinokio** (`install.js` / `start.js` / …) on **Wind
 
 ---
 
+## 2026-04-27 (confirmed in Pinokio)
+
+- **Console** showed ``Performing voice activity detection using Silero...`` then  
+  ``Could not load library cudnn_ops_infer64_8.dll. Error code 1920``. So **``GLITCHFRAME_WHISPERX_VAD_METHOD`` / Silero is working**; the crash is **not** Pyannote VAD. It is the **faster-whisper / CTranslate2** path, which can still look for **cuDNN8**-named DLLs if **ctranslate2 4.4.x** is installed, while **PyTorch cu124** may only ship **cuDNN9**-style names. WhisperX 3.8+ declares ``ctranslate2>=4.5.0``; a Windows pin on **4.4.0** in `pyproject.toml` was therefore wrong and was **replaced** with ``ctranslate2>=4.5.0``; ``install.js`` was updated to run ``pip install -U "ctranslate2>=4.5.0,<5"`` after ``.[all]``. The app also registers ``torch\lib`` (and common layout paths) with ``os.add_dll_directory`` before importing WhisperX (`pipeline/win_cuda_path.py`).
+
+- **If it still fails after 4.5+ and PATH/DLL fixes:** set ``GLITCHFRAME_WHISPERX_DEVICE=cpu`` (Pinokio: uncomment in ``start.js``) so WhisperX ASR/align runs on **CPU** only — slow, but avoids **ctranslate2 GPU** cuDNN load on broken Windows stacks. ``install.js`` also runs ``pip install nvidia-cudnn-cu12`` to place extra cuDNN DLLs under ``site-packages`` for some setups.
+
+### Deeper read (why it’s so brittle on Windows)
+
+- The log … **Silero …** then **`cudnn_ops_infer64_8.dll`** is **misleading**: Silero in WhisperX uses **`onnx=False`** (PyTorch JIT) and stays **CPU** for inference; Snakers docs say the model is meant for CPU. **Silero itself is not requesting that cuDNN DLL.**
+- The fatal load is almost certainly **CTranslate2** (inside **faster-whisper**) on the **first CUDA op** for the Whisper **encoder** — it fires **after** the Silero log lines during ``transcribe``, when the loader can’t satisfy **cuDNN** next to PyTorch **cu124** (e.g. **cuDNN 9**-style names shipped with torch vs **`cudnn_ops_infer64_8.dll`** expectations, **`add_dll_directory` / PATH** ordering, or a **missing dependency DLL** pulled in transitively). The printed **error code 1920** is **`The file cannot be accessed by the system`** in the usual Win32 wording — overlap with ACLs, virtualization, antivirus locks, broken paths, Store-Python quirks, **not only** “file not found.”
+- **Fix that actually stops the churn:** Pinokio **`start.js`** defaults ``GLITCHFRAME_WHISPERX_DEVICE=cpu`` so **WhisperX only** skips GPU CTranslate2; Demucs/analyze/video paths can still use CUDA. Users who fix their NVIDIA/cuDNN layout can remove that env to try GPU Align lyrics again.
+
 *Created for session handover; update only when the investigation changes materially.*

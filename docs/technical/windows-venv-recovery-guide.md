@@ -157,19 +157,14 @@ You may still see a **PyTorch warning** about `weights_only=False` and pickle se
 - Confirm `git pull` brought in `pipeline\torch_checkpoint_compat.py`.
 - Confirm you restarted the app **after** the pull (Step 7 again).
 
-### B) `Could not locate` / `Could not load library` `cudnn_ops_infer64_8.dll` (or error `1920`)
+### B) `Could not locate` / `Could not load library` `cudnn_ops_infer64_8.dll` (or error `1920`) — including **after** Silero VAD runs
 
-1. On **Windows**, extras `all` / `lyrics` / `analysis` pin **`ctranslate2==4.4.0`** in `pyproject.toml`. After `git pull`, run `python -m pip install -e ".[all]"` (or your extra) so pip applies the pin.
-2. Repeat **Step 5** exactly (uninstall all three, reinstall all three from the **same** index).
-3. If it persists, pin ctranslate2 manually (reported workaround for DLL name mismatches):
+1. If you still have **old** `ctranslate2` **4.4.x** (looks for **cuDNN8**-named DLLs) next to **PyTorch 2.5+ / cu124** (often **cuDNN9**-style names in `torch\lib`), upgrade:  
+   `python -m pip install -U "ctranslate2>=4.5.0,<5"`, then `python -m pip install -e ".[all]"` (or the extra you use). **Do not** install `4.4.0` for new Glitchframe/WhisperX 3.8+ stacks — `pyproject.toml` now enforces `ctranslate2>=4.5.0` on Windows for the lyrics extras.
+2. Repeat **Step 5** exactly (uninstall all three, reinstall all three from the **same** index), then the command in (1) again.
+3. The app also registers `torch\lib` for DLL search on Windows before loading WhisperX (`pipeline/win_cuda_path.py`).
 
-```powershell
-python -m pip install "ctranslate2==4.4.0"
-```
-
-Then run **Align lyrics** again.
-
-4. Last resort: see the **Troubleshooting** section in the repo **README.md** (cuDNN 8.9 + CUDA 12 copy instructions).
+4. Last resort: see the **Troubleshooting** section in the repo **README.md** (optional `nvidia-cudnn-cu12`, PATH, or manual cuDNN copy).
 
 ### C) CUDA disappeared after `pip install whisperx`
 

@@ -27,9 +27,10 @@ all = [
     "torchaudio>=2.0.0",
     "whisperx>=3.1.0",
     "silero-vad>=5.1",
-    # Windows: faster-whisper/ctranslate2 may fail loading cudnn_ops_infer64_8.dll with newer
-    # ctranslate2 + PyTorch cu124; 4.4.0 is a known good combo (see README Troubleshooting, whisperX#899).
-    "ctranslate2==4.4.0; platform_system == 'Windows'",
+    # Windows: ctranslate2<4.5 looks for cuDNN *8* DLL names; PyTorch 2.5+ cu124 wheels ship
+    # cuDNN 9–style names — mismatch => cudnn_ops_infer64_8.dll load errors. WhisperX 3.8+ requires
+    # ctranslate2>=4.5.0. Do not pin 4.4.x on Windows (older whisperX#899 workaround; obsolete here).
+    "ctranslate2>=4.5.0; platform_system == 'Windows'",
 ]
 # demucs + torchaudio: vocal stem only (Analyze).
 vocals = [
@@ -42,7 +43,7 @@ vocals = [
 lyrics = [
     "whisperx>=3.1.0",
     "silero-vad>=5.1",
-    "ctranslate2==4.4.0; platform_system == 'Windows'",
+    "ctranslate2>=4.5.0; platform_system == 'Windows'",
 ]
 # Optional beat detectors (BeatNet → madmom). madmom often needs Cython / wheels and may not build on every Python (e.g. 3.13). Analyzer falls back to librosa without these.
 beats = [
@@ -55,7 +56,7 @@ analysis = [
     "torchaudio>=2.0.0",
     "whisperx>=3.1.0",
     "silero-vad>=5.1",
-    "ctranslate2==4.4.0; platform_system == 'Windows'",
+    "ctranslate2>=4.5.0; platform_system == 'Windows'",
 ]
 # Tests / tooling (not required to run the app).
 dev = [
