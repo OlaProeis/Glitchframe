@@ -5,7 +5,7 @@
 | File | Role |
 |------|------|
 | `install.js` | One `shell.run`: venv `env`, `venv_python` **3.11**, then `ensurepip`, then PyTorch **2.2.2+cu121** (CUDA **12.1** wheel index), `requirements.txt`, `pip install -e .`, `pip install -e ".[all]"`, re-pin torch trio, `whisperx==3.3.0` / `faster-whisper==1.1.0` / `ctranslate2==4.4.0`, `nvidia-cudnn-cu12`, and `scripts/windows_provision_cudnn_next_to_ctranslate2.py` |
-| `start.js` | Daemon: `python -m app` with `GLITCHFRAME_WHISPERX_VAD_METHOD=silero` and **`GLITCHFRAME_WHISPERX_DEVICE=cpu`** (safe default). After the **cu121** install stack, you may remove **`GLITCHFRAME_WHISPERX_DEVICE`** or set **`cuda`** to try **GPU** Align lyrics. First `http://…` → **Open Web UI** |
+| `start.js` | Daemon: `python -m app` with `GLITCHFRAME_WHISPERX_VAD_METHOD=silero`, **`GLITCHFRAME_WHISPERX_DEVICE=cpu`** (safe default), and **`HF_HUB_DISABLE_SYMLINKS=1`** + **`HF_HUB_DISABLE_SYMLINKS_WARNING=1`** so `huggingface_hub >= 0.36` copies model blobs instead of attempting privileged Windows symlinks (see lyrics handover § Bug F). After the **cu121** install stack, you may remove **`GLITCHFRAME_WHISPERX_DEVICE`** or set **`cuda`** to try **GPU** Align lyrics — alignment automatically falls back to CPU once if the GPU path hits any cuDNN-class error. First `http://…` → **Open Web UI** |
 | `reset.js` | Delete folder `env` (factory reset; reinstall via Install) |
 | `update.js` | `git pull` at repo root |
 | `pinokio.js` | Sidebar: Install / Start / Update / Reinstall / Reset; prerequisite hint for **ffmpeg** |

@@ -496,3 +496,257 @@ Render still runs on CUDA exactly as before; the stubs only exist so the
 | `requirements.txt` | `numpy>=1.26.0,<2.0` |
 | `install.js` | Explicit `numpy<2` force-reinstall step + `pip uninstall -y nvidia-cudnn-cu12` (no standalone cuDNN wheel) |
 | `tests/test_pinokio_windows_resilience.py` | Pins all six behaviours (LazyModule patch, k2 stub, NumPy ABI, cuDNN policy, CPU retry, torch.xpu stub) so a future refactor cannot quietly regress |
+
+---
+
+## 2026-04-28 (later) — Bug F: HuggingFace symlink WinError 1314
+
+### Symptom
+
+After a fork user updated to the post-Bug-E `main`, audio ingest worked,
+but `Align lyrics` failed with:
+
+```
+[WinError 1314] A required privilege is not held by the client:
+  '..\\..\\blobs\\<sha>' ->
+  'C:\\pinokio\\api\\Glitchframe.git\\cache\\HF_HOME\\hub\\
+   models--Systran--faster-whisper-large-v3\\snapshots\\<commit>\\
+   preprocessor_config.json'
+```
+
+### Mechanism
+
+`huggingface_hub` lays out its cache as content-addressed
+`blobs/<sha>` plus a per-revision `snapshots/<commit>/` directory whose
+entries are **relative symlinks** pointing at the blobs. Creating a
+symlink on Windows requires either:
+
+1. The `SeCreateSymbolicLinkPrivilege` token (only granted to local
+   administrators by default), OR
+2. **Developer Mode** enabled in Windows Settings.
+
+Pinokio runs as a normal (non-admin) user with Developer Mode off in
+the vast majority of installs. The blob downloads fine (we own the
+file we just created); only the snapshot symlink fails. There is no
+recovery path inside `faster-whisper` / `whisperx` — they call
+`snapshot_download(...)` and expect either a clean snapshot dir or an
+exception, so the whole alignment crashes.
+
+### Why this didn't show up locally
+
+The maintainer's `.venv` runs Python under a user account that already
+holds `SeCreateSymbolicLinkPrivilege` (a side effect of one-time
+Developer Mode toggling years ago). Symlinks succeed silently, so the
+bug only appears on stock Pinokio Windows installs. Same shape as Bug
+A's `inspect.py` separator: a Windows-only path the local dev box
+never exercises.
+
+### Fix
+
+`huggingface_hub.file_download.are_symlinks_supported(cache_dir)` is
+the single decision point: when it returns `False`, the library
+populates the snapshot directory by **copying** blobs instead of
+symlinking. Monkey-patch it to always return `False` on Windows
+**before** any HF download is triggered.
+
+`pipeline/_huggingface_symlink_compat.py` ships
+`patch_huggingface_disable_symlinks()` which:
+
+* Returns `False` early on non-Windows hosts (POSIX symlinks are
+  unprivileged and faster — patching there would just waste disk).
+* Returns `False` early when `huggingface_hub` is not importable
+  (CPU-only smoke tests, alternate entry points).
+* Rebinds `are_symlinks_supported` in
+  `huggingface_hub.file_download` so subsequent
+  `_create_symlink` calls take the copy fallback.
+* **Invalidates** any cached `True` answers in
+  `_are_symlinks_supported_in_dir`. Without this step, a prior
+  successful probe (e.g. earlier in the same Python process before
+  the patch) would skip our patched function and re-hit WinError
+  1314 from inside `os.symlink()`.
+* Sets `os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"` (and the
+  `_WARNING` companion) via `setdefault` — not relied on, but a
+  belt-and-braces signal for `huggingface_hub >= 0.36` (PR #4032,
+  April 2026) which honours that env var natively. Costs nothing on
+  older versions where the env var is ignored.
+* Idempotent — sentinel attribute on the patched module skips
+  re-application.
+
+The patch is wired in two places:
+
+* `app.py` `_log_runtime_python_and_optional_deps()` — right after
+  the diagnostic `import whisperx` succeeds, in the same block that
+  applies the speechbrain LazyModule patch.
+* `pipeline/lyrics_aligner._import_whisperx()` — defense in depth
+  for non-`app.py` entry points (tests, embedded use, alternate
+  launchers).
+
+`start.js` also exports `HF_HUB_DISABLE_SYMLINKS=1` and
+`HF_HUB_DISABLE_SYMLINKS_WARNING=1` so even when the Python patch is
+bypassed entirely, recent `huggingface_hub` still copies on Windows.
+
+### Trade-off
+
+Multiple revisions of the same model duplicate blobs instead of
+deduping via symlink. Real cost in our use case: ~1-2 GB of extra
+disk if the HF cache ever holds two `Systran/faster-whisper-large-v3`
+snapshots simultaneously, which essentially never happens for a
+fork-user install. The alternative (alignment fails for every
+non-admin / non-developer-mode user) is strictly worse.
+
+### Recovery for users who already hit the bug
+
+The blobs that were downloaded before the failure are intact and
+reusable; only the snapshot dir is half-populated. After **Update +
+Start** in Pinokio:
+
+1. `huggingface_hub` sees the missing snapshot files and re-fetches
+   them.
+2. The patch is now active, so re-fetch goes through the copy path.
+3. Alignment succeeds.
+
+If the cache somehow ended up in a state HF considers complete but
+which still has dangling pseudo-symlinks (rare but possible), the
+clean fix is to delete just
+`C:\pinokio\api\Glitchframe.git\cache\HF_HOME\` from Explorer — this
+preserves the conda env, SDXL/AnimateDiff weights, audio cache, and
+Demucs models, while forcing the WhisperX stack to re-download
+straight through the copy path. Full Pinokio reinstall is **not**
+needed.
+
+### Files changed in this fix
+
+| File | What |
+|------|------|
+| `pipeline/_huggingface_symlink_compat.py` | **NEW** — `patch_huggingface_disable_symlinks()`: rebinds `are_symlinks_supported` to `False` on Windows + clears stale cache + sets `HF_HUB_DISABLE_SYMLINKS` env var; idempotent; no-op on POSIX / when `huggingface_hub` absent |
+| `app.py` | Calls `patch_huggingface_disable_symlinks()` in the diagnostic block right after `patch_speechbrain_lazy_module()` |
+| `pipeline/lyrics_aligner.py` | `_import_whisperx()` calls the HF patch before `import whisperx` (defense in depth for non-`app.py` entry points) |
+| `start.js` | Exports `HF_HUB_DISABLE_SYMLINKS=1` and `HF_HUB_DISABLE_SYMLINKS_WARNING=1` for `huggingface_hub >= 0.36` native support |
+| `tests/test_pinokio_windows_resilience.py` | +9 tests pinning the patch behaviour (Windows-only flip, cache invalidation, idempotency, no-op on POSIX, no-op when HF absent, env var contract, static checks that `app.py` / `lyrics_aligner.py` / `start.js` apply the fix) |
+
+---
+
+## 2026-04-28 (later still) — Bug G: NVENC silently fell back to libx264 + UI bar froze at 40%
+
+This was a related session diagnosing why a fork user's render at 0.2
+fps on Pinokio (vs 1-2 fps locally) felt 5-10× slower than expected.
+Two distinct issues, fixed together because they were tangled in the
+same code paths.
+
+### G.1 — `ffmpeg_tools.resolve_ffmpeg()` was greedy
+
+`_resolve()` returned the first `ffmpeg` it found in priority order
+(env override → PATH → well-known dirs) and cached the answer. On
+Pinokio, conda-env activation prepends `env\Library\bin` to `PATH`,
+so a transitively-installed bundled ffmpeg (e.g. from `imageio-ffmpeg`)
+sometimes shadows the user's working winget ffmpeg. The bundle
+occasionally lacks `--enable-nvenc` — fork users reported "NVENC
+unavailable" warnings in the log even though they had a perfectly
+good NVENC-capable ffmpeg elsewhere on the system, and the render
+silently fell back to `libx264` (~5-10× slower at 1080p).
+
+**Fix.** Refactored `pipeline/ffmpeg_tools.py` to enumerate **every**
+discovered candidate via `_iter_candidates(name)` (deduped by
+resolved path):
+
+1. `GLITCHFRAME_FFMPEG` / `MUSICVIDS_FFMPEG` env override
+2. **Active venv/conda env's bin** (`sys.prefix\Library\bin\ffmpeg.exe`
+   on Windows; `sys.prefix/bin/ffmpeg` on POSIX). New explicit slot
+   so Pinokio's conda-installed ffmpeg is picked deterministically
+   regardless of `PATH` ordering quirks.
+3. `shutil.which` (PATH lookup)
+4. Well-known install locations (winget, Scoop, Chocolatey, Program
+   Files)
+
+`select_video_codec()` first tries the highest-priority binary; on
+NVENC failure it calls `_pick_codec_capable_ffmpeg(codec)`, which
+sweeps every candidate and **promotes** the first codec-capable one
+into `_cache["ffmpeg"]`. Subsequent encode commands then run through
+the working binary instead of probing one ffmpeg and encoding
+through another.
+
+Diagnostic logging tightened along the way:
+
+* `_resolve()` now logs the resolution **source** (env override / active
+  env / PATH / well-known) for every successful resolution. Previously
+  only the well-known branch logged, which made conda env activation
+  shadowing the system ffmpeg invisible from a Pinokio log alone.
+* `_probe_encoder()` runs `ffmpeg` at `-loglevel info` (not `error`)
+  and captures the **last 14 stderr lines** on failure. At `error`
+  level ffmpeg suppresses the actual NVENC diagnostic ("Cannot load
+  nvEncodeAPI64.dll", "Driver does not support the required nvenc API
+  version", "OpenEncodeSession failed") and only prints its useless
+  generic wrapper, which made the original Pinokio bug undebuggable.
+* `log_ffmpeg_diagnostics()` (called from `app.py` startup) lists
+  **every** discovered ffmpeg candidate in priority order, the
+  resolved binary's version banner, and warns if its `configure:` line
+  lacks `--enable-nvenc` / `--enable-cuda` flags (NVENC will never
+  work with that build — fail loudly up front, don't waste time
+  probing later).
+
+The misleading `select_video_codec()` warning (which used to
+speculate "NVIDIA driver too old" — wrong for the user with driver
+596) was rewritten to point readers at the probe stderr that's now
+above it in the log.
+
+### G.2 — UI progress bar froze at 40 % during compositing
+
+The compositor's per-frame `progress(...)` calls fire from a daemon
+producer thread. Gradio's `gr.Progress` silently drops updates that
+come from non-request threads — symptom: UI parked on the
+orchestrator's outer "Compositing video (frames + encode)..." label
+for the entire render, even though the terminal-side throttled INFO
+log was updating happily (`logging` is thread-safe). Elapsed/ETA in
+the UI kept ticking because `_EtaProgress` re-renders the same stale
+message on every replay; the description never got richer.
+
+**Fix.** Producer/consumer split inside `pipeline/compositor.py`:
+
+* New `_CompositorStats` dataclass — shared scalars (counters,
+  phase string, layer label, started_at) read by the consumer and
+  written by the producer. No lock needed: every field is a simple
+  type whose individual reads/writes are atomic under the GIL.
+* Producer **never** calls `progress(...)`. It only updates
+  `stats.frames_produced`, `stats.frames_encoded`, and
+  `stats.phase` ("initializing GPU shader context", "preparing
+  kinetic typography", "warming up", "encoding").
+* Consumer (the encoder feed loop, on the **request thread**) polls
+  `stats.progress_pair()` every 250 ms and forwards to `progress`.
+  The consumer uses `frame_q.get(timeout=0.25)` so it wakes up even
+  during the 10-30 s warmup before the first frame is queued —
+  warmup phases are now visible in the UI bar text.
+* New message format:
+  `Compositing 1843/4923 (37.4%) - 1.23 fps - ETA 41m42s - layers=BG+TYPO`
+* The poll cadence (250 ms = 4 progress callbacks/s) is locked in
+  by a dedicated regression test. Faster spams Gradio's internal
+  websocket queue (visibly laggy at 1080p NVENC ~30 fps); slower
+  feels frozen.
+
+Producer-side throttled INFO log line stays where it was (`logging`
+is thread-safe) so terminal output continues to show
+`Compositor: 1843/4923 frames (37.4%) - 1.2 fps` every ~5 s.
+
+### G.3 — Render summary in run_log
+
+New `CompositorRenderStats` dataclass attached to `CompositorResult`
+exposes `frame_count`, `elapsed_sec`, `avg_fps`, `video_codec`, and
+`ffmpeg_path`. `app._summarise_render` appends one line to the
+in-app run log:
+
+```
+compositor: 4923 frames in 41m23s · avg 1.98 fps · encoder=h264_nvenc
+```
+
+Pinokio terminals on Windows are read-only so this is the only way
+fork users can confirm whether NVENC actually engaged after a
+render — they screenshot the log and we can tell at a glance.
+
+### Files changed in Bug G
+
+| File | What |
+|------|------|
+| `pipeline/ffmpeg_tools.py` | `_iter_candidates(name)` enumerates env override / active env's bin / PATH / well-known; `_active_env_bindir()` resolves `sys.prefix\Library\bin` (Windows) or `sys.prefix/bin` (POSIX) when in a venv/conda env; `_probe_encoder_with_binary(binary, codec)` runs probe at `-loglevel info` and captures last 14 stderr lines; `_pick_codec_capable_ffmpeg(codec)` sweeps candidates and promotes the working binary into `_cache`; `select_video_codec()` calls the picker as fallback before libx264; `log_ffmpeg_diagnostics()` lists all candidates, version banner, NVIDIA configure flags |
+| `pipeline/compositor.py` | `_CompositorStats` dataclass + `_PROGRESS_TICK_SEC = 0.25`; producer no longer calls `progress()` (writes counters / phase strings only); encoder feed loop polls stats from the request thread and forwards to `progress`; uses `frame_q.get(timeout=0.25)` so warmup phases tick the UI; `CompositorRenderStats` attached to `CompositorResult` |
+| `app.py` | `_summarise_render` appends `compositor: N frames in Xm Ys - avg Z.ZZ fps - encoder=...` to the run log |
+| `tests/test_compositor_progress_threading.py` | **NEW** — 15 tests covering `_format_eta_compositor`, `progress_pair()` warmup vs steady-state output, the 250 ms tick cadence (locked so it can't drift silently), the codec-capable picker promoting the working binary, the `sys.prefix == sys.base_prefix` short-circuit |
+| `tests/test_ffmpeg_tools.py` | +5 tests for path/env logging contract, full-stderr capture on probe failure, the explicit `-loglevel info` (regression guard so probe diagnostics aren't masked again), `log_ffmpeg_diagnostics()` listing candidates and warning when configure lacks `--enable-nvenc` |

@@ -8,6 +8,21 @@ kinetic typography layer to consume.
 
 On **Windows** with **Python 3.11 or 3.12**, the `lyrics` / `all` / `analysis` extras pin **WhisperX 3.3.0**, **faster-whisper 1.1.0**, **ctranslate2 4.4.0**, and **PyTorch 2.2.2+cu121** (CUDA 12.1) so faster-whisper / CTranslate2 and PyTorch agree on cuDNN DLL names. **Python 3.13** on Windows and **Linux/macOS** use the looser pins in `pyproject.toml` (typically **cu124** and **ctranslate2≥4.5**). Runtime code still tolerates older WhisperX builds that omit `vad_method` / `asr_options`.
 
+`numpy>=1.26.0,<2.0` is pinned in both `requirements.txt` and `pyproject.toml` because PyTorch 2.2.2's `tensor_numpy.cpp` bridge silently produces undefined behaviour when paired with NumPy 2.x (`Failed to initialize NumPy: _ARRAY_API not found`). Affects audio ingest, demucs, and the WhisperX pre-processing pipeline; see [`pinokio-lyrics-align-windows-handover.md`](pinokio-lyrics-align-windows-handover.md) § Bug B.
+
+## Windows non-admin compatibility (HuggingFace symlink fix)
+
+`huggingface_hub` lays out its model cache as content-addressed `blobs/<sha>` plus per-revision `snapshots/<commit>/` directories whose entries are **relative symlinks** to the blobs. On Windows, creating those symlinks requires `SeCreateSymbolicLinkPrivilege` (admin) **or** Developer Mode enabled in Settings. Pinokio runs as a normal user with neither, so blob downloads succeed but the symlink fails with `[WinError 1314] A required privilege is not held by the client`, crashing `Align lyrics` mid-download.
+
+`pipeline/_huggingface_symlink_compat.patch_huggingface_disable_symlinks()` rebinds `huggingface_hub.file_download.are_symlinks_supported` to always return `False` on Windows, invalidates any cached `True` answers in `_are_symlinks_supported_in_dir`, and sets `HF_HUB_DISABLE_SYMLINKS=1` for `huggingface_hub >= 0.36`. Result: snapshot directories are populated by **copying** blobs instead of symlinking, which works for unprivileged users.
+
+The patch is applied in two places:
+
+- `app.py` startup (right after `patch_speechbrain_lazy_module()`).
+- `_import_whisperx()` here in `lyrics_aligner` — defense in depth for non-`app.py` entry points (tests, alternate launchers).
+
+`start.js` (Pinokio) also exports `HF_HUB_DISABLE_SYMLINKS=1` so the env var is honoured natively by recent `huggingface_hub`. Trade-off: multi-revision cache dedupe is lost, but realistic disk cost is small (~1-2 GB at most for the WhisperX stack). See [`pinokio-lyrics-align-windows-handover.md`](pinokio-lyrics-align-windows-handover.md) § Bug F for the full investigation.
+
 ## Flow
 
 The aligner uses **forced alignment against the user's pasted lyrics** — the
@@ -674,6 +689,19 @@ venv.
 - Forced alignment returns no words → `RuntimeError` with a diagnostic
   mentioning input counts and language (usually indicates a bad vocal stem
   or lyrics that don't match the track).
+- **GPU cuDNN-class errors → automatic single CPU retry.** `align_lyrics`
+  wraps `_run_whisperx_forced` with one retry on `device="cpu"` /
+  `compute_type="int8"` whenever the GPU attempt raises an exception
+  whose message (or any of its `__cause__` / `__context__` chain)
+  matches `_is_cudnn_class_error`. The matcher looks for substrings
+  including `cudnn`, `could not load library`, `loadlibrary`,
+  `ctranslate2`, `cublas`, `cudart`, `error code 1920`, `cuda error`.
+  Retry is alignment-only — SDXL / Demucs / render stay on CUDA. If the
+  user already started on CPU
+  (`GLITCHFRAME_WHISPERX_DEVICE=cpu`) there is no second attempt and the
+  original error surfaces. ~5-10× slower alignment, but it means fork
+  users with broken cuDNN installs still complete a render. See
+  [`pinokio-lyrics-align-windows-handover.md`](pinokio-lyrics-align-windows-handover.md) § Bug D.
 - UI handler catches the exception and logs a single-line error.
 
 ## Schema migration

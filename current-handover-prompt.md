@@ -82,6 +82,7 @@ Order (simplified):
 
 - Sets **`GLITCHFRAME_WHISPERX_VAD_METHOD=silero`**
 - Sets **`GLITCHFRAME_WHISPERX_DEVICE=cpu`** (explicit safe default—user can remove for GPU trial)
+- Sets **`HF_HUB_DISABLE_SYMLINKS=1`** + **`HF_HUB_DISABLE_SYMLINKS_WARNING=1`** so `huggingface_hub >= 0.36` copies blobs instead of symlinking (avoids `WinError 1314` when running as non-admin / Developer Mode off — Bug F in the handover doc)
 
 ### 6. **`pipeline/win_cuda_path.py`** + **`app.py`**
 
@@ -113,16 +114,68 @@ Copies plausible **`cudnn*_8.dll`** names from **`torch\lib`** and **`nvidia\cud
 
 ---
 
-## What we have **not** implemented (recommended next coding task)
+### 9. Compat shims for newer libraries on Track A torch 2.2.2
 
-### GPU alignment failure → **one retry on CPU** (narrow catch)
+Three monkey-patches applied at `app.py` startup so newer
+`diffusers` / `transformers` / `peft` / `accelerate` / `huggingface_hub`
+import cleanly against pinned PyTorch 2.2.2 + Windows non-admin:
 
-Outlined earlier; **still absent** from `pipeline/lyrics_aligner.py` as an automatic cudnn-class retry around **`_run_whisperx_forced`**:
+- **`pipeline/_speechbrain_compat.patch_speechbrain_lazy_module()`** —
+  fixes the `inspect.py` separator bug in speechbrain's `LazyModule`
+  guard so audio ingest doesn't force-import every speechbrain
+  integration (k2/flair). See handover § Bug A.
+- **`pipeline/_torch_xpu_compat.patch_all()`** — installs permissive
+  `torch.xpu` and `torch.distributed.device_mesh` stubs (PyTorch 2.3
+  / 2.4 surfaces) so import-time `RANDOM_FUNCS` / `device_mesh` probes
+  don't crash on torch 2.2.2. Stubs are class-shaped to support PEP
+  604 unions (`DeviceMesh | None`) in type annotations. Also wired
+  into `pipeline/background_animatediff._import_animatediff_sdxl`
+  belt-and-braces. See handover § Bug E.
+- **`pipeline/_huggingface_symlink_compat.patch_huggingface_disable_symlinks()`** —
+  rebinds `huggingface_hub.are_symlinks_supported` to `False` on
+  Windows so non-admin users (Pinokio default) don't crash with
+  `WinError 1314` while writing snapshot dirs. Also wired into
+  `pipeline/lyrics_aligner._import_whisperx`. See handover § Bug F.
 
-- Retry **once** on **`device="cpu"`** / **`int8`** when exception matches cudnn/CTRanslate/load-library patterns.
-- Do **not** disable CUDA globally for SDXL/Demucs/render.
+### 10. CPU retry for cuDNN-class GPU alignment failures (DONE)
 
-**Specs** remain as previously written in this handover template (wrap alignment path only, tests with mocks, short doc in `docs/technical/lyrics-aligner.md`).
+`pipeline/lyrics_aligner.align_lyrics` wraps `_run_whisperx_forced`
+with a single retry on `device="cpu"` / `compute_type="int8"` when
+the GPU attempt's exception (or any `__cause__` / `__context__`)
+matches `_is_cudnn_class_error`. SDXL / Demucs / render stay on CUDA.
+Tests in `tests/test_pinokio_windows_resilience.py` pin the matcher
+patterns and the no-retry-when-already-CPU behaviour.
+
+### 11. Multi-candidate ffmpeg discovery + UI progress fix (DONE)
+
+`pipeline/ffmpeg_tools.py` now enumerates every candidate ffmpeg
+(env override → active venv/conda env's `bin` → PATH → well-known)
+and `select_video_codec()` sweeps all candidates probing for
+`h264_nvenc` before falling back to `libx264`. The first
+codec-capable binary is promoted into `_cache` so subsequent encode
+commands use it. Probes run at `-loglevel info` and capture the
+last 14 stderr lines on failure (fixes the case where Pinokio's
+NVENC failed silently because real diagnostics were suppressed at
+`-loglevel error`).
+
+`pipeline/compositor.py` decouples per-frame progress from the
+producer thread: the producer writes scalar counters to
+`_CompositorStats` and the consumer (encoder feed loop, on the
+request thread) polls every 250 ms and forwards to `gr.Progress`.
+Fixes the symptom where the UI bar parked at "Compositing video..."
+for the entire render even though the terminal log was updating.
+New message format includes live fps + ETA + active-layer label.
+After a render, `app._summarise_render` appends a one-line summary
+(`compositor: N frames in Xm Ys · avg Z.ZZ fps · encoder=...`) to
+the in-app run log so fork users on read-only Pinokio terminals can
+confirm whether NVENC actually engaged.
+
+See handover § Bug G for full details.
+
+## What we have **not** implemented
+
+Nothing currently outstanding from this thread. CPU retry, compat
+shims, ffmpeg discovery, and progress threading are all on `main`.
 
 ---
 
@@ -144,6 +197,9 @@ Outlined earlier; **still absent** from `pipeline/lyrics_aligner.py` as an autom
 ## Checklist for the next agent
 
 - [ ] Read **`ai-context.md`** and this file end-to-end
-- [ ] If implementing CPU retry: follow **§ not implemented** and grep **`_run_whisperx_forced`** / **`align_lyrics`** integration points
+- [ ] Read [`docs/technical/pinokio-lyrics-align-windows-handover.md`](docs/technical/pinokio-lyrics-align-windows-handover.md) Bugs A–G for the full investigation history
 - [ ] Pinokio regressions: confirm **`install.js`** still uses **`--no-deps`** + **markupsafe/pillow** lines after torch trio
+- [ ] If touching `pipeline/compositor.py` progress code: keep `progress(...)` calls on the request thread; the producer must only write `_CompositorStats` scalars
+- [ ] If touching `pipeline/ffmpeg_tools.py`: don't fall back to a single-binary `_resolve()` — the multi-candidate sweep is what catches the conda-env-shadowed NVENC ffmpeg bug
+- [ ] If adding new compat shims (newer `diffusers` / `transformers` / etc. probing missing torch APIs): add to `pipeline/_torch_xpu_compat.py`'s permissive stub family rather than patching one attribute at a time
 - [ ] Do **not** re-expand README with Pinokio-terminal essays—use **`pinokio-package.md`**
