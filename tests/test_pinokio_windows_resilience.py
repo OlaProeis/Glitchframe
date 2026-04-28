@@ -751,10 +751,11 @@ class TestTorchXpuCompat(unittest.TestCase):
             "xpu": torch.xpu.manual_seed,
 
         The stub must expose ``manual_seed`` (and the related ``seed`` /
-        ``manual_seed_all`` / ``seed_all`` family) as callables that
-        accept a seed and return without raising. This was the actual
-        failure that broke AnimateDiff SDXL render after the v1 stub
-        landed (which only had is_available / device_count / synchronize)."""
+        ``manual_seed_all`` / ``seed_all`` family) as a callable that
+        accepts a seed without raising. With class-shaped stubs (so PEP
+        604 unions work — see ``test_stub_pep604_union``), calling the
+        stub instantiates the class; what matters is the call doesn't
+        raise and the result isn't a hard error."""
         from pipeline._torch_xpu_compat import patch_torch_xpu
 
         torch = self._install_fake_torch_without_xpu()
@@ -767,15 +768,19 @@ class TestTorchXpuCompat(unittest.TestCase):
                 f"torch.xpu.{name} must be callable for diffusers seed "
                 f"dispatch tables",
             )
-            self.assertIsNone(
-                fn(42),
-                f"torch.xpu.{name}(42) must accept a seed and return None",
+            # Must not raise — that's the only thing diffusers' dispatch
+            # actually depends on.
+            result = fn(42)
+            self.assertIsNotNone(
+                result,
+                f"torch.xpu.{name}(42) must return a stub instance "
+                f"(class-shaped stub for PEP 604 union compatibility)",
             )
 
     def test_stub_synthesises_unknown_attributes_on_demand(self) -> None:
         """Newer diffusers / transformers / peft releases probe additional
         ``torch.xpu.*`` symbols at import time. The stub's ``__getattr__``
-        must return a no-op callable for any unrecognised attribute so
+        must return a callable class for any unrecognised attribute so
         future library upgrades don't reintroduce this bug class."""
         from pipeline._torch_xpu_compat import patch_torch_xpu
 
@@ -784,12 +789,53 @@ class TestTorchXpuCompat(unittest.TestCase):
 
         # Anything goes — we don't care what diffusers asks for tomorrow.
         for name in ("future_thing", "another_seed_fn", "some_new_probe"):
-            fn = getattr(torch.xpu, name)  # type: ignore[attr-defined]
-            self.assertTrue(callable(fn), f"torch.xpu.{name} must be callable")
-            self.assertIsNone(fn("whatever", and_a_kwarg=1))
+            cls = getattr(torch.xpu, name)  # type: ignore[attr-defined]
+            self.assertTrue(callable(cls), f"torch.xpu.{name} must be callable")
+            self.assertTrue(
+                isinstance(cls, type),
+                f"torch.xpu.{name} must be a class (so PEP 604 unions work)",
+            )
+            # Calling instantiates the class without raising.
+            cls("whatever", and_a_kwarg=1)
 
         # Sub-namespace passthrough: torch.xpu.random.foo must also work.
         torch.xpu.random.bar(99)  # type: ignore[attr-defined]
+
+    def test_stub_pep604_union(self) -> None:
+        """**Regression guard for the bug that landed in commit 188fa0c**:
+
+        Newer ``transformers`` (~4.45+) writes PEP 604 union annotations
+        like ``def foo(mesh: DeviceMesh | None = None): ...`` evaluated
+        at *function-definition* time on Python 3.10+. If our stub
+        returns a function for ``DeviceMesh``, that annotation raises::
+
+            TypeError: unsupported operand type(s) for |:
+                       'function' and 'NoneType'
+
+        which propagates out as ``Failed to import diffusers.loaders.
+        single_file`` and breaks AnimateDiff render. The fix: synthesise
+        **classes**, not functions — classes inherit ``__or__`` from the
+        ``type`` metaclass, so ``MyClass | None`` evaluates to
+        ``types.UnionType`` and the import succeeds."""
+        from pipeline._torch_xpu_compat import patch_torch_xpu
+
+        torch = self._install_fake_torch_without_xpu()
+        patch_torch_xpu()
+
+        # Every probe path that newer transformers / diffusers might hit:
+        candidates = [
+            torch.xpu.manual_seed,  # type: ignore[attr-defined]
+            torch.xpu.synchronize,  # type: ignore[attr-defined]
+            torch.xpu.empty_cache,  # type: ignore[attr-defined]
+            torch.xpu.random.foo,  # synthesised in nested namespace  # type: ignore[attr-defined]
+            torch.xpu.amp.autocast,  # synthesised in nested namespace  # type: ignore[attr-defined]
+            torch.xpu.completely_new_thing_2026,  # type: ignore[attr-defined]
+        ]
+        for stub in candidates:
+            # If this raises TypeError, transformers / diffusers will fail
+            # to import on Track A. Don't regress.
+            union = stub | None
+            self.assertIn("UnionType", type(union).__name__ + str(union))
 
     def test_stub_dunders_still_raise_attribute_error(self) -> None:
         """``__getattr__`` must NOT synthesise dunders — pretending to
@@ -951,6 +997,38 @@ class TestTorchDistributedDeviceMeshCompat(unittest.TestCase):
         msg = str(ctx.exception).lower()
         self.assertIn("device_mesh", msg)
         self.assertIn("torch", msg)
+
+    def test_device_mesh_pep604_union(self) -> None:
+        """**Regression guard for commit 188fa0c failure** observed in the
+        wild: newer ``transformers`` writes annotations like::
+
+            from torch.distributed.device_mesh import DeviceMesh
+            def foo(mesh: DeviceMesh | None = None) -> None: ...
+
+        Evaluated at function-definition time. With function-shaped
+        DeviceMesh, this raised ``TypeError: unsupported operand type(s)
+        for |: 'function' and 'NoneType'`` and broke
+        ``diffusers.loaders.single_file`` import (which transitively imports
+        transformers). Class-shaped DeviceMesh has ``__or__`` from the
+        ``type`` metaclass, so the union evaluates to a ``types.UnionType``
+        and the import completes."""
+        from pipeline._torch_xpu_compat import patch_torch_distributed_device_mesh
+
+        _, dist = self._install_track_a_torch()
+        patch_torch_distributed_device_mesh()
+
+        DeviceMesh = dist.device_mesh.DeviceMesh  # type: ignore[attr-defined]
+        init_device_mesh = dist.device_mesh.init_device_mesh  # type: ignore[attr-defined]
+
+        # Both must be classes (not functions). Classes inherit __or__.
+        self.assertIsInstance(DeviceMesh, type)
+        self.assertIsInstance(init_device_mesh, type)
+
+        # The actual bug: this evaluation must NOT raise.
+        union1 = DeviceMesh | None
+        union2 = init_device_mesh | None
+        self.assertIn("UnionType", type(union1).__name__ + str(union1))
+        self.assertIn("UnionType", type(union2).__name__ + str(union2))
 
 
 class TestPatchAll(unittest.TestCase):

@@ -47,14 +47,70 @@ _PATCH_MARKER = "_glitchframe_torch_xpu_stub"
 _DIST_MARKER = "_glitchframe_torch_dist_device_mesh_stub"
 
 
-def _noop(*_args: Any, **_kwargs: Any) -> None:
-    """Default fallback: accepts anything, returns None.
+def _make_stub_callable(qualname: str, *, raise_on_call: bool = False) -> type:
+    """Build a class-shaped stand-in for a missing torch attribute.
 
-    Matches the shape of every "void" torch API (``manual_seed``,
-    ``synchronize``, ``empty_cache``, ``set_device``, ...) so consumers
-    that only need the call to *succeed* don't crash. Functions that
-    semantically must return a typed value (``is_available`` -> bool,
-    ``device_count`` -> int) are defined explicitly on the stub instead.
+    **Why a class and not a function?** Newer ``transformers`` / ``diffusers``
+    use PEP 604 unions in type hints, evaluated at function-definition time::
+
+        from torch.distributed.device_mesh import DeviceMesh
+        def foo(mesh: DeviceMesh | None = None) -> None: ...
+        # Python 3.10+ evaluates `DeviceMesh | None` immediately. If
+        # DeviceMesh is a plain function, this raises:
+        #   TypeError: unsupported operand type(s) for |:
+        #              'function' and 'NoneType'
+
+    Plain functions don't define ``__or__``; classes do (via the ``type``
+    metaclass), so ``Class | None`` evaluates to ``types.UnionType``.
+    Returning a class means:
+
+      * ``StubAttr | None`` works (no TypeError at import time).
+      * ``StubAttr(...)`` is callable (instantiates the class).
+      * ``isinstance(x, StubAttr)`` returns ``False`` for normal objects,
+        which matches the "no real support for this API" semantic.
+      * Real torch APIs that take a ``Callable``-typed argument still
+        accept it because classes are callable.
+
+    ``raise_on_call=True`` makes the constructor raise so anyone *using*
+    the stub (rather than just probing for its existence in a hasattr /
+    annotation context) gets a clear runtime error pointing at the cause.
+    """
+    short_name = qualname.rsplit(".", 1)[-1]
+    module_name = qualname.rsplit(".", 1)[0] if "." in qualname else "__main__"
+
+    if raise_on_call:
+        def _init(self: Any, *_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError(
+                f"{qualname} is a Glitchframe compatibility stub for an API "
+                f"missing from this PyTorch build (Track A: torch < 2.4). "
+                f"Module imports succeed via this placeholder, but actual "
+                f"use requires upgrading torch to >= 2.4 (see "
+                f"docs/technical/pinokio-lyrics-align-windows-handover.md)."
+            )
+    else:
+        def _init(self: Any, *_args: Any, **_kwargs: Any) -> None:  # type: ignore[misc]
+            return None
+
+    return type(
+        short_name,
+        (),
+        {
+            "__init__": _init,
+            "__qualname__": short_name,
+            "__module__": module_name,
+            "__repr__": lambda self: f"<glitchframe stub {qualname}>",
+        },
+    )
+
+
+def _noop(*_args: Any, **_kwargs: Any) -> None:
+    """Default fallback function for predicates whose return value matters.
+
+    Used only for explicitly-bound predicates / counters in the xpu stub
+    where a specific return value is required (e.g. ``is_available()`` must
+    return ``False`` so consumer code branches *away* from the XPU path).
+    For attribute *probes* that may end up in type annotations, use
+    ``_make_stub_callable`` (returns a class, supports ``| None``).
     """
     return None
 
@@ -65,8 +121,10 @@ class _PermissiveStub(types.ModuleType):
     Used as the body of every compat stub we install on torch — both
     leaves (``torch.xpu``) and nested namespaces (``torch.xpu.random``,
     ``torch.distributed.device_mesh``). Any attribute not explicitly set
-    is synthesised as a no-op callable on first access (and cached on the
-    module so subsequent lookups go through normal attribute resolution).
+    is synthesised on first access as a class (see ``_make_stub_callable``)
+    so PEP 604 type annotations like ``StubAttr | None`` evaluate cleanly.
+    The synthesised class is cached on the module instance, so subsequent
+    lookups go through normal attribute resolution.
 
     Sub-namespace probes return another ``_PermissiveStub``, registered in
     ``sys.modules`` so ``import torch.xpu.random`` also works. The list of
@@ -87,20 +145,12 @@ class _PermissiveStub(types.ModuleType):
             sys.modules[full_name] = sub
             setattr(self, name, sub)
             return sub
-        # Synthesised no-op callable; cache on the instance so it round-trips
-        # via normal attribute lookup next time (and stays identity-stable).
-        try:
-            fn: Any = type(_noop)(  # type: ignore[misc]
-                _noop.__code__,
-                _noop.__globals__,
-                f"{self.__name__}.{name}",
-                _noop.__defaults__,
-                _noop.__closure__,
-            )
-        except Exception:  # noqa: BLE001
-            fn = _noop
-        setattr(self, name, fn)
-        return fn
+        # Synthesise a class (not a function) so PEP 604 unions work.
+        # Cache on the instance so subsequent lookups go through normal
+        # attribute resolution and stay identity-stable.
+        cls = _make_stub_callable(f"{self.__name__}.{name}")
+        setattr(self, name, cls)
+        return cls
 
 
 class _XpuStub(_PermissiveStub):
@@ -113,16 +163,16 @@ def _build_xpu_stub() -> types.ModuleType:
     """Construct a ``torch.xpu`` stub.
 
     Explicitly defines every attribute whose value matters to a caller.
-    Unknown attributes are synthesised on demand by ``__getattr__``.
+    Unknown attributes are synthesised on demand by ``__getattr__`` (as
+    classes, see ``_make_stub_callable``).
     """
     stub = _XpuStub("torch.xpu")
 
-    # Predicates — value matters (callers branch on the bool).
+    # Predicates — value matters (callers branch on the bool / int).
+    # These MUST be functions returning the specific value, not classes.
     stub.is_available = lambda: False  # type: ignore[attr-defined]
     stub.is_initialized = lambda: False  # type: ignore[attr-defined]
     stub.is_bf16_supported = lambda: False  # type: ignore[attr-defined]
-
-    # Counters — value matters (range(device_count()) etc.).
     stub.device_count = lambda: 0  # type: ignore[attr-defined]
     stub.current_device = lambda: 0  # type: ignore[attr-defined]
     stub.memory_allocated = lambda *a, **k: 0  # type: ignore[attr-defined]
@@ -130,17 +180,20 @@ def _build_xpu_stub() -> types.ModuleType:
     stub.max_memory_allocated = lambda *a, **k: 0  # type: ignore[attr-defined]
     stub.max_memory_reserved = lambda *a, **k: 0  # type: ignore[attr-defined]
 
-    # Common void operations — caller doesn't read the return value, but
-    # binding them eagerly avoids a __getattr__ round-trip on every call.
-    stub.manual_seed = _noop  # type: ignore[attr-defined]
-    stub.manual_seed_all = _noop  # type: ignore[attr-defined]
-    stub.seed = _noop  # type: ignore[attr-defined]
-    stub.seed_all = _noop  # type: ignore[attr-defined]
-    stub.synchronize = _noop  # type: ignore[attr-defined]
-    stub.empty_cache = _noop  # type: ignore[attr-defined]
-    stub.set_device = _noop  # type: ignore[attr-defined]
-    stub.init = _noop  # type: ignore[attr-defined]
-    stub.reset_peak_memory_stats = _noop  # type: ignore[attr-defined]
+    # Void operations — caller doesn't read the return value. Use class-
+    # shaped stubs so ``manual_seed | None`` style annotations don't
+    # explode if some library decides to type-hint them.
+    stub.manual_seed = _make_stub_callable("torch.xpu.manual_seed")  # type: ignore[attr-defined]
+    stub.manual_seed_all = _make_stub_callable("torch.xpu.manual_seed_all")  # type: ignore[attr-defined]
+    stub.seed = _make_stub_callable("torch.xpu.seed")  # type: ignore[attr-defined]
+    stub.seed_all = _make_stub_callable("torch.xpu.seed_all")  # type: ignore[attr-defined]
+    stub.synchronize = _make_stub_callable("torch.xpu.synchronize")  # type: ignore[attr-defined]
+    stub.empty_cache = _make_stub_callable("torch.xpu.empty_cache")  # type: ignore[attr-defined]
+    stub.set_device = _make_stub_callable("torch.xpu.set_device")  # type: ignore[attr-defined]
+    stub.init = _make_stub_callable("torch.xpu.init")  # type: ignore[attr-defined]
+    stub.reset_peak_memory_stats = _make_stub_callable(  # type: ignore[attr-defined]
+        "torch.xpu.reset_peak_memory_stats"
+    )
 
     setattr(stub, _PATCH_MARKER, True)
     return stub
@@ -194,27 +247,33 @@ def _build_device_mesh_stub() -> types.ModuleType:
     """Construct a ``torch.distributed.device_mesh`` stub.
 
     The real submodule (added in PyTorch 2.4) exposes ``DeviceMesh`` and
-    ``init_device_mesh``. Code that probes it at import time tends to do
-    ``hasattr(torch.distributed, "device_mesh")`` or just
-    ``torch.distributed.device_mesh.DeviceMesh`` — both are satisfied by a
-    permissive stub. Any callable use raises a clear error so anyone who
-    *actually* tries to build a device mesh on Track A learns immediately.
+    ``init_device_mesh``. Both are surfaced as **classes** here (not
+    functions) so PEP 604 type annotations evaluate cleanly::
+
+        # transformers does this in fsdp_utils.py and similar:
+        from torch.distributed.device_mesh import DeviceMesh
+        def _foo(mesh: DeviceMesh | None = None) -> None: ...
+
+    With a function-typed ``DeviceMesh``, the ``DeviceMesh | None``
+    annotation raises ``TypeError: unsupported operand type(s) for |:
+    'function' and 'NoneType'`` at *function-definition* time — i.e. on
+    import. Class-typed ``DeviceMesh`` (an instance of ``type``) supports
+    ``__or__``, so the annotation evaluates to ``types.UnionType`` and
+    the import completes. See ``_make_stub_callable`` for the full
+    rationale.
+
+    Probes (``hasattr``, ``isinstance(x, DeviceMesh)``, annotation
+    evaluation) all succeed. *Calling* either symbol raises ``RuntimeError``
+    so anyone who actually tries to build a device mesh on Track A gets
+    a clear, actionable error rather than a silent no-op.
     """
     stub = _PermissiveStub("torch.distributed.device_mesh")
-
-    def _no_device_mesh(*_args: Any, **_kwargs: Any) -> Any:
-        raise RuntimeError(
-            "torch.distributed.device_mesh is not available in this PyTorch "
-            "build (Track A: torch 2.2.x). Glitchframe runs single-GPU "
-            "AnimateDiff renders, which don't need device meshes — but if "
-            "you really need this API, upgrade to torch >= 2.4."
-        )
-
-    # Real symbols. Probes return a callable (so ``isinstance`` checks pass);
-    # actual *use* raises with a clear explanation.
-    stub.DeviceMesh = _no_device_mesh  # type: ignore[attr-defined]
-    stub.init_device_mesh = _no_device_mesh  # type: ignore[attr-defined]
-
+    stub.DeviceMesh = _make_stub_callable(  # type: ignore[attr-defined]
+        "torch.distributed.device_mesh.DeviceMesh", raise_on_call=True
+    )
+    stub.init_device_mesh = _make_stub_callable(  # type: ignore[attr-defined]
+        "torch.distributed.device_mesh.init_device_mesh", raise_on_call=True
+    )
     setattr(stub, _DIST_MARKER, True)
     return stub
 
