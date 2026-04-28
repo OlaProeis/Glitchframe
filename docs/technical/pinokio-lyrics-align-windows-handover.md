@@ -393,60 +393,104 @@ ingest) crashed first. Anyone debugging only the **alignment** path missed the
 **ingest** crash above it. Future investigations: scroll above the alignment
 log and scan for `ImportError: Lazy import of LazyModule(...)`.
 
-### Bug E — Newer `diffusers` references `torch.xpu` at import time
+### Bug E — Newer `diffusers` / `transformers` probe missing torch APIs at import time
 
 After Bugs A–D were fixed, lyrics aligned successfully but **rendering**
-failed with:
+failed. Three concrete failure modes observed in this saga, all the
+**same root cause** with a different victim:
 
 ```
-RuntimeError: AnimateDiff SDXL requires a recent diffusers install with
-AnimateDiffSDXLPipeline and DDIMScheduler ... Import failed: module 'torch'
-has no attribute 'xpu'
+# Round 1 (v1 fix attempted):
+AttributeError: module 'torch' has no attribute 'xpu'
+
+# Round 2 (v1 stub didn't expose enough surface):
+AttributeError: module 'torch.xpu' has no attribute 'manual_seed'
+
+# Round 3 (after v2 stub fixed torch.xpu, transformers' turn):
+AttributeError: module 'torch.distributed' has no attribute 'device_mesh'
 ```
 
-**Mechanism.** PyTorch added the `torch.xpu` submodule (Intel discrete GPU
-support) in **2.3.0**. Track A pins `torch==2.2.2+cu121` so cuDNN-era DLL
-names match what ctranslate2 4.4.0 expects — there's no `torch.xpu` there.
-Newer `diffusers` releases (≈ 0.30+) reference `torch.xpu` at import time
-without guarding the access with `hasattr(torch, "xpu")`. So the very first
-`from diffusers import AnimateDiffSDXLPipeline` in `_import_animatediff_sdxl`
-explodes before any model code runs. Same upstream pattern as the
-speechbrain bug — **library code probes a possibly-absent attribute** —
-just on a different module. The HuggingFace transformers project hit the
-same issue ([transformers#37838][hf-37838]) and fixed it with the
-`hasattr` guard; diffusers hasn't (yet).
+**Mechanism.** PyTorch 2.3 added `torch.xpu` (Intel discrete GPU). PyTorch 2.4
+added `torch.distributed.device_mesh` (FSDP2 / TP). Track A pins
+`torch==2.2.2+cu121` because that's the wheel whose bundled cuDNN matches
+ctranslate2 4.4.0 (Bug C above). Newer `diffusers` / `transformers` /
+`peft` / `accelerate` reference both APIs at module import time, without
+guarding access with `hasattr()`:
+
+* `diffusers/utils/torch_utils.py` builds a device-keyed seed dispatch:
+  ```python
+  RANDOM_FUNCS = { ..., "xpu": torch.xpu.manual_seed, ... }
+  ```
+  Evaluated at module load; explodes the moment `torch.xpu` doesn't exist.
+
+* `transformers` (~4.45+) imports `torch.distributed.device_mesh` from its
+  FSDP2 / parallelism utilities at module load. It's pulled in transitively
+  through `diffusers.loaders.single_file` — which `single_file.py` imports
+  via `from transformers import PreTrainedModel, PreTrainedTokenizer`.
+  So the `device_mesh` error surfaces from inside diffusers even though
+  diffusers itself doesn't reference `device_mesh` anywhere.
+
+The HuggingFace transformers project itself hit the same `torch.xpu` issue
+([transformers#37838][hf-37838]) and fixed it with the `hasattr` guard
+upstream — but only for that one attribute. diffusers / transformers add
+new such probes on every release, so chasing them attribute-by-attribute
+is a losing game.
 
 [hf-37838]: https://github.com/huggingface/transformers/issues/37838
 
-**Fix.** `pipeline/_torch_xpu_compat.py` ships `patch_torch_xpu()` which
-installs a tiny `torch.xpu` stub (a `ModuleType` with `is_available()` →
-`False`, `device_count()` → `0`, plus `is_initialized` / `is_bf16_supported`
-/ `synchronize` / `empty_cache` / nested `amp` so any reasonable probe
-returns the "no XPU" answer). The stub is also registered in
-`sys.modules["torch.xpu"]` so `import torch.xpu` works. Newer torch
-(Track B, ≥ 2.4) has the real submodule already — `patch_torch_xpu` checks
-`getattr(torch, "xpu", None)` first and never overwrites it.
+**Fix.** `pipeline/_torch_xpu_compat.py` is a single home for
+"missing-torch-attribute" compat shims. The core helper is a permissive
+`_PermissiveStub(types.ModuleType)` whose `__getattr__` synthesises a
+no-op callable for any unrecognised attribute and caches it on the
+instance. Sub-namespace probes return another stub instance, registered
+in `sys.modules` so plain `import torch.xpu.random` and
+`import torch.distributed.device_mesh` work too.
 
-The patch runs in two places (idempotent — safe to call twice):
+Two patch functions, plus an umbrella `patch_all()`:
+
+* `patch_torch_xpu()` — installs a `torch.xpu` stub. Explicitly defines
+  attributes whose return value matters (`is_available()` → `False`,
+  `device_count()` → `0`, `is_bf16_supported()` → `False`,
+  `memory_*()` → `0`) and pre-binds the well-known void family
+  (`manual_seed`, `manual_seed_all`, `seed`, `seed_all`, `synchronize`,
+  `empty_cache`, `set_device`, `init`, `reset_peak_memory_stats`).
+  Sub-namespaces `amp` and `random` are nested permissive stubs.
+
+* `patch_torch_distributed_device_mesh()` — installs a
+  `torch.distributed.device_mesh` stub exposing `DeviceMesh` and
+  `init_device_mesh`. Probes (`hasattr`) succeed; *calling* them raises a
+  clear `RuntimeError` so anyone who actually tries to build a device
+  mesh on Track A learns immediately rather than silently getting wrong
+  results.
+
+* `patch_all()` calls both, returns a `{patch_name: applied}` mapping for
+  diagnostics.
+
+The umbrella is wired in two places (idempotent — safe to call twice):
 
 * `app.py` `_log_runtime_python_and_optional_deps()` — right after the
   diagnostic `import torch` succeeds, so any subsequent diffusers import
-  (model load, gradio worker, anything) finds a `torch.xpu` to probe.
-* `pipeline/background_animatediff._import_animatediff_sdxl()` — belt-and-
-  braces, in case some code path imports diffusers before app startup
-  completes.
+  (model load, gradio worker, anything) finds the stubs already installed.
+* `pipeline/background_animatediff._import_animatediff_sdxl()` —
+  belt-and-braces, in case some code path imports diffusers before app
+  startup completes.
 
-Render runs on CUDA exactly as before; the stub only exists so the
-**import-time** XPU probe doesn't crash on Track A.
+Both checks are non-destructive: `patch_torch_xpu` looks for an existing
+`torch.xpu` attribute via `getattr(torch, "xpu", None)`, and same for
+`device_mesh`. Track B (torch ≥ 2.4) is unchanged — real Intel GPU /
+DTensor users get the real APIs.
+
+Render still runs on CUDA exactly as before; the stubs only exist so the
+**import-time** probes don't crash on Track A.
 
 ### Files changed in this fix
 
 | File | What |
 |------|------|
 | `pipeline/_speechbrain_compat.py` | **NEW** — monkey-patches `LazyModule.ensure_module` so its `inspect.py` guard works on Windows (root-cause fix; cures k2/flair/etc. in one shot) |
-| `pipeline/_torch_xpu_compat.py` | **NEW** — installs a `torch.xpu` stub when PyTorch < 2.3 lacks it; cures `diffusers` AnimateDiff SDXL import on Track A |
-| `app.py` | Calls `patch_speechbrain_lazy_module()` after `import whisperx`; calls `patch_torch_xpu()` after diagnostic `import torch`; pre-stubs `sys.modules['k2']` as belt-and-braces |
-| `pipeline/background_animatediff.py` | `_import_animatediff_sdxl` calls `patch_torch_xpu()` immediately before `from diffusers import AnimateDiffSDXLPipeline` |
+| `pipeline/_torch_xpu_compat.py` | **NEW** — installs `torch.xpu` and `torch.distributed.device_mesh` stubs (permissive `__getattr__` ModuleType subclass); cures every "missing-torch-attribute" probe in newer diffusers/transformers/peft/accelerate on Track A |
+| `app.py` | Calls `patch_speechbrain_lazy_module()` after `import whisperx`; calls `patch_all()` (both torch stubs) after diagnostic `import torch`; pre-stubs `sys.modules['k2']` as belt-and-braces |
+| `pipeline/background_animatediff.py` | `_import_animatediff_sdxl` calls `patch_all()` immediately before `from diffusers import AnimateDiffSDXLPipeline` |
 | `pipeline/lyrics_aligner.py` | `_is_cudnn_class_error` + single CPU retry around `_run_whisperx_forced` |
 | `pyproject.toml` | `numpy>=1.26.0,<2.0` in `[project]` dependencies |
 | `requirements.txt` | `numpy>=1.26.0,<2.0` |

@@ -1988,20 +1988,23 @@ def _log_runtime_python_and_optional_deps() -> None:
         import torch
 
         LOGGER.info("torch %s (CUDA: %s)", torch.__version__, torch.cuda.is_available())
-        # Track A pins torch 2.2.2 which predates torch.xpu (added in 2.3).
-        # Newer diffusers references torch.xpu at import time without a
-        # hasattr() guard — installing a stub here keeps AnimateDiff SDXL
-        # imports working on Track A while leaving real torch.xpu untouched
-        # on Track B (torch >= 2.4). See pipeline/_torch_xpu_compat.py.
+        # Track A pins torch 2.2.2, which predates several torch APIs that
+        # newer diffusers / transformers / peft / accelerate releases probe
+        # at module import time without a ``hasattr()`` guard:
+        #   - ``torch.xpu`` (Intel discrete GPU support, added in torch 2.3)
+        #   - ``torch.distributed.device_mesh`` (FSDP2/TP, added in torch 2.4)
+        # Installing permissive stubs here keeps AnimateDiff SDXL imports
+        # working on Track A while leaving the real submodules untouched on
+        # Track B (torch >= 2.4). See pipeline/_torch_xpu_compat.py.
         try:
-            from pipeline._torch_xpu_compat import patch_torch_xpu
+            from pipeline._torch_xpu_compat import patch_all as _patch_all_torch_compat
 
-            patch_torch_xpu()
+            _patch_all_torch_compat()
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning(
-                "Could not apply torch.xpu compat stub: %s — newer "
+                "Could not apply torch.* compat stubs: %s — newer "
                 "diffusers (AnimateDiff SDXL) may fail to import on "
-                "PyTorch < 2.3 (Track A).",
+                "PyTorch < 2.4 (Track A).",
                 exc,
             )
     except Exception:  # noqa: BLE001

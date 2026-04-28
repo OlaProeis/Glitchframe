@@ -625,19 +625,19 @@ class TestTorchXpuCompat(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        # Save & remove any current torch / torch.xpu so each test starts clean.
+        # Save & remove every torch.* module so each test starts clean.
         self._saved = {
             k: sys.modules[k]
             for k in list(sys.modules)
-            if k == "torch" or k == "torch.xpu"
+            if k == "torch" or k.startswith("torch.")
         }
         for k in self._saved:
             del sys.modules[k]
 
     def tearDown(self) -> None:
         # Drop any fakes we registered.
-        for k in ("torch", "torch.xpu"):
-            if k in sys.modules and k not in self._saved:
+        for k in list(sys.modules):
+            if (k == "torch" or k.startswith("torch.")) and k not in self._saved:
                 del sys.modules[k]
         for k, v in self._saved.items():
             sys.modules[k] = v
@@ -805,15 +805,217 @@ class TestTorchXpuCompat(unittest.TestCase):
             torch.xpu.__some_dunder__  # type: ignore[attr-defined]
 
 
+class TestTorchDistributedDeviceMeshCompat(unittest.TestCase):
+    """``patch_torch_distributed_device_mesh`` must:
+
+    * Install a ``torch.distributed.device_mesh`` stub when missing
+      (Track A: torch 2.2.2 < 2.4, no device_mesh submodule).
+    * Be a no-op when torch already has a real ``torch.distributed.device_mesh``
+      (Track B: torch ≥ 2.4).
+    * Be a no-op when torch isn't loaded yet (returns False, doesn't raise).
+    * Idempotent — second call doesn't replace the existing stub.
+
+    Newer ``transformers`` (4.45+ ish) imports ``torch.distributed.device_mesh``
+    at module load time without a hasattr() guard. The error surfaces inside
+    ``diffusers.loaders.single_file`` on Track A as
+    ``AttributeError: module 'torch.distributed' has no attribute 'device_mesh'``.
+    """
+
+    def setUp(self) -> None:
+        self._saved = {
+            k: sys.modules[k]
+            for k in list(sys.modules)
+            if k == "torch" or k.startswith("torch.")
+        }
+        for k in self._saved:
+            del sys.modules[k]
+
+    def tearDown(self) -> None:
+        for k in list(sys.modules):
+            if (k == "torch" or k.startswith("torch.")) and k not in self._saved:
+                del sys.modules[k]
+        for k, v in self._saved.items():
+            sys.modules[k] = v
+
+    def _install_track_a_torch(self) -> tuple[ModuleType, ModuleType]:
+        """Track A: torch.distributed exists but has no device_mesh."""
+        torch = ModuleType("torch")
+        torch.__version__ = "2.2.2+cu121"  # type: ignore[attr-defined]
+        dist = ModuleType("torch.distributed")
+        dist.is_available = lambda: True  # type: ignore[attr-defined]
+        torch.distributed = dist  # type: ignore[attr-defined]
+        sys.modules["torch"] = torch
+        sys.modules["torch.distributed"] = dist
+        return torch, dist
+
+    def _install_track_b_torch(self) -> tuple[ModuleType, ModuleType, ModuleType]:
+        """Track B: torch.distributed.device_mesh exists with the real classes."""
+        torch = ModuleType("torch")
+        torch.__version__ = "2.4.0+cu124"  # type: ignore[attr-defined]
+        dist = ModuleType("torch.distributed")
+        real_mesh = ModuleType("torch.distributed.device_mesh")
+
+        class _RealDeviceMesh:
+            pass
+
+        real_mesh.DeviceMesh = _RealDeviceMesh  # type: ignore[attr-defined]
+        dist.device_mesh = real_mesh  # type: ignore[attr-defined]
+        torch.distributed = dist  # type: ignore[attr-defined]
+        sys.modules["torch"] = torch
+        sys.modules["torch.distributed"] = dist
+        sys.modules["torch.distributed.device_mesh"] = real_mesh
+        return torch, dist, real_mesh
+
+    def test_no_op_when_torch_absent(self) -> None:
+        from pipeline._torch_xpu_compat import patch_torch_distributed_device_mesh
+
+        self.assertNotIn("torch", sys.modules)
+        result = patch_torch_distributed_device_mesh()
+        self.assertFalse(result)
+
+    def test_no_op_when_distributed_absent(self) -> None:
+        """Pathological case: torch present but no .distributed attr."""
+        from pipeline._torch_xpu_compat import patch_torch_distributed_device_mesh
+
+        torch = ModuleType("torch")
+        torch.__version__ = "2.2.2"  # type: ignore[attr-defined]
+        sys.modules["torch"] = torch
+        # No torch.distributed at all.
+        self.assertFalse(patch_torch_distributed_device_mesh())
+
+    def test_installs_stub_when_missing(self) -> None:
+        from pipeline._torch_xpu_compat import (
+            _DIST_MARKER,
+            patch_torch_distributed_device_mesh,
+        )
+
+        torch, dist = self._install_track_a_torch()
+        result = patch_torch_distributed_device_mesh()
+
+        self.assertTrue(result)
+        self.assertTrue(hasattr(dist, "device_mesh"))
+        mesh = dist.device_mesh  # type: ignore[attr-defined]
+        # Real probes: hasattr DeviceMesh / init_device_mesh.
+        self.assertTrue(hasattr(mesh, "DeviceMesh"))
+        self.assertTrue(hasattr(mesh, "init_device_mesh"))
+        self.assertTrue(callable(mesh.DeviceMesh))
+        self.assertTrue(getattr(mesh, _DIST_MARKER, False))
+        self.assertIs(
+            sys.modules.get("torch.distributed.device_mesh"),
+            mesh,
+            "Stub must be in sys.modules so 'import torch.distributed."
+            "device_mesh' works",
+        )
+
+    def test_does_not_clobber_real_device_mesh(self) -> None:
+        from pipeline._torch_xpu_compat import (
+            _DIST_MARKER,
+            patch_torch_distributed_device_mesh,
+        )
+
+        torch, dist, real_mesh = self._install_track_b_torch()
+        result = patch_torch_distributed_device_mesh()
+
+        self.assertTrue(result)
+        self.assertIs(
+            dist.device_mesh,  # type: ignore[attr-defined]
+            real_mesh,
+            "Real torch.distributed.device_mesh (Track B) must NOT be "
+            "overwritten",
+        )
+        self.assertFalse(getattr(real_mesh, _DIST_MARKER, False))
+
+    def test_idempotent(self) -> None:
+        from pipeline._torch_xpu_compat import patch_torch_distributed_device_mesh
+
+        _, dist = self._install_track_a_torch()
+        first = patch_torch_distributed_device_mesh()
+        first_mesh = dist.device_mesh  # type: ignore[attr-defined]
+        second = patch_torch_distributed_device_mesh()
+        second_mesh = dist.device_mesh  # type: ignore[attr-defined]
+
+        self.assertTrue(first)
+        self.assertTrue(second)
+        self.assertIs(first_mesh, second_mesh)
+
+    def test_calling_stub_classes_raises_with_clear_message(self) -> None:
+        """If a caller actually tries to *use* DeviceMesh (build a mesh,
+        not just probe its existence), they should get a clear runtime
+        error -- not a silent no-op that pretends to construct a mesh."""
+        from pipeline._torch_xpu_compat import patch_torch_distributed_device_mesh
+
+        _, dist = self._install_track_a_torch()
+        patch_torch_distributed_device_mesh()
+        with self.assertRaises(RuntimeError) as ctx:
+            dist.device_mesh.DeviceMesh()  # type: ignore[attr-defined]
+        msg = str(ctx.exception).lower()
+        self.assertIn("device_mesh", msg)
+        self.assertIn("torch", msg)
+
+
+class TestPatchAll(unittest.TestCase):
+    """``patch_all`` must apply every torch-attribute compat shim and return
+    a diagnostic mapping. Used by both ``app.py`` startup and the AnimateDiff
+    import belt-and-braces call."""
+
+    def setUp(self) -> None:
+        self._saved = {
+            k: sys.modules[k]
+            for k in list(sys.modules)
+            if k == "torch" or k.startswith("torch.")
+        }
+        for k in self._saved:
+            del sys.modules[k]
+
+    def tearDown(self) -> None:
+        for k in list(sys.modules):
+            if (k == "torch" or k.startswith("torch.")) and k not in self._saved:
+                del sys.modules[k]
+        for k, v in self._saved.items():
+            sys.modules[k] = v
+
+    def test_patch_all_installs_both_stubs_on_track_a(self) -> None:
+        from pipeline._torch_xpu_compat import patch_all
+
+        torch = ModuleType("torch")
+        torch.__version__ = "2.2.2+cu121"  # type: ignore[attr-defined]
+        dist = ModuleType("torch.distributed")
+        dist.is_available = lambda: True  # type: ignore[attr-defined]
+        torch.distributed = dist  # type: ignore[attr-defined]
+        sys.modules["torch"] = torch
+        sys.modules["torch.distributed"] = dist
+
+        result = patch_all()
+        self.assertEqual(result, {
+            "torch.xpu": True,
+            "torch.distributed.device_mesh": True,
+        })
+        # Verify the actual import chain that diffusers + transformers hit:
+        import torch as t  # noqa: PLC0415
+        # diffusers/utils/torch_utils.py line:
+        seed_fn = t.xpu.manual_seed
+        self.assertTrue(callable(seed_fn))
+        seed_fn(42)
+        # transformers / diffusers single_file.py probe:
+        mesh = t.distributed.device_mesh
+        self.assertTrue(hasattr(mesh, "DeviceMesh"))
+
+
 class TestAppPyAppliesTorchXpuPatch(unittest.TestCase):
-    """Static check: ``app.py`` must call ``patch_torch_xpu`` immediately
-    after the diagnostic ``import torch`` so any subsequent diffusers import
-    finds a ``torch.xpu`` to probe."""
+    """Static check: ``app.py`` must call the torch-compat patches
+    immediately after the diagnostic ``import torch`` so any subsequent
+    diffusers import finds the stubs already installed."""
 
     def test_app_py_calls_patch_after_torch_import(self) -> None:
         text = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
         torch_import_idx = text.find("import torch\n")
-        patch_idx = text.find("patch_torch_xpu()")
+        # We accept either the umbrella ``patch_all()`` call or the
+        # individual ``patch_torch_xpu() / patch_torch_distributed_device_mesh()``
+        # calls — whichever app.py wires up.
+        patch_idx = max(
+            text.find("_patch_all_torch_compat()"),
+            text.find("patch_torch_xpu()"),
+        )
         self.assertGreater(
             torch_import_idx,
             -1,
@@ -822,7 +1024,7 @@ class TestAppPyAppliesTorchXpuPatch(unittest.TestCase):
         self.assertGreater(
             patch_idx,
             -1,
-            "app.py must call patch_torch_xpu() at startup",
+            "app.py must call a torch-compat patch at startup",
         )
         self.assertGreater(
             patch_idx,
@@ -833,7 +1035,7 @@ class TestAppPyAppliesTorchXpuPatch(unittest.TestCase):
 
 class TestAnimateDiffImportCallsXpuPatch(unittest.TestCase):
     """Static check: ``background_animatediff._import_animatediff_sdxl``
-    must call ``patch_torch_xpu`` BEFORE the ``from diffusers import
+    must call the torch-compat patches BEFORE the ``from diffusers import
     AnimateDiffSDXLPipeline, DDIMScheduler`` line. This is the safety net
     for any code path that imports diffusers before app startup completes."""
 
@@ -845,14 +1047,17 @@ class TestAnimateDiffImportCallsXpuPatch(unittest.TestCase):
         fn_idx = text.find("def _import_animatediff_sdxl")
         self.assertGreater(fn_idx, -1, "Function must exist")
         body = text[fn_idx:]
-        # First occurrence of each must be in the right order:
-        patch_idx = body.find("patch_torch_xpu()")
+        # Accept the umbrella ``patch_all()`` or the individual patches.
+        patch_idx = max(
+            body.find("_patch_all_torch_compat()"),
+            body.find("patch_torch_xpu()"),
+        )
         diffusers_idx = body.find("from diffusers import AnimateDiffSDXLPipeline")
         self.assertGreater(
             patch_idx,
             -1,
-            "background_animatediff._import_animatediff_sdxl must call "
-            "patch_torch_xpu() before importing diffusers",
+            "background_animatediff._import_animatediff_sdxl must call a "
+            "torch-compat patch before importing diffusers",
         )
         self.assertGreater(
             diffusers_idx,

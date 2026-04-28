@@ -296,15 +296,16 @@ def _import_animatediff_sdxl() -> tuple[Any, Any, Any]:
     try:
         import torch  # type: ignore
 
-        # Track A pins torch 2.2.2 (no torch.xpu); newer diffusers references
-        # torch.xpu at import time without a hasattr() guard. Apply our stub
-        # before the diffusers import so AnimateDiff SDXL can load on Track A.
-        # No-op when torch.xpu already exists (Track B / torch >= 2.3) or the
-        # stub was already installed at startup by _log_runtime_python_and_optional_deps.
+        # Track A pins torch 2.2.2 — predates ``torch.xpu`` (2.3) and
+        # ``torch.distributed.device_mesh`` (2.4). Newer diffusers /
+        # transformers reference both at import time without ``hasattr()``
+        # guards. Apply our compat stubs before the diffusers import so
+        # AnimateDiff SDXL can load on Track A. No-op on Track B (torch >=
+        # 2.4) and idempotent if app startup already applied them.
         try:
-            from pipeline._torch_xpu_compat import patch_torch_xpu
+            from pipeline._torch_xpu_compat import patch_all as _patch_all_torch_compat
 
-            patch_torch_xpu()
+            _patch_all_torch_compat()
         except Exception:  # noqa: BLE001
             pass
 

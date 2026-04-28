@@ -1,38 +1,37 @@
-"""``torch.xpu`` stub for PyTorch < 2.3 (Track A: torch 2.2.2+cu121).
+"""Compat shims for missing ``torch.*`` attributes on PyTorch < 2.4.
 
-PyTorch added the ``torch.xpu`` submodule (Intel Discrete GPU support) in
-**2.3.0**. Track A pins ``torch==2.2.2+cu121`` for the Pinokio Windows lyrics
-stack (so cuDNN-era DLL names match what ctranslate2 4.4.0 expects), so
-``torch.xpu`` simply isn't there.
-
-Newer ``diffusers`` / ``transformers`` / ``peft`` / ``accelerate`` releases
-reference ``torch.xpu.*`` at import time without guarding the access with
-``hasattr(torch, "xpu")``. Concrete failures observed in the wild::
+Track A pins ``torch==2.2.2+cu121`` for the Pinokio Windows lyrics stack
+(so cuDNN-era DLL names match what ctranslate2 4.4.0 expects). Newer
+``diffusers`` / ``transformers`` / ``peft`` / ``accelerate`` releases
+reference torch APIs that landed *after* 2.2.2 — at module import time,
+without guarding the access with ``hasattr()``. Concrete failures observed
+in the wild on Track A::
 
     AttributeError: module 'torch' has no attribute 'xpu'
     AttributeError: module 'torch.xpu' has no attribute 'manual_seed'
+    AttributeError: module 'torch.distributed' has no attribute 'device_mesh'
 
-The latter comes from ``diffusers/utils/torch_utils.py`` building a
-``{device -> seed_fn}`` dispatch table at module load time::
+The first two come from PyTorch 2.3 (Intel discrete GPU support).
+``torch.distributed.device_mesh`` is from PyTorch 2.4 (FSDP2 / TP). Each
+new diffusers/transformers release tends to add another such probe — we
+hit ``torch.xpu`` first, fixed it, then immediately hit
+``torch.distributed.device_mesh`` from the same import chain.
 
-    "xpu": torch.xpu.manual_seed,
+There's no winning whack-a-mole on this attribute set. The fix is a
+permissive ``ModuleType`` stub: explicitly define attributes whose value
+matters semantically (``is_available()`` -> ``False``, ``device_count()``
+-> ``0``), and let ``__getattr__`` synthesise a no-op callable for
+anything else. Sub-namespace probes (``torch.xpu.random.manual_seed_all``)
+return another stub instance, registered in ``sys.modules`` so plain
+``import torch.xpu.random`` also works.
 
-There's no point chasing every individual attribute these libraries probe —
-they'll add more on every release. Instead, the stub is a ``ModuleType``
-subclass with a permissive ``__getattr__``: anything not explicitly
-defined returns a no-op callable that returns ``None``. Attributes whose
-return value matters semantically (``is_available()`` must be ``False``,
-``device_count()`` must be ``0``) are defined explicitly. Sub-namespaces
-``amp`` and ``random`` are themselves stubs of the same class, so
-``torch.xpu.random.manual_seed_all`` and the like also work transparently.
-
-On Track B (torch ≥ 2.4) ``torch.xpu`` already exists — we leave it
-untouched. Real Intel GPU users get the real submodule.
+On Track B (torch ≥ 2.4) the real submodules already exist — we leave them
+untouched. Real Intel GPU and DTensor users get the real APIs.
 
 This is the exact upstream-recommended pattern (see HuggingFace transformers
 issue #37838, PyTorch issue #120397: "use ``hasattr(torch, 'xpu')`` before
 accessing"). We patch the consumer side because we can't fix every
-``diffusers`` release the user might pull.
+``diffusers`` / ``transformers`` release the user might pull.
 """
 
 from __future__ import annotations
@@ -40,18 +39,18 @@ from __future__ import annotations
 import logging
 import sys
 import types
-from typing import Any
+from typing import Any, Iterable
 
 LOGGER = logging.getLogger(__name__)
 
 _PATCH_MARKER = "_glitchframe_torch_xpu_stub"
-_SUBMODULE_NAMES = ("amp", "random")
+_DIST_MARKER = "_glitchframe_torch_dist_device_mesh_stub"
 
 
 def _noop(*_args: Any, **_kwargs: Any) -> None:
-    """Default torch.xpu.* fallback — accepts anything, returns None.
+    """Default fallback: accepts anything, returns None.
 
-    Matches the shape of every "void" torch.xpu function (``manual_seed``,
+    Matches the shape of every "void" torch API (``manual_seed``,
     ``synchronize``, ``empty_cache``, ``set_device``, ...) so consumers
     that only need the call to *succeed* don't crash. Functions that
     semantically must return a typed value (``is_available`` -> bool,
@@ -60,36 +59,38 @@ def _noop(*_args: Any, **_kwargs: Any) -> None:
     return None
 
 
-class _XpuStub(types.ModuleType):
+class _PermissiveStub(types.ModuleType):
     """ModuleType subclass with permissive ``__getattr__``.
 
-    Used for both ``torch.xpu`` and its nested namespaces (``amp``,
-    ``random``). Any attribute not explicitly set on the instance is
-    synthesised as a no-op callable on first access (and cached on the
+    Used as the body of every compat stub we install on torch — both
+    leaves (``torch.xpu``) and nested namespaces (``torch.xpu.random``,
+    ``torch.distributed.device_mesh``). Any attribute not explicitly set
+    is synthesised as a no-op callable on first access (and cached on the
     module so subsequent lookups go through normal attribute resolution).
 
-    Sub-namespace probes (e.g. ``torch.xpu.random.manual_seed_all``)
-    return another ``_XpuStub``, registered in ``sys.modules`` so
-    ``import torch.xpu.random`` also works.
+    Sub-namespace probes return another ``_PermissiveStub``, registered in
+    ``sys.modules`` so ``import torch.xpu.random`` also works. The list of
+    nested namespace names is configured per stub via ``_subnames``.
     """
 
+    _subnames: tuple[str, ...] = ()
+
     def __getattr__(self, name: str) -> Any:
-        # Let dunders fall through naturally — pretending to support
-        # __init_subclass__ / __reduce__ / etc. would be hostile to debugging.
+        # Let dunders fall through naturally. Pretending to support
+        # __reduce__ / __init_subclass__ / etc. would confuse copy.deepcopy,
+        # pickling, debuggers, and isinstance checks.
         if name.startswith("__") and name.endswith("__"):
             raise AttributeError(name)
-        if name in _SUBMODULE_NAMES:
+        if name in self._subnames:
             full_name = f"{self.__name__}.{name}"
-            sub = _XpuStub(full_name)
+            sub = _PermissiveStub(full_name)
             sys.modules[full_name] = sub
             setattr(self, name, sub)
             return sub
         # Synthesised no-op callable; cache on the instance so it round-trips
         # via normal attribute lookup next time (and stays identity-stable).
-        fn = _noop
-        # Give it a more useful name for tracebacks if it ever gets called.
         try:
-            fn = type(_noop)(  # type: ignore[misc]
+            fn: Any = type(_noop)(  # type: ignore[misc]
                 _noop.__code__,
                 _noop.__globals__,
                 f"{self.__name__}.{name}",
@@ -102,11 +103,17 @@ class _XpuStub(types.ModuleType):
         return fn
 
 
-def _build_stub() -> types.ModuleType:
+class _XpuStub(_PermissiveStub):
+    """``torch.xpu`` stub — ``amp`` and ``random`` are nested submodules."""
+
+    _subnames = ("amp", "random")
+
+
+def _build_xpu_stub() -> types.ModuleType:
     """Construct a ``torch.xpu`` stub.
 
     Explicitly defines every attribute whose value matters to a caller.
-    Unknown attributes are synthesised on demand by ``_XpuStub.__getattr__``.
+    Unknown attributes are synthesised on demand by ``__getattr__``.
     """
     stub = _XpuStub("torch.xpu")
 
@@ -139,6 +146,10 @@ def _build_stub() -> types.ModuleType:
     return stub
 
 
+# Backwards-compat alias for tests/old code that imported the previous name.
+_build_stub = _build_xpu_stub
+
+
 def patch_torch_xpu() -> bool:
     """Install a ``torch.xpu`` stub when PyTorch lacks the real submodule.
 
@@ -156,7 +167,7 @@ def patch_torch_xpu() -> bool:
         # clobber a real one; mark our own as already-applied for idempotency.
         return True
 
-    stub = _build_stub()
+    stub = _build_xpu_stub()
     try:
         torch.xpu = stub  # type: ignore[attr-defined]
         sys.modules["torch.xpu"] = stub
@@ -179,4 +190,98 @@ def patch_torch_xpu() -> bool:
     return True
 
 
-__all__ = ["patch_torch_xpu"]
+def _build_device_mesh_stub() -> types.ModuleType:
+    """Construct a ``torch.distributed.device_mesh`` stub.
+
+    The real submodule (added in PyTorch 2.4) exposes ``DeviceMesh`` and
+    ``init_device_mesh``. Code that probes it at import time tends to do
+    ``hasattr(torch.distributed, "device_mesh")`` or just
+    ``torch.distributed.device_mesh.DeviceMesh`` — both are satisfied by a
+    permissive stub. Any callable use raises a clear error so anyone who
+    *actually* tries to build a device mesh on Track A learns immediately.
+    """
+    stub = _PermissiveStub("torch.distributed.device_mesh")
+
+    def _no_device_mesh(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError(
+            "torch.distributed.device_mesh is not available in this PyTorch "
+            "build (Track A: torch 2.2.x). Glitchframe runs single-GPU "
+            "AnimateDiff renders, which don't need device meshes — but if "
+            "you really need this API, upgrade to torch >= 2.4."
+        )
+
+    # Real symbols. Probes return a callable (so ``isinstance`` checks pass);
+    # actual *use* raises with a clear explanation.
+    stub.DeviceMesh = _no_device_mesh  # type: ignore[attr-defined]
+    stub.init_device_mesh = _no_device_mesh  # type: ignore[attr-defined]
+
+    setattr(stub, _DIST_MARKER, True)
+    return stub
+
+
+def patch_torch_distributed_device_mesh() -> bool:
+    """Install a ``torch.distributed.device_mesh`` stub when missing.
+
+    Newer ``transformers`` (4.45+ ish) imports ``torch.distributed.device_mesh``
+    at module load time — fine on PyTorch ≥ 2.4 where it exists, fatal on
+    Track A's torch 2.2.2 (``AttributeError: module 'torch.distributed' has
+    no attribute 'device_mesh'``). The error surfaces from inside
+    ``diffusers.loaders.single_file`` because it imports transformers
+    transitively while loading AnimateDiff SDXL.
+
+    Returns ``True`` if the stub was installed (or already present),
+    ``False`` if torch / torch.distributed isn't loaded yet. Never raises.
+    """
+    torch = sys.modules.get("torch")
+    if torch is None:
+        return False
+
+    # torch.distributed itself exists on every recent torch; it's just the
+    # device_mesh sub-attribute that's missing on 2.2.x.
+    dist = getattr(torch, "distributed", None)
+    if dist is None:
+        return False
+
+    existing = getattr(dist, "device_mesh", None)
+    if existing is not None:
+        return True
+
+    stub = _build_device_mesh_stub()
+    try:
+        dist.device_mesh = stub
+        sys.modules["torch.distributed.device_mesh"] = stub
+    except (AttributeError, TypeError) as exc:
+        LOGGER.warning(
+            "Could not install torch.distributed.device_mesh stub (%s: %s); "
+            "newer transformers / diffusers imports may fail on PyTorch "
+            "< 2.4 (Track A).",
+            type(exc).__name__,
+            exc,
+        )
+        return False
+
+    LOGGER.info(
+        "Installed torch.distributed.device_mesh stub for PyTorch %s — "
+        "transformers / diffusers / accelerate imports that reference it "
+        "without hasattr() will now find an inert DeviceMesh placeholder.",
+        getattr(torch, "__version__", "unknown"),
+    )
+    return True
+
+
+def patch_all() -> dict[str, bool]:
+    """Apply every torch-attribute compat shim. Idempotent.
+
+    Returns a dict ``{patch_name: applied}`` for diagnostics. Never raises.
+    """
+    return {
+        "torch.xpu": patch_torch_xpu(),
+        "torch.distributed.device_mesh": patch_torch_distributed_device_mesh(),
+    }
+
+
+__all__: Iterable[str] = (
+    "patch_torch_xpu",
+    "patch_torch_distributed_device_mesh",
+    "patch_all",
+)
