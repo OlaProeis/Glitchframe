@@ -139,8 +139,6 @@ Open the local URL printed in the console (default port **7860**).
 
 This repository includes [Pinokio](https://pinokio.co/) scripts (`install.js`, `start.js`, `reset.js`, `update.js`, `pinokio.js`, `icon.png`) so you can install and launch from the Pinokio app via **Download from URL** (paste the Git URL). The installer uses Python **3.11**, installs PyTorch **2.2.2+cu121** (CUDA **12.1** index) and the pinned WhisperX / ctranslate2 set (see `install.js`), then `requirements.txt`, `pip install -e .`, and the **`[all]`** extra — plus optional **`nvidia-cudnn-cu12`** and `scripts/windows_provision_cudnn_next_to_ctranslate2.py`. **Click Start** in Pinokio&rsquo;s sidebar after install. You still need **ffmpeg** on your `PATH` and a capable **NVIDIA** GPU. **On Windows**, `start.js` may still set ``GLITCHFRAME_WHISPERX_DEVICE=cpu`` as a safe default; remove it or set **cuda** in `.env` to try **GPU** alignment once the **cu121** stack is installed. Analyze/render still use the GPU when applicable. For discovery, add the GitHub topic **`pinokio`**.
 
-**No shell in Pinokio?** That is common — you are not missing a hidden terminal. Use **Update** then **Install** / **Reinstall** in Pinokio to apply dependency fixes from the repo without typing commands. If you ever need `pip` by hand, open the Glitchframe folder in File Explorer, type `cmd` in the address bar, then `env\Scripts\activate.bat` — details in [`docs/technical/pinokio-package.md`](docs/technical/pinokio-package.md).
-
 ## Troubleshooting
 
 - **Step-by-step (Windows, after PyTorch / lyrics issues):** [docs/technical/windows-venv-recovery-guide.md](docs/technical/windows-venv-recovery-guide.md) — `git pull`, clean `torch`/`torchvision`/`torchaudio` reinstall, extras, test **Align lyrics**.
@@ -149,8 +147,7 @@ This repository includes [Pinokio](https://pinokio.co/) scripts (`install.js`, `
 
 - **Pinokio / Windows:** ``install.js`` installs the **cu121** stack above; ``start.js`` may still default **CPU** WhisperX — remove ``GLITCHFRAME_WHISPERX_DEVICE`` or set **cuda** to try GPU alignment after install.
 
-- **Pinokio / `pip` warns about Gradio vs `markupsafe` / `pillow` after installing torch:** reinstalling CUDA **torch** wheels can float **MarkupSafe 3** and **Pillow 12**, which **Gradio 4.x** rejects. Current ``install.js`` uses ``--no-deps`` on the final torch trio and then reinstalls ``markupsafe>=2.0,<3`` and ``pillow>=10,<11``. If your venv is already broken:  
-  `python -m pip install "markupsafe>=2.0,<3" "pillow>=10,<11"`
+- **Pinokio / Gradio conflicts after torch (`markupsafe` / `pillow`):** older install flows could break Gradio by upgrading those packages; current ``install.js`` avoids that. **Pull latest** and **Reinstall** (or **Install**) in Pinokio so deps are corrected without manual steps. Advanced: [`docs/technical/pinokio-package.md`](docs/technical/pinokio-package.md).
 
 ## Development
 
