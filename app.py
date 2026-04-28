@@ -8,25 +8,31 @@ elapsed time / progress ratio alongside each stage message.
 
 from __future__ import annotations
 
-# --- Speechbrain LazyModule k2 workaround (must run before any heavyweight import) ---
-# whisperx → pyannote-audio → speechbrain>=1.0,<1.1 transitively registers
-# ``speechbrain.integrations.k2_fsa`` as a LazyModule. Its ``__getattr__`` forces
-# ``import k2`` on ANY attribute access — including ``hasattr(mod, "__file__")``.
-# Pythons ``inspect.getmodule`` walks ``sys.modules`` and probes ``__file__`` on every
-# entry; ``librosa`` (audio ingest) and other lazy_loader users call ``inspect.stack``
-# which triggers exactly that walk. Without this stub the FIRST audio upload crashes
-# with ``ImportError: Lazy import of speechbrain.integrations.k2_fsa failed`` (root cause
-# is ``ModuleNotFoundError: No module named 'k2'`` — k2 has no Windows wheel).
-# Pre-registering an empty stub in ``sys.modules`` makes ``import k2`` succeed, so
-# speechbrain's lazy guard passes and the rest of the package loads normally. Users
-# that already installed real k2 are unaffected (``setdefault``). See speechbrain
-# issue #2995 — upstream has not landed the ``__file__``/``__name__`` short-circuit.
+# --- Speechbrain LazyModule Windows compat (must precede any heavyweight import) ---
+# whisperx → pyannote-audio → speechbrain>=1.0,<1.1 registers many ``LazyModule``
+# objects (``speechbrain.integrations.k2_fsa``, ``...integrations.nlp``,
+# multiple ``deprecated_redirect`` shims, ...). Their ``__getattr__`` force-imports
+# the target on ANY attribute access — including ``hasattr(mod, '__file__')``.
+# CPython's ``inspect.getmodule`` walks ``sys.modules`` and probes ``__file__`` on
+# every entry; ``librosa`` (audio ingest) calls ``inspect.stack()`` which triggers
+# that walk. Speechbrain has a guard intended to short-circuit ``inspect.py``
+# probes, but the guard hard-codes ``"/inspect.py"`` (forward slash) which is a
+# **no-op on Windows** (path is ``...\\Lib\\inspect.py``). Result: every audio
+# upload force-imports every speechbrain integration, and whichever integration
+# is missing its optional dep (k2 / flair / ...) crashes the ingest.
+#
+# ``pipeline._speechbrain_compat.patch_speechbrain_lazy_module`` replaces
+# ``LazyModule.ensure_module`` with a separator-aware version (the one-character
+# upstream fix for issue #2995). It runs after speechbrain is loaded — see the
+# call in ``main()``. As a belt-and-braces fallback we also pre-stub ``k2`` in
+# ``sys.modules`` so speechbrain's k2_fsa integration imports cleanly even if
+# the patch ever fails to apply (e.g. a future speechbrain refactors the class).
 import sys as _sys
 import types as _types
 
 _sys.modules.setdefault("k2", _types.ModuleType("k2"))
 del _sys, _types
-# --- end k2 workaround ---
+# --- end speechbrain compat ---
 
 import json
 import logging
@@ -2007,6 +2013,22 @@ def _log_runtime_python_and_optional_deps() -> None:
         )
     else:
         LOGGER.info("whisperx import OK (lyrics alignment can run)")
+        # whisperx pulls speechbrain transitively. Patch its LazyModule guard
+        # NOW, before any user-triggered code calls inspect.stack() / librosa.
+        # See pipeline/_speechbrain_compat.py for the upstream-bug rationale.
+        try:
+            from pipeline._speechbrain_compat import (
+                patch_speechbrain_lazy_module,
+            )
+
+            patch_speechbrain_lazy_module()
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "Could not apply speechbrain LazyModule compat patch: %s — "
+                "audio ingest may crash on Windows when speechbrain "
+                "integrations have missing optional deps (k2 / flair).",
+                exc,
+            )
         try:
             import ctranslate2
 

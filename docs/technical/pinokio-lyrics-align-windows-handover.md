@@ -252,7 +252,7 @@ DLL story was real but **was not blocking alignment** for most users — the
 *audio ingest* step was crashing first, and a numpy ABI mismatch was silently
 corrupting torch. Three concrete bugs were fixed:
 
-### Bug A — Speechbrain `LazyModule` + missing `k2` blew up audio ingest
+### Bug A — Speechbrain `LazyModule` Windows path-separator bug
 
 Pinokio trace from a healthy Track A install (torch 2.2.2+cu121, ctranslate2
 4.4.0 — all good per the diagnostic block):
@@ -270,26 +270,52 @@ File "...\speechbrain\utils\importutils.py", line 112, in __getattr__
     return getattr(self.ensure_module(1), attr)
 File "...\speechbrain\utils\importutils.py", line 103, in ensure_module
     raise ImportError(f"Lazy import of {repr(self)} failed") from e
-ModuleNotFoundError: No module named 'k2'
+ModuleNotFoundError: No module named 'k2'      # or: No module named 'flair'
 ```
 
 **Mechanism.** `whisperx → pyannote-audio → speechbrain>=1.0,<1.1` registers
-`speechbrain.integrations.k2_fsa` as a `LazyModule`. Speechbrain's
-`LazyModule.__getattr__` force-imports the target on **any** attribute access,
-including `hasattr(mod, "__file__")`. CPythons `inspect.getmodule` walks
-`sys.modules` and probes `__file__` on every entry; `librosa`'s `lazy_loader`
-calls `inspect.stack()` when loading `samplerate`. End result: the **first**
-audio upload triggers a forced import of the `k2_fsa` integration, which does
-`import k2` (k2 has no Windows wheel) and raises. Speechbrain upstream issue
-[#2995] has not landed the `__file__`/`__name__` short-circuit fix.
+many `LazyModule` objects (`speechbrain.integrations.k2_fsa`,
+`...integrations.nlp.flair_embeddings`, plus several `deprecated_redirect`
+shims). Speechbrain's `LazyModule.__getattr__` force-imports the target on
+**any** attribute access, including `hasattr(mod, "__file__")`. CPython's
+`inspect.getmodule` walks `sys.modules` and probes `__file__` on every entry;
+`librosa`'s `lazy_loader` calls `inspect.stack()` when loading `samplerate`.
 
-**Fix.** `app.py` pre-registers an empty `k2` stub in `sys.modules`
-(`setdefault`) before any heavyweight import. The `import k2` guard in
-`speechbrain.integrations.k2_fsa.__init__` then succeeds, the lazy module
-loads, and `__file__` becomes a normal attribute access — no more crash from
-`inspect.stack()` walks.
+Speechbrain v1.0.x **does** have a guard intended to short-circuit
+`inspect.py` probes — `LazyModule.ensure_module` raises `AttributeError` (so
+`hasattr` returns `False`) when the calling frame is `inspect.py`. The
+problem is the literal:
+
+```python
+if importer_frame is not None and importer_frame.filename.endswith(
+    "/inspect.py"
+):
+    raise AttributeError()
+```
+
+Hard-coded forward slash. On Windows the path is `…\Lib\inspect.py` —
+backslash. The guard is a **silent no-op on Windows**. Result: every audio
+upload force-imports every speechbrain integration; whichever integration
+has a missing optional dep (`k2` — no Windows wheel; `flair` — heavy NLP
+package, not used by Glitchframe) crashes the ingest. We hit `k2` first,
+fixed it with a `sys.modules` stub, then immediately hit `flair` — pure
+whack-a-mole until the underlying separator bug is cured.
+
+Tracked upstream as speechbrain issue [#2995].
+
+**Fix.** `pipeline/_speechbrain_compat.py` ships a `patch_speechbrain_lazy_module()`
+function that monkey-patches `LazyModule.ensure_module` with a separator-aware
+version (`os.path.basename(filename) == "inspect.py"`). `app.py` calls this
+patch from `_log_runtime_python_and_optional_deps()` immediately after
+`import whisperx` succeeds (so speechbrain is already in `sys.modules` and we
+can reach into the class). The patch is idempotent and a silent no-op when
+speechbrain is absent. As belt-and-braces, `app.py` also pre-stubs `k2` in
+`sys.modules` so the lazy import succeeds even if the patch ever fails to
+apply (e.g. a future speechbrain rename). One-line upstream fix tracked at
+[#2995][upstream-issue].
 
 [#2995]: https://github.com/speechbrain/speechbrain/issues/2995
+[upstream-issue]: https://github.com/speechbrain/speechbrain/issues/2995
 
 ### Bug B — NumPy 2.x silently corrupted torch interop
 
@@ -371,9 +397,10 @@ log and scan for `ImportError: Lazy import of LazyModule(...)`.
 
 | File | What |
 |------|------|
-| `app.py` | Pre-stub `sys.modules['k2']` before any import; survives speechbrain's lazy-module antipattern |
+| `pipeline/_speechbrain_compat.py` | **NEW** — monkey-patches `LazyModule.ensure_module` so its `inspect.py` guard works on Windows (root-cause fix; cures k2/flair/etc. in one shot) |
+| `app.py` | Calls `patch_speechbrain_lazy_module()` after `import whisperx`; pre-stubs `sys.modules['k2']` as belt-and-braces |
 | `pipeline/lyrics_aligner.py` | `_is_cudnn_class_error` + single CPU retry around `_run_whisperx_forced` |
 | `pyproject.toml` | `numpy>=1.26.0,<2.0` in `[project]` dependencies |
 | `requirements.txt` | `numpy>=1.26.0,<2.0` |
-| `install.js` | Explicit `numpy<2` force-reinstall step + `nvidia-cudnn-cu12==8.9.7.29` pin |
-| `tests/test_pinokio_windows_resilience.py` | Pins all four behaviours so a future refactor cannot quietly regress |
+| `install.js` | Explicit `numpy<2` force-reinstall step + `pip uninstall -y nvidia-cudnn-cu12` (no standalone cuDNN wheel) |
+| `tests/test_pinokio_windows_resilience.py` | Pins all five behaviours (LazyModule patch, k2 stub, NumPy ABI, cuDNN policy, CPU retry) so a future refactor cannot quietly regress |
