@@ -750,3 +750,102 @@ render — they screenshot the log and we can tell at a glance.
 | `app.py` | `_summarise_render` appends `compositor: N frames in Xm Ys - avg Z.ZZ fps - encoder=...` to the run log |
 | `tests/test_compositor_progress_threading.py` | **NEW** — 15 tests covering `_format_eta_compositor`, `progress_pair()` warmup vs steady-state output, the 250 ms tick cadence (locked so it can't drift silently), the codec-capable picker promoting the working binary, the `sys.prefix == sys.base_prefix` short-circuit |
 | `tests/test_ffmpeg_tools.py` | +5 tests for path/env logging contract, full-stderr capture on probe failure, the explicit `-loglevel info` (regression guard so probe diagnostics aren't masked again), `log_ffmpeg_diagnostics()` listing candidates and warning when configure lacks `--enable-nvenc` |
+
+---
+
+## 2026-04-28 (even later) — Bug H: NVENC preset family mismatch (`Undefined constant 'p5'`)
+
+A direct fallout from Bug G's multi-candidate sweep. After the
+fork-user's first NVENC-promoted render, the encode died **after**
+SDXL+AnimateDiff finished generating the background — wasting ~30
+minutes of GPU work — with this fresh stderr:
+
+```
+[h264_nvenc @ 000002b7994200c0] [Eval @ 000000f1d1ffe0c0]
+  Undefined constant or missing '(' in 'p5'
+[h264_nvenc @ 000002b7994200c0] Unable to parse option value "p5"
+[h264_nvenc @ 000002b7994200c0] Error setting option preset to value p5.
+Error initializing output stream 0:0 -- Error while opening encoder for
+  output stream #0:0 - maybe incorrect parameters such as bit_rate, ...
+```
+
+### Mechanism
+
+FFmpeg 4.4 (April 2021) / NVENC SDK 11 introduced the modern
+`p1..p7` preset family for `h264_nvenc` / `hevc_nvenc`. Earlier
+ffmpeg builds only accept the legacy `slow|medium|fast|hp|hq|bd|ll|
+llhq|llhp|lossless|losslesshp` family (and reject anything outside
+it with the parse error above). Conda-forge sometimes ships an older
+NVENC-capable ffmpeg in environments that solve to a pinned
+`ffmpeg=4.2.x` — exactly the situation Pinokio's conda env can land
+in, and exactly the situation Bug G's multi-candidate sweep
+*promotes* (the codec probe passes because `-c:v h264_nvenc` itself
+opens fine; only the preset is wrong).
+
+`pipeline/renderer.py:_ffmpeg_video_args("h264_nvenc")` previously
+hardcoded `["-preset", "p5", "-rc", "vbr", "-cq", "19", "-b:v",
+"12M"]`. That was correct for any modern winget ffmpeg or ffmpeg
+official static build, and for the maintainer's local dev box, but
+explodes for an FFmpeg 4.x conda build. Worse, the basic codec probe
+in `_pick_codec_capable_ffmpeg` doesn't pass `-preset p5`, so the
+sweep happily promoted the broken-for-our-args ffmpeg as
+"nvenc-capable" and we only found out 30 minutes into the render.
+
+### Fix
+
+`pipeline/ffmpeg_tools.select_nvenc_preset(binary)`:
+
+* Runs a 1-frame `lavfi` probe with `-c:v h264_nvenc -preset p5`.
+* If the probe succeeds → return `"p5"` (the modern target).
+* If it fails → return `"slow"` (closest legacy equivalent: both
+  are quality-biased presets, ~5% encode-speed difference at 1080p,
+  visually near-equivalent at our `-cq 19` rate target).
+* Result cached per binary path so subsequent encodes don't
+  re-probe. `clear_cache()` resets the cache for tests.
+
+`pipeline/renderer._ffmpeg_video_args(codec, ffmpeg_bin=None)` now
+takes the resolved binary path and consults `select_nvenc_preset`
+when `codec == "h264_nvenc"` instead of hardcoding `p5`.
+`_build_ffmpeg_cmd` forwards `ffmpeg_bin` so the preset auto-detection
+runs against the binary the encode will actually use.
+
+Also fixed a related ordering bug in `pipeline/compositor.py` and
+`pipeline/renderer.py`: both used to call `require_ffmpeg()` to
+resolve `ffmpeg_bin` *before* `select_video_codec(...)` ran. But
+`select_video_codec` may **promote** a different binary into the
+resolver cache via `_pick_codec_capable_ffmpeg` — meaning the
+encode command and the preset probe could end up running against
+*different* ffmpegs. Now both call sites re-resolve `ffmpeg_bin`
+**after** `select_video_codec` so `_ffmpeg_video_args` probes the
+binary that actually ships frames.
+
+### Why the regression test for the picker didn't catch this
+
+The picker's regression test
+(`TestCodecCapableFfmpegPicker::test_picks_second_candidate_when_first_lacks_codec`)
+only proves the picker sweeps candidates and promotes the working
+binary. It doesn't validate that the promoted binary supports the
+specific encoder args we'll later issue. That gap is now covered by
+`TestSelectNvencPreset` (5 tests) plus
+`TestRendererArgsHonourPreset` (3 tests) which lock in:
+
+* The exact "Unable to parse option value 'p5'" stderr triggers the
+  legacy-preset fallback.
+* Result is cached per binary (different ffmpegs get independent
+  preset choices).
+* `-preset p5` appears **after** `-c:v h264_nvenc` in the probe
+  command (otherwise ffmpeg silently ignores it as a generic option
+  and we miss the actual rejection).
+* `pipeline.renderer._ffmpeg_video_args` honours the probed preset
+  rather than reverting to a hardcoded constant.
+* `libx264` args remain unchanged (the adaptation only applies to
+  NVENC).
+
+### Files changed in this fix
+
+| File | What |
+|------|------|
+| `pipeline/ffmpeg_tools.py` | `select_nvenc_preset(binary)` with per-binary cache; `_probe_encoder_with_binary` grew an `extra_args` parameter so the same probe can run with `-preset p5`; `clear_cache()` also clears `_nvenc_preset_cache`; new `NVENC_PRESET_MODERN` / `NVENC_PRESET_LEGACY` constants exported |
+| `pipeline/renderer.py` | `_ffmpeg_video_args(codec, ffmpeg_bin=None)` consults `select_nvenc_preset(ffmpeg_bin)` when codec is NVENC; `render_spectrum_m1` re-resolves `ffmpeg_bin` after `select_video_codec` so the multi-candidate promotion is honoured |
+| `pipeline/compositor.py` | `render_full_video` re-resolves `ffmpeg_bin` after `select_video_codec` for the same reason |
+| `tests/test_compositor_progress_threading.py` | +8 tests across `TestSelectNvencPreset` (modern/legacy/cache/no-ffmpeg/probe arg ordering) and `TestRendererArgsHonourPreset` (NVENC adapts to probe, libx264 unchanged) |

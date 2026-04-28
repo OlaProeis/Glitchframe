@@ -1827,6 +1827,13 @@ def render_full_video(
     )
 
     codec = select_video_codec(cfg.video_codec)
+    # ``select_video_codec`` may have promoted a different ffmpeg into the
+    # resolver cache when the highest-priority binary lacked NVENC but a
+    # lower-priority candidate had it. Re-resolve so the encode command and
+    # the NVENC-preset probe both see the same (working) binary; otherwise
+    # ``_ffmpeg_video_args`` could probe ffmpeg X for ``-preset p5`` while
+    # the encode pipes through ffmpeg Y, producing a parse error mid-render.
+    ffmpeg_bin = require_ffmpeg()
 
     rid = run_id or new_run_id(song_hash=cache.name)
     out_root = Path(outputs_dir) if outputs_dir is not None else OUTPUTS_DIR

@@ -261,6 +261,7 @@ def clear_cache() -> None:
     """Reset the resolver cache (mainly for tests or after installing ffmpeg)."""
     _cache.clear()
     _codec_cache.clear()
+    _nvenc_preset_cache.clear()
 
 
 # Video-encoder capability probe ------------------------------------------------
@@ -269,12 +270,27 @@ DEFAULT_VIDEO_CODEC = "h264_nvenc"
 FALLBACK_VIDEO_CODEC = "libx264"
 
 _codec_cache: dict[str, bool] = {}
+_nvenc_preset_cache: dict[str, str] = {}
 
 
 _PROBE_TAIL_LINES = 14
 
 
-def _probe_encoder_with_binary(binary: str, codec: str) -> tuple[bool, str]:
+# NVENC preset families. FFmpeg 4.4 / NVENC SDK 11 introduced the
+# ``p1..p7`` named presets (``p1`` = fastest, ``p7`` = slowest). Older
+# ffmpeg builds — including the conda-forge ffmpeg sometimes bundled into
+# Pinokio venvs — only understand the legacy names (``slow`` / ``medium``
+# / ``fast`` / ``hp`` / ``hq`` / etc.). ``p5`` is our quality target;
+# ``slow`` is the closest legacy equivalent so the visual quality / file
+# size balance stays similar. ``-cq`` and ``-rc vbr`` are accepted by
+# both generations so only the preset name needs to adapt.
+NVENC_PRESET_MODERN = "p5"
+NVENC_PRESET_LEGACY = "slow"
+
+
+def _probe_encoder_with_binary(
+    binary: str, codec: str, *, extra_args: list[str] | None = None
+) -> tuple[bool, str]:
     """Run a 1-frame lavfi encode through *binary* and report success + stderr tail.
 
     Returns ``(ok, stderr_tail)`` where ``stderr_tail`` is the last
@@ -292,6 +308,10 @@ def _probe_encoder_with_binary(binary: str, codec: str) -> tuple[bool, str]:
     a 256×256 lavfi source comfortably clears that. ``-loglevel info`` is
     required: at ``error`` level ffmpeg suppresses the genuine NVENC
     diagnostic and only prints its useless wrapper message.
+
+    *extra_args* are appended after ``-c:v <codec>`` so we can probe
+    encoder-specific options (e.g. ``["-preset", "p5"]`` to detect whether
+    a given NVENC build understands the modern preset family).
     """
     cmd = [
         binary,
@@ -301,6 +321,7 @@ def _probe_encoder_with_binary(binary: str, codec: str) -> tuple[bool, str]:
         "-i", "color=c=black:s=256x256:d=0.04",
         "-frames:v", "1",
         "-c:v", codec,
+        *(extra_args or []),
         "-f", "null",
         "-",
     ]
@@ -323,6 +344,59 @@ def _probe_encoder_with_binary(binary: str, codec: str) -> tuple[bool, str]:
     )
     tail_lines = stderr_text.splitlines()[-_PROBE_TAIL_LINES:] or ["<no stderr>"]
     return False, "\n".join(tail_lines)
+
+
+def select_nvenc_preset(binary: str | None = None) -> str:
+    """Return the best NVENC preset string supported by *binary*.
+
+    FFmpeg 4.4+ / NVENC SDK 11+ added the ``p1..p7`` named presets. Older
+    builds reject anything outside the legacy ``slow|medium|fast|hp|hq|
+    bd|ll|llhq|llhp|lossless|losslesshp`` family with::
+
+        [h264_nvenc @ ...] [Eval @ ...] Undefined constant or missing '(' in 'p5'
+        [h264_nvenc @ ...] Unable to parse option value "p5"
+        [h264_nvenc @ ...] Error setting option preset to value p5.
+
+    Pinokio's conda env occasionally bundles such an older ffmpeg, and
+    after :func:`_pick_codec_capable_ffmpeg` promotes it (because
+    ``h264_nvenc`` itself is supported) the actual encode then crashes
+    with the parse error above. This helper does a tiny extra probe with
+    ``-preset p5`` to detect whether the modern naming works; if not we
+    fall back to ``slow`` which is the closest legacy equivalent (both
+    are quality-biased, ~5% encode speed difference at 1080p).
+
+    Result is cached per binary for the lifetime of the process. When
+    *binary* is None we resolve via :func:`resolve_ffmpeg`; when no
+    ffmpeg is available we conservatively return the modern preset (the
+    encode will fail loudly if the binary genuinely lacks NVENC, which
+    is a separate problem from "wrong preset name").
+    """
+    if binary is None:
+        binary = resolve_ffmpeg()
+    if not binary:
+        return NVENC_PRESET_MODERN
+    cached = _nvenc_preset_cache.get(binary)
+    if cached is not None:
+        return cached
+    ok, _tail = _probe_encoder_with_binary(
+        binary,
+        DEFAULT_VIDEO_CODEC,
+        extra_args=["-preset", NVENC_PRESET_MODERN],
+    )
+    if ok:
+        _nvenc_preset_cache[binary] = NVENC_PRESET_MODERN
+        return NVENC_PRESET_MODERN
+    LOGGER.info(
+        "ffmpeg %s does not understand NVENC preset '%s' (FFmpeg < 4.4 / "
+        "NVENC SDK < 11); falling back to legacy preset '%s' for this "
+        "binary. To get back to modern presets, install a newer ffmpeg "
+        "build (winget install ffmpeg / conda update -c conda-forge ffmpeg).",
+        binary,
+        NVENC_PRESET_MODERN,
+        NVENC_PRESET_LEGACY,
+    )
+    _nvenc_preset_cache[binary] = NVENC_PRESET_LEGACY
+    return NVENC_PRESET_LEGACY
 
 
 def _probe_encoder(codec: str) -> bool:
@@ -526,11 +600,14 @@ def log_ffmpeg_diagnostics() -> None:
 __all__ = [
     "DEFAULT_VIDEO_CODEC",
     "FALLBACK_VIDEO_CODEC",
+    "NVENC_PRESET_LEGACY",
+    "NVENC_PRESET_MODERN",
     "clear_cache",
     "log_ffmpeg_diagnostics",
     "require_ffmpeg",
     "require_ffprobe",
     "resolve_ffmpeg",
     "resolve_ffprobe",
+    "select_nvenc_preset",
     "select_video_codec",
 ]

@@ -25,7 +25,11 @@ from PIL import Image, ImageDraw
 from config import OUTPUTS_DIR, new_run_id
 from pipeline.audio_analyzer import ANALYSIS_JSON_NAME
 from pipeline.audio_ingest import ORIGINAL_WAV_NAME
-from pipeline.ffmpeg_tools import require_ffmpeg, select_video_codec
+from pipeline.ffmpeg_tools import (
+    require_ffmpeg,
+    select_nvenc_preset,
+    select_video_codec,
+)
 
 DEFAULT_FPS = 30
 DEFAULT_WIDTH = 1920
@@ -125,9 +129,23 @@ def _audio_duration(path: Path) -> float:
     return float(info.duration)
 
 
-def _ffmpeg_video_args(codec: str) -> list[str]:
+def _ffmpeg_video_args(codec: str, *, ffmpeg_bin: str | None = None) -> list[str]:
+    """Encoder-specific args for *codec*, adapting to the active ffmpeg build.
+
+    NVENC's preset name family changed in FFmpeg 4.4 / NVENC SDK 11
+    (``slow``/``medium``/``hp``/``hq`` → ``p1``..``p7``). When the user
+    has a pre-4.4 ffmpeg as their resolved binary (common with Pinokio's
+    conda-env-bundled ffmpeg), the modern ``p5`` preset is rejected at
+    encode time with ``Undefined constant or missing '(' in 'p5'`` and
+    the whole render aborts. :func:`select_nvenc_preset` probes the
+    binary once and returns ``"slow"`` instead so the encode still
+    succeeds at near-equivalent quality. *ffmpeg_bin* lets callers
+    inject the resolved path; ``None`` falls back to whatever
+    :func:`resolve_ffmpeg` returns.
+    """
     if codec == "h264_nvenc":
-        return ["-preset", "p5", "-rc", "vbr", "-cq", "19", "-b:v", "12M"]
+        preset = select_nvenc_preset(ffmpeg_bin)
+        return ["-preset", preset, "-rc", "vbr", "-cq", "19", "-b:v", "12M"]
     extra = (
         os.environ.get("GLITCHFRAME_FFMPEG_VIDEO_ARGS", "").strip()
         or os.environ.get("MUSICVIDS_FFMPEG_VIDEO_ARGS", "").strip()
@@ -195,7 +213,7 @@ def _build_ffmpeg_cmd(
         str(audio_path),
         "-c:v",
         video_codec,
-        *_ffmpeg_video_args(video_codec),
+        *_ffmpeg_video_args(video_codec, ffmpeg_bin=ffmpeg_bin),
         "-c:a",
         "aac",
         "-b:a",
@@ -242,9 +260,14 @@ def render_spectrum_m1(
 
     if fps <= 0:
         raise ValueError(f"fps must be positive, got {fps}")
-    ffmpeg_bin = require_ffmpeg()
 
     codec = select_video_codec(video_codec)
+    # Resolve ffmpeg **after** the codec selection so we see any binary
+    # promoted by the multi-candidate sweep (the highest-priority ffmpeg
+    # might lack NVENC while a later candidate has it). Same reason as in
+    # ``pipeline.compositor.render_full_video``: the NVENC-preset probe
+    # must run against the binary we'll actually pipe frames into.
+    ffmpeg_bin = require_ffmpeg()
 
     analysis = _load_analysis(analysis_p)
     spec_values, spec_fps = _spectrum_array(analysis)

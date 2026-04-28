@@ -293,5 +293,189 @@ class TestActiveEnvBindirPriority(unittest.TestCase):
             self.assertIsNone(ffmpeg_tools._active_env_bindir())
 
 
+class TestSelectNvencPreset(unittest.TestCase):
+    """Regression for the Pinokio "Undefined constant or missing '(' in 'p5'"
+    crash mid-render. Some NVENC-capable ffmpegs (e.g. older conda-forge
+    builds shipped with Pinokio environments) advertise ``h264_nvenc`` but
+    pre-date the FFmpeg 4.4 / NVENC SDK 11 ``p1..p7`` preset family. The
+    multi-candidate picker promoted such a binary because the basic codec
+    probe (no preset) succeeded; the actual encode then died because we
+    hardcoded ``-preset p5``. The fix probes ``-preset p5`` per binary and
+    falls back to legacy ``slow`` when the modern naming isn't accepted."""
+
+    def setUp(self) -> None:
+        ffmpeg_tools.clear_cache()
+
+    def tearDown(self) -> None:
+        ffmpeg_tools.clear_cache()
+
+    def _completed(
+        self, returncode: int, stderr_text: str = ""
+    ) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=returncode,
+            stdout=b"",
+            stderr=stderr_text.encode("utf-8"),
+        )
+
+    def test_returns_modern_preset_when_p5_probe_succeeds(self) -> None:
+        """Modern ffmpeg accepts ``-preset p5`` -> we keep using it. The
+        cache lookup means subsequent calls don't re-spawn ffmpeg."""
+        binary = "C:/winget/ffmpeg.exe"
+        with mock.patch(
+            "pipeline.ffmpeg_tools.subprocess.run",
+            return_value=self._completed(0),
+        ) as run_mock:
+            preset = ffmpeg_tools.select_nvenc_preset(binary)
+            preset_again = ffmpeg_tools.select_nvenc_preset(binary)
+        self.assertEqual(preset, ffmpeg_tools.NVENC_PRESET_MODERN)
+        self.assertEqual(preset, "p5")
+        self.assertEqual(preset_again, ffmpeg_tools.NVENC_PRESET_MODERN)
+        # Cached -> exactly one subprocess invocation across both calls.
+        self.assertEqual(run_mock.call_count, 1)
+
+    def test_falls_back_to_legacy_preset_when_p5_rejected(self) -> None:
+        """Older ffmpeg crashes the probe with ``Unable to parse option
+        value 'p5'``; we must return the legacy ``slow`` preset so the
+        subsequent encode actually opens. This is THE exact symptom from
+        the Pinokio bug report ("Undefined constant or missing '(' in
+        'p5'")."""
+        binary = "C:/pinokio/env/Library/bin/ffmpeg.exe"
+        rejection = (
+            "[h264_nvenc @ 000002b7994200c0] [Eval @ 000000f1d1ffe0c0] "
+            "Undefined constant or missing '(' in 'p5'\n"
+            "[h264_nvenc @ 000002b7994200c0] Unable to parse option value \"p5\"\n"
+            "[h264_nvenc @ 000002b7994200c0] Error setting option preset to value p5.\n"
+            "Error initializing output stream 0:0 -- "
+            "Error while opening encoder for output stream #0:0"
+        )
+        with mock.patch(
+            "pipeline.ffmpeg_tools.subprocess.run",
+            return_value=self._completed(1, rejection),
+        ):
+            preset = ffmpeg_tools.select_nvenc_preset(binary)
+        self.assertEqual(preset, ffmpeg_tools.NVENC_PRESET_LEGACY)
+        self.assertEqual(preset, "slow")
+
+    def test_caches_per_binary(self) -> None:
+        """Different binaries get independent cache entries; the legacy
+        preset for an older ffmpeg shouldn't poison the modern preset for
+        a newer one (or vice versa)."""
+        old_bin = "C:/pinokio/env/Library/bin/ffmpeg.exe"
+        new_bin = "C:/winget/ffmpeg.exe"
+        responses = {
+            old_bin: self._completed(1, "Unable to parse option value 'p5'"),
+            new_bin: self._completed(0),
+        }
+
+        def _fake_run(cmd, **kwargs):
+            return responses[cmd[0]]
+
+        with mock.patch(
+            "pipeline.ffmpeg_tools.subprocess.run", side_effect=_fake_run
+        ):
+            self.assertEqual(
+                ffmpeg_tools.select_nvenc_preset(old_bin),
+                ffmpeg_tools.NVENC_PRESET_LEGACY,
+            )
+            self.assertEqual(
+                ffmpeg_tools.select_nvenc_preset(new_bin),
+                ffmpeg_tools.NVENC_PRESET_MODERN,
+            )
+
+    def test_returns_modern_preset_when_no_ffmpeg(self) -> None:
+        """No binary resolved -> conservatively return modern preset. The
+        encode will fail loudly later for a different reason (no ffmpeg
+        at all) which is the right error to surface."""
+        with mock.patch(
+            "pipeline.ffmpeg_tools.resolve_ffmpeg", return_value=None
+        ):
+            self.assertEqual(
+                ffmpeg_tools.select_nvenc_preset(),
+                ffmpeg_tools.NVENC_PRESET_MODERN,
+            )
+
+    def test_probe_passes_extra_args_after_codec(self) -> None:
+        """Implementation detail worth pinning: ``-preset p5`` must come
+        AFTER ``-c:v h264_nvenc`` in the probe command, otherwise ffmpeg
+        treats it as a generic option that doesn't apply to the encoder
+        and skips the parse error we're trying to detect."""
+        captured = {}
+
+        def _capture(cmd, **kwargs):
+            captured["cmd"] = list(cmd)
+            return self._completed(0)
+
+        binary = "C:/winget/ffmpeg.exe"
+        with mock.patch(
+            "pipeline.ffmpeg_tools.subprocess.run", side_effect=_capture
+        ):
+            ffmpeg_tools.select_nvenc_preset(binary)
+
+        cmd = captured["cmd"]
+        codec_idx = cmd.index("h264_nvenc")
+        self.assertEqual(cmd[codec_idx - 1], "-c:v")
+        # ``-preset p5`` must appear after ``-c:v h264_nvenc``.
+        preset_idx = cmd.index("-preset")
+        self.assertGreater(preset_idx, codec_idx)
+        self.assertEqual(cmd[preset_idx + 1], "p5")
+
+
+class TestRendererArgsHonourPreset(unittest.TestCase):
+    """``pipeline.renderer._ffmpeg_video_args`` must consult
+    :func:`select_nvenc_preset` so its output adapts to the active ffmpeg
+    binary. This is the bridge between the ffmpeg_tools probe and the
+    actual encode command -- if the wiring breaks we'd silently fall back
+    to hardcoded ``p5`` and resurrect the original Pinokio crash."""
+
+    def setUp(self) -> None:
+        ffmpeg_tools.clear_cache()
+
+    def tearDown(self) -> None:
+        ffmpeg_tools.clear_cache()
+
+    def test_nvenc_args_use_probed_preset(self) -> None:
+        """The renderer's NVENC args must include the preset returned by
+        ``select_nvenc_preset`` for the resolved binary, not a hardcoded
+        constant. We patch in ``pipeline.renderer`` (where the symbol was
+        imported) rather than ``pipeline.ffmpeg_tools`` because Python
+        binds the name at import time."""
+        from pipeline.renderer import _ffmpeg_video_args
+
+        with mock.patch(
+            "pipeline.renderer.select_nvenc_preset", return_value="slow"
+        ):
+            args = _ffmpeg_video_args("h264_nvenc", ffmpeg_bin="C:/old/ffmpeg.exe")
+        self.assertIn("-preset", args)
+        preset_idx = args.index("-preset")
+        self.assertEqual(args[preset_idx + 1], "slow")
+        # Other NVENC args (rate-control, bitrate) are version-agnostic
+        # and must keep their previous values.
+        self.assertEqual(args[args.index("-rc") + 1], "vbr")
+        self.assertEqual(args[args.index("-cq") + 1], "19")
+        self.assertEqual(args[args.index("-b:v") + 1], "12M")
+
+    def test_nvenc_args_use_modern_preset_when_supported(self) -> None:
+        from pipeline.renderer import _ffmpeg_video_args
+
+        with mock.patch(
+            "pipeline.renderer.select_nvenc_preset", return_value="p5"
+        ):
+            args = _ffmpeg_video_args(
+                "h264_nvenc", ffmpeg_bin="C:/new/ffmpeg.exe"
+            )
+        preset_idx = args.index("-preset")
+        self.assertEqual(args[preset_idx + 1], "p5")
+
+    def test_libx264_args_unchanged(self) -> None:
+        """The preset adaptation only applies to NVENC; the libx264
+        fallback must keep its existing ``-preset medium -crf 23``."""
+        from pipeline.renderer import _ffmpeg_video_args
+
+        args = _ffmpeg_video_args("libx264")
+        self.assertEqual(args, ["-preset", "medium", "-crf", "23"])
+
+
 if __name__ == "__main__":
     unittest.main()
