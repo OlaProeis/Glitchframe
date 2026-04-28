@@ -23,6 +23,8 @@ pydantic>=2.7,<2.10
 # gradio 4.x is incompatible with starlette 1.0 / fastapi >= 0.116 (template API change).
 fastapi>=0.110,<0.116
 starlette>=0.40,<1.0
+# gradio 4.x — torch/cu121 --force-reinstall must not upgrade these (see install.js / README troubleshooting).
+markupsafe>=2.0,<3
 torch>=2.0.0
 diffusers>=0.27.0
 # SDXL pipeline in diffusers requires transformers + accelerate + sentencepiece.
@@ -34,7 +36,7 @@ librosa>=0.10.0
 soundfile>=0.12.0
 moderngl>=5.10.0
 skia-python>=87.0
-pillow>=10.0.0
+pillow>=10.0.0,<11.0
 numpy>=1.26.0
 pyyaml>=6.0.0
 scipy>=1.11.0

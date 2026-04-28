@@ -147,6 +147,9 @@ This repository includes [Pinokio](https://pinokio.co/) scripts (`install.js`, `
 
 - **Pinokio / Windows:** ``install.js`` installs the **cu121** stack above; ``start.js`` may still default **CPU** WhisperX — remove ``GLITCHFRAME_WHISPERX_DEVICE`` or set **cuda** to try GPU alignment after install.
 
+- **Pinokio / `pip` warns about Gradio vs `markupsafe` / `pillow` after installing torch:** reinstalling CUDA **torch** wheels can float **MarkupSafe 3** and **Pillow 12**, which **Gradio 4.x** rejects. Current ``install.js`` uses ``--no-deps`` on the final torch trio and then reinstalls ``markupsafe>=2.0,<3`` and ``pillow>=10,<11``. If your venv is already broken:  
+  `python -m pip install "markupsafe>=2.0,<3" "pillow>=10,<11"`
+
 ## Development
 
 - Smoke test config/presets: `python config.py`

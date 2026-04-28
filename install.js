@@ -18,8 +18,11 @@ module.exports = {
           "python -m pip install -r requirements.txt",
           "python -m pip install -e .",
           'python -m pip install -e ".[all]"',
-          // Ensure cu121 trio wins if any dependency pulled a different torch build.
-          "python -m pip install --force-reinstall torch==2.2.2+cu121 torchvision==0.17.2+cu121 torchaudio==2.2.2+cu121 --index-url https://download.pytorch.org/whl/cu121",
+          // Re-pin cu121 trio without re-resolving deps (--no-deps). A full --force-reinstall
+          // upgrades Pillow/MarkupSafe to versions Gradio 4.x rejects (UI + ingest break).
+          "python -m pip install --force-reinstall --no-deps torch==2.2.2+cu121 torchvision==0.17.2+cu121 torchaudio==2.2.2+cu121 --index-url https://download.pytorch.org/whl/cu121",
+          // Restore Gradio-compatible pins after any torch-related drift (see README / requirements.txt).
+          "python -m pip install \"markupsafe>=2.0,<3\" \"pillow>=10,<11\"",
           "python -m pip install \"whisperx==3.3.0\" \"faster-whisper==1.1.0\" \"ctranslate2==4.4.0\"",
           // Optional: extra cuDNN DLLs in site-packages; script copies next to ctranslate2 for LoadLibrary.
           "python -m pip install nvidia-cudnn-cu12",

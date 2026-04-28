@@ -5,6 +5,8 @@ description = "Local music video generator (Glitchframe)"
 requires-python = ">=3.11"
 dependencies = [
     "gradio>=4.0,<5",
+    # gradio 4.x — keep MarkupSafe 2.x / Pillow <11; torch reinstalls must not float these (Pinokio install.js).
+    "markupsafe>=2.0,<3",
     # Lower bound only — pip may install 2.6+; WhisperX/pyannote need a compat shim (see pipeline/torch_checkpoint_compat.py) or torch<2.6.
     "torch>=2.0.0",
     "diffusers>=0.27.0",
@@ -12,7 +14,7 @@ dependencies = [
     "soundfile>=0.12.0",
     "moderngl>=5.10.0",
     "skia-python>=87.0",
-    "pillow>=10.0.0",
+    "pillow>=10.0.0,<11.0",
     "numpy>=1.26.0",
     "pyyaml>=6.0.0",
     "scipy>=1.11.0",
