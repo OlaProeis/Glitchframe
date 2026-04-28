@@ -8,6 +8,26 @@ elapsed time / progress ratio alongside each stage message.
 
 from __future__ import annotations
 
+# --- Speechbrain LazyModule k2 workaround (must run before any heavyweight import) ---
+# whisperx → pyannote-audio → speechbrain>=1.0,<1.1 transitively registers
+# ``speechbrain.integrations.k2_fsa`` as a LazyModule. Its ``__getattr__`` forces
+# ``import k2`` on ANY attribute access — including ``hasattr(mod, "__file__")``.
+# Pythons ``inspect.getmodule`` walks ``sys.modules`` and probes ``__file__`` on every
+# entry; ``librosa`` (audio ingest) and other lazy_loader users call ``inspect.stack``
+# which triggers exactly that walk. Without this stub the FIRST audio upload crashes
+# with ``ImportError: Lazy import of speechbrain.integrations.k2_fsa failed`` (root cause
+# is ``ModuleNotFoundError: No module named 'k2'`` — k2 has no Windows wheel).
+# Pre-registering an empty stub in ``sys.modules`` makes ``import k2`` succeed, so
+# speechbrain's lazy guard passes and the rest of the package loads normally. Users
+# that already installed real k2 are unaffected (``setdefault``). See speechbrain
+# issue #2995 — upstream has not landed the ``__file__``/``__name__`` short-circuit.
+import sys as _sys
+import types as _types
+
+_sys.modules.setdefault("k2", _types.ModuleType("k2"))
+del _sys, _types
+# --- end k2 workaround ---
+
 import json
 import logging
 import sys

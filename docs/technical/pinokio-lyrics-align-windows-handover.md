@@ -242,3 +242,122 @@ With (1)+(2)+(3), the next step is **line-by-line** version comparison — not a
 ### 2026 — Pinned Windows (3.11/3.12) stack in-repo
 
 `pyproject.toml` optional extras (`all` / `lyrics` / `analysis`) now define **Track A**: **torch 2.2.2+cu121**, **whisperx 3.3.0**, **faster-whisper 1.1.0**, **ctranslate2 4.4.0** (PEP 508: Windows + `python_version < "3.13"`). **Python 3.13** on Windows uses **Track B** (cu124 + `ctranslate2>=4.5`) because WhisperX 3.3.0 does not support 3.13. Pinokio `install.js` installs Track A explicitly; `scripts/windows_provision_cudnn_next_to_ctranslate2.py` copies CUDNN DLLs next to `ctranslate2` after `nvidia-cudnn-cu12`.
+
+---
+
+## 2026-04-28 — Root cause #2 found: it was NEVER just cuDNN
+
+A clean Pinokio traceback finally surfaced what fork users actually hit. The cuDNN
+DLL story was real but **was not blocking alignment** for most users — the
+*audio ingest* step was crashing first, and a numpy ABI mismatch was silently
+corrupting torch. Three concrete bugs were fixed:
+
+### Bug A — Speechbrain `LazyModule` + missing `k2` blew up audio ingest
+
+Pinokio trace from a healthy Track A install (torch 2.2.2+cu121, ctranslate2
+4.4.0 — all good per the diagnostic block):
+
+```
+File "...\pipeline\audio_ingest.py", line 97, in ingest_audio_file
+    y, sr = librosa.load(src_for_librosa, sr=None, mono=False)
+File "...\librosa\core\audio.py", line 32, in <module>
+    samplerate = lazy.load("samplerate")
+File "...\lazy_loader\__init__.py", line 227, in load
+    parent = inspect.stack()[1]
+File "...\inspect.py", line 988, in getmodule
+    if ismodule(module) and hasattr(module, '__file__'):
+File "...\speechbrain\utils\importutils.py", line 112, in __getattr__
+    return getattr(self.ensure_module(1), attr)
+File "...\speechbrain\utils\importutils.py", line 103, in ensure_module
+    raise ImportError(f"Lazy import of {repr(self)} failed") from e
+ModuleNotFoundError: No module named 'k2'
+```
+
+**Mechanism.** `whisperx → pyannote-audio → speechbrain>=1.0,<1.1` registers
+`speechbrain.integrations.k2_fsa` as a `LazyModule`. Speechbrain's
+`LazyModule.__getattr__` force-imports the target on **any** attribute access,
+including `hasattr(mod, "__file__")`. CPythons `inspect.getmodule` walks
+`sys.modules` and probes `__file__` on every entry; `librosa`'s `lazy_loader`
+calls `inspect.stack()` when loading `samplerate`. End result: the **first**
+audio upload triggers a forced import of the `k2_fsa` integration, which does
+`import k2` (k2 has no Windows wheel) and raises. Speechbrain upstream issue
+[#2995] has not landed the `__file__`/`__name__` short-circuit fix.
+
+**Fix.** `app.py` pre-registers an empty `k2` stub in `sys.modules`
+(`setdefault`) before any heavyweight import. The `import k2` guard in
+`speechbrain.integrations.k2_fsa.__init__` then succeeds, the lazy module
+loads, and `__file__` becomes a normal attribute access — no more crash from
+`inspect.stack()` walks.
+
+[#2995]: https://github.com/speechbrain/speechbrain/issues/2995
+
+### Bug B — NumPy 2.x silently corrupted torch interop
+
+Same trace prelude:
+
+```
+A module that was compiled using NumPy 1.x cannot be run in NumPy 2.4.3 ...
+UserWarning: Failed to initialize NumPy: _ARRAY_API not found
+```
+
+**Mechanism.** Track A pins `torch==2.2.2+cu121`, whose wheel was built against
+NumPy 1.x. `requirements.txt` / `pyproject.toml` only said `numpy>=1.26.0`,
+which lets pip resolve to the latest 2.4.x. Torch keeps running but its
+`tensor_numpy.cpp` bridge logs `_ARRAY_API not found` and any tensor↔numpy
+conversion (audio ingest, demucs, whisperx) is undefined behaviour.
+
+**Fix.** Pin `numpy>=1.26.0,<2.0` in **both** `requirements.txt` and
+`pyproject.toml` `[project]` dependencies. Add an explicit
+`pip install --force-reinstall --no-deps "numpy>=1.26.0,<2.0"` step to
+`install.js` after the extras install (same pattern used for markupsafe/pillow
+to survive `--force-reinstall` torch reinstalls).
+
+### Bug C — `nvidia-cudnn-cu12` (unversioned) installed cuDNN 9, ctranslate2 4.4.0 needs cuDNN 8
+
+`install.js` had `pip install nvidia-cudnn-cu12` with no version. PyPI's latest
+is **cuDNN 9** (DLL names `cudnn_ops64_9.dll`, no `infer/train` split), which
+**does not** satisfy the cuDNN 8 lookups inside ctranslate2 4.4.0. Pin
+`nvidia-cudnn-cu12==8.9.7.29` so the optional `nvidia\cudnn\bin` site-packages
+folder actually contains `cudnn_ops_infer64_8.dll` & friends. This is
+belt-and-braces — torch 2.2.2+cu121 already ships cuDNN 8 in `torch\lib`, and
+`scripts/windows_provision_cudnn_next_to_ctranslate2.py` copies them next to
+`ctranslate2`, but the explicit cuDNN 8 wheel removes ambiguity.
+
+### Bug D — GPU alignment had no automatic fallback
+
+Even with all of the above fixed, individual machines can still have a broken
+GPU CUDA/cuDNN stack (driver mismatch, AV blocking, ACL on `Program Files\NVIDIA`,
+old GPU compute capability, Error 1920, …). `align_lyrics` now wraps
+`_run_whisperx_forced` with a **single CPU retry** for cuDNN-class errors only:
+
+* Matched via `_is_cudnn_class_error(exc)` (substring match on
+  `cudnn`, `could not load library`, `loadlibrary`, `ctranslate2`, `cublas`,
+  `cudart`, `error code 1920`, `cuda error`, …; also walks `__cause__` /
+  `__context__`).
+* Retry is `device="cpu"` / `compute_type="int8"` — exactly what
+  `_default_compute_type("cpu")` returns.
+* SDXL / Demucs / render are **not** touched — they stay on CUDA.
+* If the user already started on CPU (`GLITCHFRAME_WHISPERX_DEVICE=cpu`),
+  there is no second attempt — the original error surfaces.
+
+This is the safety net for fork users whose cuDNN install is unrepairable.
+Performance hit: ~5–10× slower alignment, no other downstream impact.
+
+### Why the "ctranslate2 4.4.0 matches the Windows pinned lyrics stack" log was misleading
+
+The startup probe was correct — Track A pins WERE active. But the user's clicks
+weren't reaching `_run_whisperx_forced` at all because `librosa.load` (audio
+ingest) crashed first. Anyone debugging only the **alignment** path missed the
+**ingest** crash above it. Future investigations: scroll above the alignment
+log and scan for `ImportError: Lazy import of LazyModule(...)`.
+
+### Files changed in this fix
+
+| File | What |
+|------|------|
+| `app.py` | Pre-stub `sys.modules['k2']` before any import; survives speechbrain's lazy-module antipattern |
+| `pipeline/lyrics_aligner.py` | `_is_cudnn_class_error` + single CPU retry around `_run_whisperx_forced` |
+| `pyproject.toml` | `numpy>=1.26.0,<2.0` in `[project]` dependencies |
+| `requirements.txt` | `numpy>=1.26.0,<2.0` |
+| `install.js` | Explicit `numpy<2` force-reinstall step + `nvidia-cudnn-cu12==8.9.7.29` pin |
+| `tests/test_pinokio_windows_resilience.py` | Pins all four behaviours so a future refactor cannot quietly regress |

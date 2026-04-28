@@ -353,6 +353,45 @@ def _default_compute_type(device: str) -> str:
     return "float16" if device == "cuda" else "int8"
 
 
+_CUDNN_ERROR_PATTERNS: tuple[str, ...] = (
+    # CTranslate2 / faster-whisper failure modes seen in the wild on Windows when
+    # cuDNN DLLs are missing, mismatched (cuDNN 8 expected, 9 installed), or blocked
+    # by AV / ACL. Lowercase matched against str(exc) + exc class name.
+    "cudnn",  # any cudnn DLL name (cudnn_ops_infer64_8.dll, cudnn_ops64_9.dll, ...)
+    "could not load library",
+    "could not load shared library",
+    "loadlibrary",
+    "ctranslate2",
+    "cublas",
+    "cudart",
+    "error code 1920",  # ERROR_CANT_ACCESS_FILE — usually AV/locked DLL on Win
+    "no kernel image is available",  # CUDA arch mismatch on older GPUs
+    "cuda error",
+    "cuda runtime",
+    # faster-whisper sometimes wraps the underlying load failure as a generic
+    # RuntimeError mentioning "device" or "cuda" — keep the pattern set tight to
+    # avoid swallowing legitimate alignment errors (e.g. user lyrics-vs-audio
+    # mismatch) that are NOT recoverable by switching to CPU.
+)
+
+
+def _is_cudnn_class_error(exc: BaseException) -> bool:
+    """True when ``exc`` looks like a CTranslate2 / cuDNN / CUDA load failure.
+
+    Scoped narrowly so legitimate alignment errors (empty audio, lyrics mismatch,
+    OOM where CPU also fails) are NOT caught: only string-level evidence of a
+    native-library load problem on the GPU path triggers the CPU retry.
+    """
+    msg = f"{type(exc).__name__} {exc}".lower()
+    cause = getattr(exc, "__cause__", None)
+    if cause is not None:
+        msg += " " + f"{type(cause).__name__} {cause}".lower()
+    ctx = getattr(exc, "__context__", None)
+    if ctx is not None and ctx is not cause:
+        msg += " " + f"{type(ctx).__name__} {ctx}".lower()
+    return any(pat in msg for pat in _CUDNN_ERROR_PATTERNS)
+
+
 def _pick_device(preferred: str | None) -> str:
     # Pinokio / Windows: set GLITCHFRAME_WHISPERX_DEVICE=cpu to avoid
     # ctranslate2 GPU + cudnn_ops_infer64_8.dll load failures (slow but works).
@@ -3268,20 +3307,61 @@ def align_lyrics(
 
     _report(0.05, "Preparing lyrics / vocals for alignment…")
 
-    whisper_words, resolved_language, transcription_words = _run_whisperx_forced(
-        vocals_wav,
-        user_tokens,
-        model_name=model_name,
-        language=language,
-        device=device_resolved,
-        compute_type=compute_type_resolved,
-        batch_size=batch_size,
-        progress=progress,
-        user_section_starts=section_starts,
-        line_anchors=line_anchors,
-        use_silero_vad=use_silero_vad,
-        use_transcription_anchors=use_transcription_anchors,
-    )
+    # GPU → CPU fallback for CTranslate2 / cuDNN / load-library failures.
+    # When ``device_resolved == "cuda"`` and the alignment crashes with a
+    # native-library error (cudnn DLL mismatch, AV-locked file, ctranslate2 GPU
+    # init failure, ...), retry ONCE on CPU+int8 instead of bubbling the error
+    # to the user. SDXL/Demucs/render keep using CUDA — only the WhisperX path
+    # is downgraded. CPU mode runs ~5-10x slower but works on any healthy
+    # Windows install, which is what fork users on Pinokio actually need.
+    try:
+        whisper_words, resolved_language, transcription_words = _run_whisperx_forced(
+            vocals_wav,
+            user_tokens,
+            model_name=model_name,
+            language=language,
+            device=device_resolved,
+            compute_type=compute_type_resolved,
+            batch_size=batch_size,
+            progress=progress,
+            user_section_starts=section_starts,
+            line_anchors=line_anchors,
+            use_silero_vad=use_silero_vad,
+            use_transcription_anchors=use_transcription_anchors,
+        )
+    except Exception as exc:  # noqa: BLE001
+        if device_resolved == "cuda" and _is_cudnn_class_error(exc):
+            LOGGER.warning(
+                "Align lyrics: GPU path failed with a CTranslate2 / cuDNN / "
+                "load-library error (%s: %s); retrying once on CPU+int8. "
+                "Set GLITCHFRAME_WHISPERX_DEVICE=cpu to skip the GPU attempt; "
+                "see docs/technical/pinokio-lyrics-align-windows-handover.md "
+                "to repair the GPU stack.",
+                type(exc).__name__,
+                exc,
+            )
+            release_cuda_memory("whisperx GPU fallback")
+            _report(0.05, "GPU alignment failed; retrying on CPU…")
+            whisper_words, resolved_language, transcription_words = (
+                _run_whisperx_forced(
+                    vocals_wav,
+                    user_tokens,
+                    model_name=model_name,
+                    language=language,
+                    device="cpu",
+                    compute_type="int8",
+                    batch_size=batch_size,
+                    progress=progress,
+                    user_section_starts=section_starts,
+                    line_anchors=line_anchors,
+                    use_silero_vad=use_silero_vad,
+                    use_transcription_anchors=use_transcription_anchors,
+                )
+            )
+            device_resolved = "cpu"
+            compute_type_resolved = "int8"
+        else:
+            raise
 
     _report(0.92, "Reconciling forced-alignment output with pasted lyrics…")
     # With forced alignment, ``whisper_words`` is already (almost) a 1-to-1

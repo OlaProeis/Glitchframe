@@ -2,6 +2,17 @@
 // while resolving Python / downloading multi‑GB wheels).
 // Windows + Python 3.11 (Pinokio venv): use the repo's pinned CUDA 12.1 lyrics stack —
 // torch 2.2.2+cu121, WhisperX 3.3.0, ctranslate2 4.4.0 — matching DLL expectations for GPU Align lyrics.
+//
+// Pinning rationale (do not "modernise" without retesting Pinokio end-to-end on Windows):
+//   * torch 2.2.2 wheels were built against NumPy 1.x → must keep numpy<2 or torch
+//     prints "_ARRAY_API not found" and silently breaks tensor<->numpy interop.
+//   * ctranslate2 4.4.0 expects cuDNN 8 (cudnn_ops_infer64_8.dll); torch 2.2.2+cu121
+//     ships those DLLs in torch\lib. Optional nvidia-cudnn-cu12==8.9.7.29 wheel
+//     adds a clean copy under site-packages\nvidia\cudnn\bin (NOT cuDNN 9 which is
+//     pip's default for unversioned `nvidia-cudnn-cu12` and would NOT satisfy ct2 4.4).
+//   * MarkupSafe 3 + Pillow 12 break Gradio 4.x — re-pin after any torch reinstall.
+//   * Speechbrain LazyModule (transitive via whisperx→pyannote-audio) crashes on
+//     attribute probes when k2 is missing; app.py pre-stubs `k2` in sys.modules.
 module.exports = {
   run: [
     {
@@ -21,11 +32,16 @@ module.exports = {
           // Re-pin cu121 trio without re-resolving deps (--no-deps). A full --force-reinstall
           // upgrades Pillow/MarkupSafe to versions Gradio 4.x rejects (UI + ingest break).
           "python -m pip install --force-reinstall --no-deps torch==2.2.2+cu121 torchvision==0.17.2+cu121 torchaudio==2.2.2+cu121 --index-url https://download.pytorch.org/whl/cu121",
-          // Restore Gradio-compatible pins after any torch-related drift (see README / requirements.txt).
+          // Restore Gradio-compatible pins AND the NumPy 1.x ABI torch 2.2.2 needs.
+          // Without numpy<2, torch logs "_ARRAY_API not found" and any tensor<->numpy
+          // bridge (audio ingest, demucs, whisperx) silently misbehaves.
+          "python -m pip install --force-reinstall --no-deps \"numpy>=1.26.0,<2.0\"",
           "python -m pip install \"markupsafe>=2.0,<3\" \"pillow>=10,<11\"",
           "python -m pip install \"whisperx==3.3.0\" \"faster-whisper==1.1.0\" \"ctranslate2==4.4.0\"",
-          // Optional: extra cuDNN DLLs in site-packages; script copies next to ctranslate2 for LoadLibrary.
-          "python -m pip install nvidia-cudnn-cu12",
+          // Belt-and-braces: pin cuDNN 8.9.7 wheel (matches ctranslate2 4.4.0). Without
+          // a version constraint pip pulls cuDNN 9 which uses different DLL names
+          // (cudnn_ops64_9.dll) and does NOT satisfy ctranslate2 4.4's cuDNN 8 lookups.
+          "python -m pip install \"nvidia-cudnn-cu12==8.9.7.29\"",
           "python scripts/windows_provision_cudnn_next_to_ctranslate2.py",
         ],
       },
@@ -34,7 +50,7 @@ module.exports = {
       method: "notify",
       params: {
         html:
-          "Python deps are installed (including <b>Demucs + WhisperX</b> on the <b>cu121</b> stack). Pinokio does <b>not</b> auto-launch the server &mdash; click <b>Start</b> in the sidebar. You need <code>ffmpeg</code> on your <code>PATH</code> for video encode; see README. Align lyrics may use GPU if you clear <code>GLITCHFRAME_WHISPERX_DEVICE=cpu</code> from <code>start.js</code> or set <code>cuda</code> in <code>.env</code>.",
+          "Python deps are installed (including <b>Demucs + WhisperX</b> on the <b>cu121</b> stack). Pinokio does <b>not</b> auto-launch the server &mdash; click <b>Start</b> in the sidebar. You need <code>ffmpeg</code> on your <code>PATH</code> for video encode; see README. Align lyrics defaults to <b>CPU</b> (slow but reliable); to try GPU, clear <code>GLITCHFRAME_WHISPERX_DEVICE=cpu</code> from <code>start.js</code>.",
       },
     },
   ],
