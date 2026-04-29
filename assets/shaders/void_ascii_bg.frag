@@ -1,8 +1,13 @@
 #version 330
 
-// Minimal void background for the voidcat-ASCII compositor: dark wash, light
-// grain, palette-tinted vignette, optional edge shimmer from transients. The
-// cat lives in the CPU ASCII layer, not here.
+// Minimal void background pass for the voidcat-ASCII compositor. Historically
+// this layer painted a palette-tinted noise wash on top of the SDXL/AnimateDiff
+// still, which read as drifting "clouds" over the cleanly-rendered background
+// and washed out the CPU ASCII grid that lives on top. The reactive shader's
+// job here is intentionally close to a no-op: gently darken the background so
+// the bright ASCII glyphs pop, and pulse the darken on bass/drop hits to add
+// a hint of motion. The cat + grid (the actual subject) live in the
+// :mod:`pipeline.voidcat_ascii` CPU layer, not here.
 
 in vec2 v_uv;
 out vec4 out_color;
@@ -27,63 +32,45 @@ uniform int u_palette_size;
 uniform sampler2D u_background;
 uniform float u_comp_background;
 
-const float TAU = 6.28318530717958647692;
-
 vec3 palette_pick(int idx) {
     int n = max(1, u_palette_size);
     int i = ((idx % n) + n) % n;
     return u_palette[i];
 }
 
-float hash21(vec2 p) {
-    p = fract(p * vec2(123.34, 456.21));
-    p += dot(p, p + 45.32);
-    return fract(p.x * p.y);
-}
-
 void main() {
-    // This pass must stay visible on near-black video backgrounds. Older
-    // coefficients with alpha capped at 0.45 and palette * 0.1 made premul
-    // ``ov.rgb`` almost zero over black (result ≈ (1-a)*bg).
     float t_lo = clamp(transient_lo, 0.0, 1.0);
-    float t_hi = clamp(transient_hi, 0.0, 1.0);
-    float tension = clamp(build_tension, 0.0, 1.0);
     float hold = clamp(drop_hold, 0.0, 1.0);
-    float rms_g = rms * rms;
-    float i_eff = max(intensity, 0.2);
 
     float aspect = resolution.x / max(resolution.y, 1.0);
     vec2 p = (v_uv - 0.5) * vec2(2.0 * aspect, 2.0);
-    float d = length(p);
-    float vig = 1.0 - smoothstep(0.35, 1.1, d);
+    float r = length(p);
 
-    float n = hash21(floor(v_uv * vec2(200.0, 200.0 * resolution.y / max(resolution.x, 1.0))));
-    vec3 p0 = palette_pick(0);
-    vec3 p1 = palette_pick(1);
-    vec3 p3 = palette_pick(3);
-    vec3 p4 = palette_pick(4);
-    // Audio-gated wash: ramp the base brightness with energy so silent
-    // sections fade toward zero and the SDXL/AnimateDiff background can
-    // read through. (Previously a flat 0.38 base + 0.04 * p1 + 0.03 * p4
-    // ambient lift painted the frame even when ``rms`` was ~0 and combined
-    // with the 0.28 alpha floor below to fully hide the background.)
-    vec3 c0 = p0 * (0.10 + 0.55 * rms_g + 0.22 * hold);
-    vec3 c1 = mix(p1, p3, 0.35 * t_lo + 0.25 * t_hi);
-    vec3 col = c0;
-    col += c1 * (0.12 + 0.28 * t_hi) * vig;
-    col += (n - 0.5) * 0.06 * (0.5 + onset_env);
-    col += p4 * 0.10 * t_hi * (1.0 - vig);
-    col = mix(col, col * 0.62, 0.5 * tension);
+    // Soft radial mask: corners darken slightly, centre stays clean. Stays
+    // small so SDXL detail in the middle of the frame reads through.
+    float corner_mask = smoothstep(0.55, 1.20, r);
 
-    // Content-driven alpha (matches the contract in
-    // ``docs/technical/reactive-shader-layer.md``): luminance of the
-    // rendered colour drives opacity, with a small audio lift on hits.
-    // No floor — quiet + empty pixels stay transparent so the background
-    // reads through.
-    float content = clamp(dot(col, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
-    float audio_lift = 0.30 * rms + 0.18 * t_lo + 0.16 * hold;
-    float a = clamp((content + audio_lift) * i_eff, 0.0, 0.85);
-    vec4 ov = vec4(col * a, a);
+    // Background-only path: the layer is otherwise transparent so the SDXL
+    // / AnimateDiff still renders untouched at the centre. ``corner_darken``
+    // pulses gently with bass + post-drop afterglow so quiet sections sit
+    // calm and loud sections dip a hair.
+    float audio_pulse = 0.55 * bass_hit + 0.30 * hold + 0.18 * t_lo;
+    float corner_darken = (0.10 + 0.10 * audio_pulse) * corner_mask;
+
+    // Tiny accent tint at the corners only, so the palette informs the
+    // darkening without painting a visible cloud over the whole frame.
+    vec3 tint = mix(palette_pick(0), palette_pick(1), 0.5);
+
+    // Premultiplied output: the shader contributes a near-black tint at the
+    // corners and zero at the centre, so the composite formula
+    // ``ov.rgb + bg * (1 - ov.a)`` falls through to ``bg`` everywhere except
+    // the soft outer ring. Alpha is driven entirely by ``corner_darken`` so
+    // silent uniforms still leave the SDXL still visible (regression test
+    // ``test_silent_uniforms_let_bg_dominate``).
+    float a = clamp(corner_darken * intensity, 0.0, 0.45);
+    vec3 col = tint * 0.10;  // very dark accent toward the rim
+    vec3 premul = col * a;
+    vec4 ov = vec4(premul, a);
     if (u_comp_background > 0.5) {
         vec3 bg = texture(u_background, v_uv).rgb;
         out_color = vec4(ov.rgb + bg * (1.0 - ov.a), 1.0);

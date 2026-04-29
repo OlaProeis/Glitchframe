@@ -58,6 +58,7 @@
 - `docs/technical/background-stills.md` - SDXL FP16 keyframe generator, section-aware prompts, cached PNGs under `cache/<hash>/background/`, and smoothstep-crossfade `background_frame(t)` API.
 - `docs/technical/background-modes.md` - `BackgroundSource` factory, Ken Burns + AnimateDiff caches, Gradio/orchestrator mode wiring (cross-ref SDXL stills doc).
 - `docs/technical/frame-compositor.md` - Per-frame compositor pipeline: bg + reactive + typography + logo, compositor-scope shader uniforms (`bass_hit`, `transient_lo/mid/hi`, `drop_hold`) built once per render, bounded queue producer/consumer, `bgr24` ffmpeg stdin.
+- `docs/technical/audio-vignette.md` - Audio-pulsing dark-edge vignette post-pass (between shader composite and typography) — adds baseline SDXL/shader contrast and a subtle bass + drop_hold breath at the corners.
 - `docs/technical/thumbnail-generator.md` - Chorus/RMS frame pick, `render_single_frame`, Skia title overlay, and `thumbnail.png` beside `output.mp4`.
 - `docs/technical/metadata-generator.md` - `metadata.txt` (title, description, chapters, tags) from analysis, lyrics, and preset; `write_run_metadata` in `orchestrator.py`.
 - `docs/technical/preview-and-render.md` - Preview 10 s (loudest RMS window), full render, progress/ETA mapping, and ffprobe A/V sync validation.

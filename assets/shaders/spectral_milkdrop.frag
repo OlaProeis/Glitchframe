@@ -209,12 +209,16 @@ void main() {
     );
     float fbm_v = fbm(kp * 2.6 + 4.0 * q2);
 
-    // Bright filament ridges (Milkdrop "smoke threads").
+    // Bright filament ridges (Milkdrop "smoke threads"). Sharper exponents
+    // (2026-04) tighten the ridges into clean threads instead of soft
+    // clouds — the soft base wash below is also reduced so the
+    // kaleidoscope reads as crisp filaments over the SDXL/AnimateDiff
+    // background rather than a haze.
     float ridge = 1.0 - abs(fbm_v - 0.5) * 2.0;
-    ridge = pow(clamp(ridge, 0.0, 1.0), 6.0);
+    ridge = pow(clamp(ridge, 0.0, 1.0), 8.0);
     // Secondary fine ridge for crunch on hats / drops.
     float fine_v = fbm(kp * 6.5 + 2.0 * q2 + vec2(time * 0.09, -time * 0.07));
-    float fine = pow(clamp(1.0 - abs(fine_v - 0.5) * 2.0, 0.0, 1.0), 14.0);
+    float fine = pow(clamp(1.0 - abs(fine_v - 0.5) * 2.0, 0.0, 1.0), 16.0);
 
     // -----------------------------------------------------------------
     //  WAVEFORM TRACE — glowing horizontal+vertical sinusoids whose
@@ -255,13 +259,23 @@ void main() {
     vec3 spark = palette_ramp(hue + 0.55 + 0.30 * t_hi);
     vec3 trace_col = palette_ramp(hue + 0.78);
 
-    vec3 fresh = mix(base * 0.55, base * 1.05, smoothstep(0.25, 0.75, fbm_v));
-    fresh = mix(fresh, hot * 1.30, ridge * (0.55 + 0.45 * env));
-    fresh = mix(fresh, spark, fine * (0.45 + 0.55 * t_hi + 0.25 * pulse));
-    fresh += trace_col * trace * (0.32 + 0.85 * pulse + 0.45 * t_mid + 0.32 * env);
+    // Soft base wash heavily reduced (2026-04). Previously a smoothstepped
+    // ``fresh = mix(base*0.55, base*1.05, ...)`` painted a constant
+    // mid-luminance haze over the kaleidoscope, which read as ugly
+    // "clouds" on top of the SDXL/AnimateDiff background. The base now
+    // only lights pixels where the FBM threshold is high so the picture
+    // is dominated by the sharp ridge/fine/trace structures and the
+    // background reads through the empty space.
+    float base_mask = smoothstep(0.45, 0.85, fbm_v);
+    vec3 fresh = base * 0.20 * base_mask;
+    fresh = mix(fresh, hot * 1.45, ridge * (0.65 + 0.45 * env));
+    fresh = mix(fresh, spark, fine * (0.55 + 0.55 * t_hi + 0.30 * pulse));
+    // Trace lines amplified — this is the signature kaleidoscope element
+    // and the user feedback flagged it as the part worth keeping.
+    fresh += trace_col * trace * (0.55 + 1.15 * pulse + 0.65 * t_mid + 0.45 * env);
 
     // Drop afterglow — palette[4] bloom riding the bright FBM tips only.
-    fresh += palette_pick(4) * (0.30 * hold) * smoothstep(0.30, 0.85, fbm_v);
+    fresh += palette_pick(4) * (0.40 * hold) * smoothstep(0.30, 0.85, fbm_v);
 
     // Build-up dampening: pull toward cool slots and desaturate.
     vec3 cold = mix(palette_pick(0), palette_pick(1), smoothstep(0.20, 0.80, fbm_v));
@@ -269,14 +283,12 @@ void main() {
     float luma = dot(fresh, vec3(0.2126, 0.7152, 0.0722));
     fresh = mix(fresh, vec3(luma), 0.30 * tension);
 
-    // Audio-gated ambient wash. The reactive layer is composited as a
-    // *premultiplied overlay* (see ``docs/technical/reactive-shader-layer.md``)
-    // so anything we lay down here also lifts the alpha in :func:`alpha`
-    // below — a constant ambient term would paint the whole frame opaque
-    // even during silent passages and hide the SDXL/AnimateDiff background.
-    // Gate on ``rms_soft + spec_sum`` so the wash ramps in with energy
-    // rather than sitting under every frame.
-    float wash_amp = 0.10 * rms_soft + 0.06 * spec_sum;
+    // Audio-gated ambient wash trimmed (2026-04). The previous
+    // ``0.10 * rms_soft + 0.06 * spec_sum`` was small individually but
+    // stacked with the now-trimmed ``fresh`` base it lifted the entire
+    // frame off the background during loud sections. Keep just enough so
+    // post-drop rises still tint the empty space gently.
+    float wash_amp = 0.04 * rms_soft + 0.02 * spec_sum;
     fresh += mix(palette_pick(2), palette_pick(1), 0.5) * wash_amp;
 
     // Continuous-UV hash grain (no chunky pixel blocks in encodes).
@@ -287,9 +299,13 @@ void main() {
     // -----------------------------------------------------------------
     //  EMIT / TRAIL COMBINE
     // -----------------------------------------------------------------
-    float emit = (0.40 + 0.42 * rms_g + 0.36 * bass_hit + 0.30 * t_lo
-                  + 0.20 * env + 0.18 * pulse + 0.20 * hold
-                  + 0.14 * ridge + 0.20 * trace)
+    // Slightly higher emit baseline + steeper audio terms (2026-04) so the
+    // sharper ridges/trace lines pump harder against the SDXL backdrop.
+    // ``ridge`` and ``trace`` contribute more so the kaleidoscope reads
+    // brighter even during sustained loud passages, not just kick attacks.
+    float emit = (0.55 + 0.50 * rms_g + 0.50 * bass_hit + 0.38 * t_lo
+                  + 0.24 * env + 0.26 * pulse + 0.30 * hold
+                  + 0.28 * ridge + 0.34 * trace)
                * (1.0 - 0.22 * tension)
                * i_eff;
 
@@ -327,8 +343,11 @@ void main() {
     // empty pixels read as alpha = 0 and the SDXL still passes through
     // untouched.
     float content = clamp(dot(acc, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
-    float audio_lift = 0.22 * bass_hit + 0.18 * peak + 0.14 * hold
-                     + 0.10 * env + 0.08 * trace;
+    // Audio lift bumped (2026-04) so kicks / drops punch harder in the
+    // composite — paired with the now-trimmed soft wash so silent
+    // sections still let the background dominate.
+    float audio_lift = 0.32 * bass_hit + 0.28 * peak + 0.22 * hold
+                     + 0.14 * env + 0.14 * trace;
     float alpha = clamp((content + audio_lift) * i_eff, 0.0, 0.95);
     vec3 premul = acc * alpha;
 

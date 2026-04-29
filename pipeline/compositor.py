@@ -41,6 +41,11 @@ from config import (
     new_run_id,
 )
 from pipeline.audio_ingest import ORIGINAL_WAV_NAME
+from pipeline.audio_vignette import (
+    AudioVignetteContext,
+    apply_audio_vignette,
+    build_audio_vignette_context,
+)
 from pipeline.background import BackgroundSource
 from pipeline.chromatic_aberration import apply_chromatic_aberration
 from pipeline.color_invert import apply_invert_mix, invert_mix
@@ -431,6 +436,15 @@ class CompositorConfig:
     # etc.) so it stays legible. The ASCII grid is still only drawn in the
     # first pass, preserving the "glitchy field" look.
     voidcat_ascii_sharp_cat: bool = False
+    # Audio-pulsing dark-edge vignette applied between the reactive composite
+    # (bg + shader + ascii) and the typography / title / logo passes. Adds a
+    # baseline of contrast between SDXL/AnimateDiff backgrounds and the
+    # reactive shader, plus a subtle bass + drop_hold breath at the corners
+    # so the picture feels held by a pulsing dark frame. See
+    # :mod:`pipeline.audio_vignette`. Disable per-render to debug raw shader
+    # output; ``audio_vignette_strength`` scales every contribution.
+    audio_vignette_enabled: bool = True
+    audio_vignette_strength: float = 1.0
 
 
 def _audio_duration(path: Path) -> float:
@@ -875,6 +889,25 @@ def _build_frame_effects_context(
     )
 
 
+def _build_audio_vignette_context(
+    cfg: CompositorConfig,
+) -> AudioVignetteContext | None:
+    """Build the precomputed vignette mask once per render, or ``None``.
+
+    Returns ``None`` when the feature is disabled in the config or the user
+    knob has been zeroed out, so the per-frame call short-circuits to a
+    byte-identical no-op (legacy behaviour pre-2026-04 vignette pass).
+    """
+    if not bool(cfg.audio_vignette_enabled):
+        return None
+    strength = float(cfg.audio_vignette_strength)
+    if strength <= 0.0:
+        return None
+    return build_audio_vignette_context(
+        int(cfg.width), int(cfg.height), strength=strength
+    )
+
+
 def _apply_frame_effects(
     frame: np.ndarray, t: float, fx: _FrameEffectsContext | None
 ) -> np.ndarray:
@@ -1073,10 +1106,11 @@ def _render_compositor_frame(
     resolved_rim_config: RimLightConfig | None = None,
     beam_ctx: _BeamRenderContext | None = None,
     frame_effects: _FrameEffectsContext | None = None,
+    audio_vignette_ctx: AudioVignetteContext | None = None,
     stage_timings: dict[str, float] | None = None,
 ) -> np.ndarray:
-    """One RGB frame: background → reactive → [ascii] → typography → title →
-    [rim beams] → logo → FX.
+    """One RGB frame: background → reactive → [ascii] → [vignette] →
+    typography → title → [rim beams] → logo → FX.
 
     Optional voidcat ASCII (``cfg.voidcat_ascii_ctx``) runs after the reactive
     pass so glyphs sit on the background wash but under lyrics and logo, leaving
@@ -1165,6 +1199,19 @@ def _render_compositor_frame(
         if stage_timings is not None:
             _t1 = time.perf_counter()
             stage_timings["voidcat"] = _t1 - _t0
+            _t0 = _t1
+    # Audio-pulsing edge vignette sits between the picture (bg + reactive
+    # shader + voidcat ASCII) and the typography / branding layers so the
+    # corners breathe with the music without darkening lyrics, title or
+    # logo. ``apply_audio_vignette`` is a no-op when ``audio_vignette_ctx``
+    # is ``None`` (disabled in cfg) so the legacy path stays byte-identical.
+    if audio_vignette_ctx is not None:
+        composited = apply_audio_vignette(
+            composited, uniforms, audio_vignette_ctx
+        )
+        if stage_timings is not None:
+            _t1 = time.perf_counter()
+            stage_timings["vignette"] = _t1 - _t0
             _t0 = _t1
     if typo_layer is not None:
         typo_rgba = typo_layer.render_frame(float(t), uniforms)
@@ -1640,6 +1687,7 @@ def render_single_frame(
         resolved_rim_config=resolved_rim_config,
     )
     frame_effects = _build_frame_effects_context(cfg, analysis)
+    audio_vignette_ctx = _build_audio_vignette_context(cfg)
 
     has_typography = bool(aligned_words)
 
@@ -1688,6 +1736,7 @@ def render_single_frame(
                 resolved_rim_config=resolved_rim_config,
                 beam_ctx=beam_ctx,
                 frame_effects=frame_effects,
+                audio_vignette_ctx=audio_vignette_ctx,
             )
         finally:
             if typo_layer is not None:
@@ -1845,6 +1894,7 @@ def render_full_video(
         resolved_rim_config=resolved_rim_config,
     )
     frame_effects = _build_frame_effects_context(cfg, analysis)
+    audio_vignette_ctx = _build_audio_vignette_context(cfg)
 
     if start_sec < 0:
         raise ValueError(f"start_sec must be non-negative, got {start_sec!r}")
@@ -2085,6 +2135,7 @@ def render_full_video(
                             resolved_rim_config=resolved_rim_config,
                             beam_ctx=beam_ctx,
                             frame_effects=frame_effects,
+                            audio_vignette_ctx=audio_vignette_ctx,
                             stage_timings=stage_timings,
                         )
 

@@ -172,10 +172,16 @@ void main() {
     // The previous ``0.50 + 0.55 * cloud`` baked a 50 % floor that painted
     // the entire frame even where ``cloud`` was zero.
     // See ``docs/technical/reactive-shader-layer.md``.
-    float alpha = clamp(cloud
+    //
+    // Cloud weighting bumped (2026-04): the nebula now has ~1.3x the
+    // baseline opacity so it reads as a clear nebula on top of the SDXL
+    // still rather than a thin haze that the still wins out over. Quiet,
+    // empty regions (low ``cloud``) still drop near zero so the
+    // background shows through where the nebula isn't painting.
+    float alpha = clamp(pow(cloud, 0.85)
                         * vignette
                         * intensity
-                        * (1.0 + 0.30 * hold),
+                        * (1.30 + 0.45 * hold + 0.25 * t_lo + 0.20 * pulse),
                         0.0, 1.0);
     vec3 col = neb * alpha;
     vec4 ov = vec4(col, alpha);

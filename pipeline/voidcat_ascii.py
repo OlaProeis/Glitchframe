@@ -502,8 +502,11 @@ def _blit_voidcat_silhouette(
     """Draw the multiline cat and optional * laser column in ``out``."""
     lines = _CAT_LINES
     row_len = max(len(s) for s in lines) if lines else 0
-    # w_cat includes ambient (~0.32); map to stable draw strength.
-    a_cat = 0.18 + 0.52 * min(1.0, w_cat)
+    # w_cat includes ambient (~0.32); map to stable draw strength. Bumped
+    # alongside the grid base alpha (2026-04) so the side cat reads against
+    # SDXL backgrounds without leaning on the now-near-transparent
+    # ``void_ascii_bg`` shader pass.
+    a_cat = 0.32 + 0.58 * min(1.0, w_cat)
     c_rgb = _lerp3(pal[1], pal[3], 0.42 + 0.25 * min(1.0, w_cat))
     for li, line in enumerate(lines):
         for k, ch0 in enumerate(line):
@@ -633,12 +636,16 @@ def render_voidcat_ascii_rgba(
 
     rms = float(uniforms.get("rms", 0.0))
     t_hi = float(uniforms.get("transient_hi", 0.0))
+    bass = float(uniforms.get("bass_hit", 0.0))
+    hold = float(uniforms.get("drop_hold", 0.0))
     pal = ctx.palette_rgb
 
-    # Stay readable on black / very dark video frames (reactive+BG composite).
-    # Slightly higher floor than the initial voidcat pass so the grid survives
-    # light chroma/scanline post-FX a bit better.
-    base_alpha = 0.29 + 0.40 * rms + 0.14 * t_hi
+    # Stay readable on the SDXL/AnimateDiff still that the reactive shader
+    # composites over (the void_ascii_bg shader is intentionally near-zero
+    # alpha — see ``assets/shaders/void_ascii_bg.frag``). Higher base alpha
+    # plus a fuller audio lift so the grid is the visible feature instead
+    # of getting swallowed by the SDXL still and the centre logo.
+    base_alpha = 0.46 + 0.38 * rms + 0.20 * t_hi + 0.18 * bass + 0.18 * hold
     cam = max(0.0, min(1.0, float(ctx.center_alpha_mul)))
     w_cat, pl_cat, _wc = _best_cat_state(
         float(t), ctx, ncols, nrows, c_lo, c_hi, uniforms

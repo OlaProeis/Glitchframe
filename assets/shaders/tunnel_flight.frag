@@ -134,17 +134,21 @@ void main() {
         hold * (0.25 + 0.55 * smoothstep(0.2, 0.9, r))
     );
 
-    // Wireframe emissive (lines + corner nodes) with line bloom
-    float line_glow = 1.0 - smoothstep(w_line, w_line * 5.0, abs(f.x));
-    line_glow = max(line_glow, 1.0 - smoothstep(w_line, w_line * 5.0, abs(f.y)));
-    float struct_mask = max(line, node * 1.2);
+    // Wireframe emissive (lines + corner nodes) with line bloom. Halo and
+    // beat-flash terms bumped (2026-04) so the lattice reads cleanly against
+    // SDXL/AnimateDiff cyberpunk backdrops; the structural ``core`` stays
+    // tight so the tunnel still has clear lines instead of a wash.
+    float line_glow = 1.0 - smoothstep(w_line, w_line * 6.0, abs(f.x));
+    line_glow = max(line_glow, 1.0 - smoothstep(w_line, w_line * 6.0, abs(f.y)));
+    float struct_mask = max(line, node * 1.3);
     float core = struct_mask;
     float line_luma = dot(line_col, vec3(0.299, 0.587, 0.114));
-    float halo = (line_glow * 0.32 + node_halo * 0.55) * (0.55 + 0.45 * line_luma);
+    float halo = (line_glow * 0.48 + node_halo * 0.75) * (0.55 + 0.45 * line_luma);
 
-    float bright = core + halo * 0.85
-                 + 0.22 * (1.0 - beat_phase) * line
-                 + 0.18 * onset_pulse * (line + node);
+    float bright = core * 1.20
+                 + halo * 1.05
+                 + 0.32 * (1.0 - beat_phase) * line
+                 + 0.26 * onset_pulse * (line + node);
 
     // Floating sparks (streaks toward center) — high-band / hat-driven
     vec2 sp = p * 38.0 + vec2(time * 7.0, -time * 5.0);
@@ -163,17 +167,22 @@ void main() {
     float edge_vig = smoothstep(1.35, 0.28, r) * (0.4 + 0.6 * smoothstep(0.0, 0.45, r));
     // Dark "void" body — mostly transparent so background shows in composited mode
     float base_dark = 0.08 + 0.06 * rms + 0.1 * (1.0 - depth_01) * (1.0 - tension);
-    float alpha_geo = (bright * 0.92 * edge_vig + spk * 0.3 + base_dark * 0.2)
-                    * (0.55 + 0.2 * (band_energies[0] + band_energies[1]) + 0.25 * bass_hit);
+    // Audio multiplier rebuilt with a cleaner floor + steeper bass slope so
+    // the lattice pumps harder on every kick instead of sitting at a flat
+    // ~0.55 baseline that SDXL detail otherwise wins out over.
+    float audio_gain = 0.62 + 0.30 * (band_energies[0] + band_energies[1])
+                     + 0.42 * bass_hit + 0.18 * t_lo;
+    float alpha_geo = (bright * 1.05 * edge_vig + spk * 0.35 + base_dark * 0.22)
+                    * audio_gain;
 
     // Occasional "thruster" flash from the deep tunnel on bass
     float tunnel_flash = (1.0 - smoothstep(0.0, 0.12, r))
-                       * (0.35 * bass_hit + 0.2 * t_lo) * (1.0 - tension);
-    vec3 emissive = line_col * bright * (0.7 + 0.35 * e_hi) + hot * tunnel_flash
-                  + accent * (0.15 * node * (1.0 + 2.0 * hold) + 0.12 * t_mid);
+                       * (0.45 * bass_hit + 0.25 * t_lo) * (1.0 - tension);
+    vec3 emissive = line_col * bright * (0.85 + 0.40 * e_hi) + hot * tunnel_flash
+                  + accent * (0.20 * node * (1.0 + 2.0 * hold) + 0.16 * t_mid);
 
     float alpha = clamp(
-        (length(emissive) * 0.18 + alpha_geo * 0.85 + tunnel_flash * 0.5) * intensity,
+        (length(emissive) * 0.26 + alpha_geo * 1.05 + tunnel_flash * 0.6) * intensity,
         0.0,
         1.0
     );
