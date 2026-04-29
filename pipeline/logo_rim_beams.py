@@ -42,6 +42,9 @@ from __future__ import annotations
 import colorsys
 import hashlib
 import math
+import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from typing import Any, Mapping, Sequence
 
@@ -55,6 +58,56 @@ from pipeline.logo_rim_lights import _layer_srgb_tints
 # resolution, then box-average down to output pixels. Keeps length/thickness
 # (in output px) identical while reducing stair-stepping on diagonals.
 _BEAM_ANTIALIAS_SUPERSAMPLE: int = 2
+
+
+# Lazy module-level thread pool used to parallelise per-beam rasterisation +
+# blur work across active beams (see :func:`compute_beam_patch`). On
+# multi-beam frames -- which were the dominant compositor bottleneck on slow
+# hosts (~4 seconds per frame for 3 active beams) -- the per-beam scipy
+# ``gaussian_filter`` calls release the GIL inside their C kernel, so worker
+# threads scale near-linearly with the number of simultaneously-active beams.
+# Single-beam frames bypass the pool entirely (``len(active) == 1`` short
+# path) so the steady-state cost is identical to the legacy sequential
+# code-path.
+#
+# Worker count is capped at 4: most musical frames have at most 3
+# simultaneously-active beams (typical beam pattern is 1-2 lead-in snares + 1
+# drop), and 4 workers is the largest count that still saturates a 4-core box
+# without over-subscribing. The cap is overridable for benchmarking via
+# ``GLITCHFRAME_BEAM_WORKERS``; values <= 1 disable parallelism (sequential
+# fallback).
+_BEAM_THREAD_POOL_LOCK = threading.Lock()
+_BEAM_THREAD_POOL: ThreadPoolExecutor | None = None
+
+
+def _beam_worker_count() -> int:
+    raw = os.environ.get("GLITCHFRAME_BEAM_WORKERS")
+    if raw is not None:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    cpu = os.cpu_count() or 1
+    return min(4, max(1, cpu))
+
+
+def _get_beam_thread_pool() -> ThreadPoolExecutor | None:
+    """Return the shared per-beam worker pool, creating it lazily."""
+
+    global _BEAM_THREAD_POOL
+    n = _beam_worker_count()
+    if n <= 1:
+        return None
+    pool = _BEAM_THREAD_POOL
+    if pool is not None:
+        return pool
+    with _BEAM_THREAD_POOL_LOCK:
+        if _BEAM_THREAD_POOL is None:
+            _BEAM_THREAD_POOL = ThreadPoolExecutor(
+                max_workers=n,
+                thread_name_prefix="beam-worker",
+            )
+        return _BEAM_THREAD_POOL
 
 
 def _downsample_accum_box(
@@ -1025,12 +1078,35 @@ def compute_beam_patch(
         max(0.0, float(logo_radius_px) * float(cfg.edge_offset_frac)) * float(ss)
     )
 
-    for beam, env, hw, hi, br in active:
-        # User BEAM clips in the effects editor may pin an explicit sRGB tint
-        # via ``color_hex``; when set we bypass the layer palette so the
-        # picked colour lands in the rendered beam. Otherwise fall back to the
-        # preset-driven rim tints so analyser-scheduled beams keep their hue
-        # drift.
+    # Per-beam compute is the dominant compositor cost on slow hosts -- a
+    # single beam at 1080p / supersample=2 takes ~1.5 s of pure CPU work
+    # (rasterise scalar fields + 2-3 gaussian blurs on a 3840x2160 buffer).
+    # Multi-beam frames serialised this work, so 3 active beams stretched
+    # frame budget to ~4.5 s. The numpy ufuncs and ``scipy.ndimage`` blurs
+    # used here all release the GIL during their C kernels, so we fan the
+    # per-beam work out across a small thread pool when more than one beam
+    # is active. Single-beam frames take the inline path so the warm-cache
+    # cost is identical to the pre-parallel code (no thread submission /
+    # context-switch overhead).
+    eff_b_base = float(blur_sigma_px) * float(ss)
+    halo_intensity_base = float(cfg.halo_intensity)
+    halo_width_base = float(cfg.halo_width_mul)
+    core_white_boost = float(cfg.core_white_boost)
+
+    def _compute_beam_contribution(
+        beam_record: tuple,
+    ) -> tuple[
+        tuple[int, int, int],  # tint sRGB
+        np.ndarray | None,  # c_core blurred (h, w) float32
+        np.ndarray | None,  # c_halo blurred (h, w) float32
+        np.ndarray | None,  # white blurred (h, w) float32 -- may be None
+    ]:
+        beam, env, hw, hi, br = beam_record
+        # User BEAM clips in the effects editor may pin an explicit sRGB
+        # tint via ``color_hex``; when set we bypass the layer palette so
+        # the picked colour lands in the rendered beam. Otherwise fall back
+        # to the preset-driven rim tints so analyser-scheduled beams keep
+        # their hue drift.
         if beam.tint_srgb_override is not None:
             tint = (
                 int(beam.tint_srgb_override[0]),
@@ -1048,11 +1124,6 @@ def compute_beam_patch(
             length_px=float(beam.length_px) * float(ss),
             thickness_px=float(beam.thickness_px) * float(ss),
         )
-        # Compute the three scalar intensity fields for this beam (no RGB
-        # scratch, no separate alpha allocations). ``c_core`` and
-        # ``c_halo`` *are* the alpha fields by construction (since the
-        # tint is applied later as a multiply, and both alpha and RGB
-        # come from the same scalar).
         fields = _draw_beam_scalar_fields(
             ph,
             pw,
@@ -1061,16 +1132,16 @@ def compute_beam_patch(
             cx_local=cx_local,
             cy_local=cy_local,
             edge_offset_px=edge_offset,
-            halo_width_mul=float(cfg.halo_width_mul) * float(hw),
+            halo_width_mul=halo_width_base * float(hw),
             halo_intensity=max(
                 0.0,
-                min(1.0, float(cfg.halo_intensity) * float(hi)),
+                min(1.0, halo_intensity_base * float(hi)),
             ),
-            core_white_boost=float(cfg.core_white_boost),
+            core_white_boost=core_white_boost,
             sustain_axial_white=sustain_ax,
         )
         if fields is None:
-            continue
+            return tint, None, None, None
         c_core, c_halo, white = fields
         # Per-beam, asymmetric blur: tight core (laser), wider halo. Three
         # blurs total instead of eight (was: 3 RGB + 1 alpha per band × 2
@@ -1079,7 +1150,7 @@ def compute_beam_patch(
         # Sigmas are in **raster** pixels; scale with ``ss`` so blur
         # footprint matches the pre-downsample grid (output-sized
         # ``blur_sigma_px`` unchanged).
-        eff_b = float(blur_sigma_px) * max(1.0, float(br)) * float(ss)
+        eff_b = eff_b_base * max(1.0, float(br))
         sig_c = max(0.0, eff_b * 0.36)
         sig_h = max(0.0, eff_b * 1.0)
         if sig_c > 0.1:
@@ -1094,6 +1165,22 @@ def compute_beam_patch(
             c_halo = ndimage.gaussian_filter(
                 c_halo, sigma=sig_h, mode="constant", cval=0.0
             )
+        return tint, c_core, c_halo, white
+
+    pool = _get_beam_thread_pool() if len(active) > 1 else None
+    if pool is not None:
+        # ``map`` preserves submission order which is required for
+        # bit-identical accumulation: ``accum_srgb +=`` is associative in
+        # exact arithmetic but NOT in float32 (rounding depends on
+        # operand order). Iterating in submission order keeps the per-pixel
+        # sum reduction sequence stable across runs.
+        results_iter = pool.map(_compute_beam_contribution, active)
+    else:
+        results_iter = (_compute_beam_contribution(b) for b in active)
+
+    for tint, c_core, c_halo, white in results_iter:
+        if c_core is None or c_halo is None:
+            continue
         # Alpha combine: c_core / c_halo *are* the per-band alpha by
         # construction (RGB == c * tint, so alpha == c).
         a_c = np.clip(c_core, 0.0, 1.0)
