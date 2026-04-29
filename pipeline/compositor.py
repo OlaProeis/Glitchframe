@@ -1883,6 +1883,15 @@ def render_full_video(
     # ``_ffmpeg_video_args`` could probe ffmpeg X for ``-preset p5`` while
     # the encode pipes through ffmpeg Y, producing a parse error mid-render.
     ffmpeg_bin = require_ffmpeg()
+    # Make the encoder identity visible in logs at INFO. Without this the
+    # only signal is silence (probe ok -> no log) vs noise ("Promoting...",
+    # "falling back to CPU encoder...") and the user can't tell from the
+    # transcript whether their slow render is using NVENC or libx264.
+    LOGGER.info(
+        "Compositor encoder: codec=%s ffmpeg=%s",
+        codec,
+        ffmpeg_bin,
+    )
 
     rid = run_id or new_run_id(song_hash=cache.name)
     out_root = Path(outputs_dir) if outputs_dir is not None else OUTPUTS_DIR
@@ -1999,21 +2008,22 @@ def render_full_video(
                     # rate, not (renderer + warmup) rate.
                     stats.started_at = render_started
                     stats.phase = "warming up"
-                    # Per-stage breakdown samples on a few post-warmup
-                    # frames. Used to pinpoint whether the per-frame
-                    # budget is owned by the GPU shader, kinetic
-                    # typography, the numpy compositing path, or the
-                    # beam patch on slow renders. Three samples are
-                    # plenty: frame 8 covers the warmed-up steady
-                    # state, frame 90 (~3 s in) usually has lyrics
-                    # active, and frame 600 (~20 s in) typically
-                    # catches an early drop / beam-active frame on
-                    # most timelines. Each sample pays a few perf_
-                    # counter() calls and one INFO line; the regular
-                    # render path (i.e. >99% of frames) short-circuits
-                    # with zero overhead via ``stage_timings is None``.
-                    _PROFILE_FRAME_INDICES = frozenset({8, 90, 600})
-                    profiled_frames: set[int] = set()
+                    # Per-stage breakdown samples. Goal: catch the
+                    # progressive Pinokio slowdown (drops from ~5 fps
+                    # to <1 fps over ~100 frames even though per-stage
+                    # cost is constant). A constant per-stage sum
+                    # combined with a falling overall fps means the
+                    # producer is blocking on something *outside* the
+                    # render call -- typically ``frame_q.put`` when the
+                    # encoder back-pressures. We profile every 30
+                    # frames (~1 s of song time) so the time series
+                    # densely covers the cliff and the user only has
+                    # to run a short render to see it. Cost: one INFO
+                    # log + ~12 ``perf_counter()`` calls every 30
+                    # frames; negligible against the ~200 ms/frame
+                    # baseline.
+                    _PROFILE_EVERY = 30
+                    _PROFILE_OFFSET = 8  # warmup margin
                     for i in range(frame_count):
                         if stop_event.is_set():
                             return
@@ -2025,14 +2035,15 @@ def render_full_video(
                         # as the trimmed audio.
                         t = float(start_sec) + (i + 0.5) / float(cfg.fps)
 
-                        # Allocate a timings dict on the profile frames
-                        # so ``_render_compositor_frame`` populates them;
+                        # Allocate a timings dict on profile frames so
+                        # ``_render_compositor_frame`` populates them;
                         # pass ``None`` on every other frame so the
                         # timing path short-circuits with zero overhead.
                         stage_timings: dict[str, float] | None = (
-                            {} if (i in _PROFILE_FRAME_INDICES
-                                   and i not in profiled_frames
-                                   and i < frame_count) else None
+                            {}
+                            if (i >= _PROFILE_OFFSET
+                                and (i - _PROFILE_OFFSET) % _PROFILE_EVERY == 0)
+                            else None
                         )
                         _frame_t0 = (
                             time.perf_counter()
@@ -2072,13 +2083,23 @@ def render_full_video(
                         if stage_timings is not None:
                             _bgr_t1 = time.perf_counter()
                             stage_timings["bgr_convert"] = _bgr_t1 - _bgr_t0
-                            _q_t0 = _bgr_t1
-                        frame_q.put(bgr.tobytes())
+                            _tb_t0 = _bgr_t1
+                        # Splitting tobytes from qput reveals encoder
+                        # back-pressure: a slow consumer keeps the
+                        # bounded queue full, so producer ``put`` blocks
+                        # until the encoder drains a slot. When we see
+                        # ``qput`` ballooning while every other stage
+                        # stays flat, the bottleneck is downstream of
+                        # the producer (ffmpeg / pipe / disk).
+                        frame_bytes = bgr.tobytes()
+                        if stage_timings is not None:
+                            _tb_t1 = time.perf_counter()
+                            stage_timings["tobytes"] = _tb_t1 - _tb_t0
+                            _q_t0 = _tb_t1
+                        frame_q.put(frame_bytes)
                         if stage_timings is not None:
                             _q_t1 = time.perf_counter()
-                            stage_timings["bgr_tobytes_and_qput"] = (
-                                _q_t1 - _q_t0
-                            )
+                            stage_timings["qput"] = _q_t1 - _q_t0
                             total_ms = (_q_t1 - _frame_t0) * 1000.0
                             parts = [
                                 f"{k}={v * 1000.0:.1f}ms"
@@ -2086,12 +2107,13 @@ def render_full_video(
                             ]
                             LOGGER.info(
                                 "Compositor stage breakdown (frame %d, "
-                                "wall=%.1fms): %s",
+                                "wall=%.1fms, qsize=%d/%d): %s",
                                 i,
                                 total_ms,
+                                frame_q.qsize(),
+                                cfg.queue_size,
                                 " ".join(parts),
                             )
-                            profiled_frames.add(i)
 
                         done = i + 1
                         # Producer-side counter for the throttled INFO log
