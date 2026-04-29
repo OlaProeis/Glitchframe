@@ -338,6 +338,7 @@ def _build_render_inputs(
     bg_mode: str,
     static_bg: object,
     preset_id: str | None,
+    custom_background_prompt: str | None,
     reactive_intensity_pct: float,
     logo_file: object,
     logo_position: str,
@@ -396,11 +397,13 @@ def _build_render_inputs(
         "genre": (genre or "").strip(),
     }
 
+    cbp = (custom_background_prompt or "").strip()
     return OrchestratorInputs(
         song_hash=song_hash,
         background_mode=mode,
         static_background_image=static_path,
         preset_id=(preset_id or None),
+        custom_background_prompt=cbp if cbp else None,
         reactive_intensity_pct=float(reactive_intensity_pct),
         logo_path=_coerce_path(logo_file),
         logo_position=str(logo_position or "center"),
@@ -489,6 +492,7 @@ def _run_preview(
     bg_mode: str,
     static_bg: object,
     preset_id: str | None,
+    custom_background_prompt: str,
     reactive_intensity_pct: float,
     logo_file: object,
     logo_position: str,
@@ -539,6 +543,7 @@ def _run_preview(
             bg_mode=bg_mode,
             static_bg=static_bg,
             preset_id=preset_id,
+            custom_background_prompt=custom_background_prompt,
             reactive_intensity_pct=reactive_intensity_pct,
             logo_file=logo_file,
             logo_position=logo_position,
@@ -600,6 +605,7 @@ def _run_render(
     bg_mode: str,
     static_bg: object,
     preset_id: str | None,
+    custom_background_prompt: str,
     reactive_intensity_pct: float,
     logo_file: object,
     logo_position: str,
@@ -650,6 +656,7 @@ def _run_render(
             bg_mode=bg_mode,
             static_bg=static_bg,
             preset_id=preset_id,
+            custom_background_prompt=custom_background_prompt,
             reactive_intensity_pct=reactive_intensity_pct,
             logo_file=logo_file,
             logo_position=logo_position,
@@ -1743,6 +1750,7 @@ See `docs/technical/visual-style-presets.md` for the full schema and
                     label="Custom prompt (overrides preset SD prompt)",
                     lines=3,
                     value=first.get("prompt", ""),
+                    interactive=True,
                 )
                 shader_dd = gr.Dropdown(
                     label="Reactive shader",
@@ -1840,6 +1848,7 @@ See `docs/technical/visual-style-presets.md` for the full schema and
             bg_mode,
             static_bg_file,
             preset_dd,
+            custom_prompt,
             reactive_intensity,
             logo_file,
             logo_position,

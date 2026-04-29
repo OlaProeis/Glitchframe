@@ -51,6 +51,8 @@ class OrchestratorInputs:
     static_background_image: str | Path | None = None
     # Cosmetic render settings (never influence the song cache key).
     preset_id: str | None = None
+    # When non-empty, replaces the preset YAML ``prompt`` for SDXL / AnimateDiff.
+    custom_background_prompt: str | None = None
     reactive_intensity_pct: float = 50.0
     logo_path: str | Path | None = None
     logo_position: str = "center"
@@ -493,6 +495,13 @@ def _render_pipeline(
 
     preset_id, preset = _resolve_preset(inputs)
     preset_prompt = str(preset.get("prompt")) if preset and preset.get("prompt") else ""
+    _custom_bg = (
+        str(inputs.custom_background_prompt).strip()
+        if inputs.custom_background_prompt
+        else ""
+    )
+    if _custom_bg:
+        preset_prompt = _custom_bg
     palette = list(preset.get("colors") or []) if preset else None
 
     shader_name = str(preset.get("shader")) if preset and preset.get("shader") else DEFAULT_SHADER
