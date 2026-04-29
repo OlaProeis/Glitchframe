@@ -4,8 +4,9 @@ Local, GPU-accelerated **music video** generator: upload a track, analyze it, al
 
 **Examples (progress log, newest = current state):** [voidcat on YouTube](https://www.youtube.com/@voidcatalog)
 
+- **Easiest install:** [Pinokio](https://pinokio.co/) — install the Pinokio app, search **glitchframe**, install Glitchframe from the listing, then run **Install** and **Start** in the sidebar. You still need **ffmpeg** on your `PATH` and a capable **NVIDIA GPU** for the intended experience — see [Requirements](#requirements) and [Pinokio](#pinokio).
 - **UI:** [Gradio](https://www.gradio.app/) — run `python -m app` and open the URL shown (default [http://127.0.0.1:7860](http://127.0.0.1:7860)).
-- **New to the command line or on Windows?** Start with **[Getting started on Windows](docs/guides/getting-started-windows.md)** (order of installs: Python, optional Git, ffmpeg with winget, then the project).
+- **Manual setup (Windows CLI):** **[Getting started on Windows](docs/guides/getting-started-windows.md)** — order of installs: Python, optional Git, ffmpeg with winget, venv, PyTorch; or use Pinokio above instead.
 - **Deep dive:** [`docs/index.md`](docs/index.md) and [`docs/technical/project-setup-and-config.md`](docs/technical/project-setup-and-config.md).
 
 **License:** [MIT](LICENSE) · **Repository:** [github.com/OlaProeis/Glitchframe](https://github.com/OlaProeis/Glitchframe)
@@ -56,9 +57,11 @@ The following is a short, user-facing summary of work **not yet done** (also tra
 
 ## Install
 
-**Windows, step-by-step (what to install first, PowerShell, ZIP vs git):** [docs/guides/getting-started-windows.md](docs/guides/getting-started-windows.md).
+**Recommended:** Use [Pinokio](https://pinokio.co/): install Pinokio, search **glitchframe**, install Glitchframe from the listing, then use **Install** / **Start** in the app. That flow runs the repo’s Pinokio scripts (`install.js`, `start.js`, …). Prerequisites: **ffmpeg** on your `PATH`, a suitable **NVIDIA** GPU, and recent drivers — see [Pinokio](#pinokio).
 
-The short version below matches that guide; on Windows prefer **`py -3.11`** if `python` is not on your `PATH`.
+**Windows, full walkthrough (command line):** [docs/guides/getting-started-windows.md](docs/guides/getting-started-windows.md).
+
+The steps below are a **manual** install (clone or ZIP + venv + pip); they match that guide. On Windows prefer **`py -3.11`** if `python` is not on your `PATH`.
 
 ### 1. Get the project and create a virtualenv
 
@@ -137,7 +140,9 @@ Open the local URL printed in the console (default port **7860**).
 
 ## Pinokio
 
-This repository includes [Pinokio](https://pinokio.co/) scripts (`install.js`, `start.js`, `reset.js`, `update.js`, `pinokio.js`, `icon.png`) so you can install and launch from the Pinokio app via **Download from URL** (paste the Git URL). The installer uses Python **3.11**, installs PyTorch **2.2.2+cu121** (CUDA **12.1** index) and the pinned WhisperX / ctranslate2 set (see `install.js`), then `requirements.txt`, `pip install -e .`, and the **`[all]`** extra — plus optional **`nvidia-cudnn-cu12`** and `scripts/windows_provision_cudnn_next_to_ctranslate2.py`. **Click Start** in Pinokio&rsquo;s sidebar after install. You still need **ffmpeg** on your `PATH` and a capable **NVIDIA** GPU. **On Windows**, `start.js` may still set ``GLITCHFRAME_WHISPERX_DEVICE=cpu`` as a safe default; remove it or set **cuda** in `.env` to try **GPU** alignment once the **cu121** stack is installed. Analyze/render still use the GPU when applicable. For discovery, add the GitHub topic **`pinokio`**.
+**Easiest path:** Install [Pinokio](https://pinokio.co/), open it, search **glitchframe**, and install Glitchframe from the listing — no need to paste a URL. **Alternative:** **Download from URL** and paste `https://github.com/OlaProeis/Glitchframe.git`.
+
+This repository includes Pinokio scripts (`install.js`, `start.js`, `reset.js`, `update.js`, `pinokio.js`, `icon.png`). The installer uses Python **3.11**, installs PyTorch **2.2.2+cu121** (CUDA **12.1** index) and the pinned WhisperX / ctranslate2 set (see `install.js`), then `requirements.txt`, `pip install -e .`, and the **`[all]`** extra — plus optional **`nvidia-cudnn-cu12`** and `scripts/windows_provision_cudnn_next_to_ctranslate2.py`. **Click Start** in Pinokio&rsquo;s sidebar after install. You still need **ffmpeg** on your `PATH` and a capable **NVIDIA** GPU. **On Windows**, `start.js` may still set ``GLITCHFRAME_WHISPERX_DEVICE=cpu`` as a safe default; remove it or set **cuda** in `.env` to try **GPU** alignment once the **cu121** stack is installed. Analyze/render still use the GPU when applicable. Technical details: [`docs/technical/pinokio-package.md`](docs/technical/pinokio-package.md). For GitHub discovery, the repo uses the **`pinokio`** topic.
 
 ## Troubleshooting
 

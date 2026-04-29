@@ -1,8 +1,14 @@
 # Getting started on Windows (step-by-step)
 
-This guide is for people who are **new to the command line** or want a clear **order of installation**. Glitchframe runs locally in your browser; you install dependencies once, then start the app from PowerShell.
+For most Windows users, **[Pinokio](#easiest-install-pinokio)** (search **glitchframe**) is the simplest install. The rest of this guide is for people who want a **manual** setup — **new to the command line** or prefer a clear **order of installation**. Glitchframe runs locally in your browser; you install dependencies once, then start the app from PowerShell (or from Pinokio’s **Start**).
 
 **Related:** [README](../../README.md) (overview, features, limitations), [Project setup and configuration](../technical/project-setup-and-config.md) (paths and config), [Windows venv recovery](../technical/windows-venv-recovery-guide.md) (if PyTorch or lyrics tools break after updates).
+
+## Easiest install: Pinokio
+
+The fastest way to get Glitchframe on Windows is **[Pinokio](https://pinokio.co/)**: install the Pinokio app, search **glitchframe**, install Glitchframe from the listing, run **Install** in the sidebar, then **Start**. Pinokio creates the Python environment and dependencies for you (see [Pinokio package notes](../technical/pinokio-package.md) and the [README Pinokio section](../../README.md#pinokio)).
+
+You still need **ffmpeg** on your `PATH` (§3 below) and a capable **NVIDIA GPU** with recent drivers for the full pipeline. If you prefer a manual venv and `pip` install — or Pinokio is not an option — continue with the sections below.
 
 ## What to expect
 
@@ -20,9 +26,9 @@ This guide is for people who are **new to the command line** or want a clear **o
 | **Virtual environment (venv)** | A private Python install for this project so packages do not clash with other software. |
 | **Repository (repo)** | The project’s source code, usually from GitHub. |
 
-## Order: what to install first
+## Order: what to install first (manual path)
 
-Install in this order so each step can be verified before moving on.
+If you are **not** using [Pinokio](#easiest-install-pinokio), install in this order so each step can be verified before moving on.
 
 1. **Python 3.11** (required)  
 2. **Git** (optional — only if you want `git clone` and easy updates; you can use a ZIP download instead)  

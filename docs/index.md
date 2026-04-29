@@ -12,11 +12,11 @@
 
 ## User guides
 
-- `docs/guides/getting-started-windows.md` - Windows: order of installs (Python, optional Git, ffmpeg via winget), PowerShell, ZIP vs git clone, venv, PyTorch, run.
+- `docs/guides/getting-started-windows.md` - Windows: Pinokio search **glitchframe** (easiest); or manual order of installs (Python, optional Git, ffmpeg via winget), PowerShell, ZIP vs git clone, venv, PyTorch, run.
 
 ## Technical Docs
 
-- `docs/technical/pinokio-package.md` - Pinokio one-click install scripts (root `install.js` / `start.js` / `pinokio.js`); venv `env`, optional `[all]`, `ffmpeg` prereq.
+- `docs/technical/pinokio-package.md` - Pinokio scripts (`install.js` / `start.js` / `pinokio.js`); discover by searching **glitchframe** in Pinokio; venv `env`, optional `[all]`, `ffmpeg` prereq.
 - `docs/technical/pinokio-lyrics-align-windows-handover.md` - **Handover prompt:** Pinokio on Windows, Align lyrics / WhisperX / cuDNN, what we tried, open questions, revert notes.
 - `docs/technical/project-setup-and-config.md` - Repo layout, pyproject/requirements, config paths and preset registry.
 - `docs/technical/windows-venv-recovery-guide.md` - Windows: step-by-step venv recovery after PyTorch / WhisperX lyrics-align issues (weights_only, cuDNN DLL mismatches).

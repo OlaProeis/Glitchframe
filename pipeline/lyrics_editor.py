@@ -383,8 +383,26 @@ _EDITOR_CSS = """
   .mv-editor .mv-audio { display: block; width: 100%; margin-top: 6px; }
   .mv-editor .mv-help { color: #9ca3af; font-size: 11px; margin-top: 6px;
     line-height: 1.4; }
-  .mv-editor kbd { background: #1f2937; color: #f3f4f6; border: 1px solid #4b5563;
-    border-radius: 3px; padding: 1px 5px; font-size: 11px; font-weight: 500; }
+  /* Gradio themes often set global kbd/code colors; scope + !important so help
+     text stays readable (fixes black-on-black key labels in the UI). */
+  .mv-editor .mv-help code {
+    background: #e5e7eb !important;
+    color: #111827 !important;
+    border-radius: 3px;
+    padding: 1px 4px;
+    font-size: 11px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+  .mv-editor .mv-help kbd {
+    background: #374151 !important;
+    color: #f9fafb !important;
+    border: 1px solid #6b7280 !important;
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-size: 11px;
+    font-weight: 500;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+  }
 </style>
 """.strip()
 

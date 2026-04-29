@@ -1,6 +1,8 @@
 # Pinokio package (Glitchframe)
 
-[Pinokio](https://pinokio.co/) runs apps from a public Git URL using small scripts in the repo root. This project ships:
+[Pinokio](https://pinokio.co/) runs apps from a public Git URL using small scripts in the repo root. **Discovery:** In the Pinokio app, search **glitchframe** and install Glitchframe from the listing (easiest). You can also use **Download from URL** with this repo’s Git URL.
+
+This project ships:
 
 | File | Role |
 |------|------|
@@ -31,6 +33,6 @@ That is normal. Pinokio usually only shows **install output** (streaming log), n
 
 Alternatively: **Shift+right-click** in an empty spot in that folder → **Open in Terminal** / **Open PowerShell window here** (wording varies by Windows version).
 
-**Discoverability:** Add the GitHub topic `pinokio` so the app can appear on Pinokio&rsquo;s discover page.
+**Discoverability:** Users can find Glitchframe inside Pinokio by searching **glitchframe**. The repo also uses the GitHub topic **`pinokio`** for listing metadata.
 
 Running **outside Pinokio** (``python -m app`` from a normal shell) does **not** set that env var unless you add it to ``.env``; behaviour matches a stock local install.
