@@ -104,12 +104,14 @@ from pipeline.beat_pulse import (
 from pipeline.musical_events import sample_drop_hold
 from pipeline.compositor import DEFAULT_SHADER_BASS_DECAY_SEC, DEFAULT_SHADER_BASS_SENSITIVITY
 from pipeline.logo_composite import composite_logo_from_path
+from pipeline.lyrics_aligner import LYRICS_ALIGNED_JSON_NAME
 from pipeline.lyrics_editor import (
     build_editor_html,
     load_editor_state,
     revert_manual_edits,
     save_edited_alignment,
 )
+from pipeline.srt_export import export_aligned_json_to_srt
 from pipeline.reactive_shader import (
     ReactiveShader,
     composite_premultiplied_rgba_over_rgb,
@@ -1090,6 +1092,28 @@ def _revert_editor(song_hash: str | None, log: str) -> str:
         return _append_log(log, _format_exception("Revert timeline failed", exc))
 
 
+def _export_srt(song_hash: str | None, log: str) -> tuple[str | None, str]:
+    """Write ``lyrics.aligned.srt`` beside the cached JSON and expose download."""
+    if not song_hash:
+        return None, _append_log(log, "Export .srt: no song_hash (ingest audio first).")
+    cache_dir = song_cache_dir(song_hash)
+    aligned = cache_dir / LYRICS_ALIGNED_JSON_NAME
+    if not aligned.is_file():
+        return None, _append_log(
+            log,
+            "Export .srt: no lyrics.aligned.json — run **Align lyrics** first.",
+        )
+    try:
+        path = export_aligned_json_to_srt(aligned)
+        return str(path.resolve()), _append_log(
+            log,
+            f"Exported SubRip subtitles — `{path.name}` (saved in song cache; download below).",
+        )
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.exception("Export .srt failed")
+        return None, _append_log(log, _format_exception("Export .srt failed", exc))
+
+
 # ---------------------------------------------------------------------------
 # Effects-timeline editor handlers
 # ---------------------------------------------------------------------------
@@ -1645,6 +1669,17 @@ def build_ui() -> gr.Blocks:
                 with gr.Row():
                     btn_save_editor = gr.Button("Save edited timings")
                     btn_revert_editor = gr.Button("Re-align from scratch")
+                with gr.Row():
+                    btn_export_srt = gr.Button("Export .srt")
+                    export_srt_file = gr.File(
+                        label="Subtitle file",
+                        interactive=False,
+                    )
+                gr.Markdown(
+                    "**.srt** uses the same **per-word** timings as kinetic typography "
+                    "(one cue per word). File is written next to `lyrics.aligned.json` "
+                    "in the cache and offered here for download."
+                )
 
             with gr.Tab("Effects timeline"):
                 gr.Markdown(
@@ -1910,6 +1945,11 @@ See `docs/technical/visual-style-presets.md` for the full schema and
             fn=_revert_editor,
             inputs=[song_hash_state, run_log],
             outputs=[run_log],
+        )
+        btn_export_srt.click(
+            fn=_export_srt,
+            inputs=[song_hash_state, run_log],
+            outputs=[export_srt_file, run_log],
         )
 
         btn_load_fx.click(

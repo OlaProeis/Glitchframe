@@ -114,7 +114,11 @@ void main() {
     float r = length(centered);
     float vignette = smoothstep(1.05, 0.18, r);
 
-    float alpha = clamp((0.50 + 0.55 * cloud) * vignette * intensity, 0.0, 1.0);
+    // Content-driven alpha: lean on ``cloud`` so dark voids of space let
+    // the SDXL/AnimateDiff background read through. (Previously
+    // ``0.50 + 0.55 * cloud`` painted the whole frame at >=50 % opacity.)
+    // See ``docs/technical/reactive-shader-layer.md``.
+    float alpha = clamp(cloud * vignette * intensity, 0.0, 1.0);
     vec3 col = neb * alpha;
     vec4 ov = vec4(col, alpha);
     if (u_comp_background > 0.5) {

@@ -795,9 +795,24 @@ class ReactiveShader:
             self._fbo = self._ctx.framebuffer(
                 color_attachments=[self._color_tex]
             )
+            # ``dtype="f1"`` selects the *normalized* GL_RGB8 internal format,
+            # which is what ``sampler2D`` reads as floats in [0, 1]. The
+            # naming is confusing — ``"u1"`` would create an *integer*
+            # texture (GL_RGB8UI), which can only be sampled by
+            # ``usampler2D`` and silently returns ``vec4(0)`` when read
+            # through a regular ``sampler2D`` declaration. With ``"u1"``
+            # the entire compositor branch (``u_comp_background == 1``)
+            # was effectively painting the SDXL/AnimateDiff background
+            # as black — every preset's reactive overlay sat on top of
+            # nothing instead of the generated stills.
             self._bg_tex = self._ctx.texture(
-                (self._width, self._height), 3, dtype="u1"
+                (self._width, self._height), 3, dtype="f1"
             )
+            # Match the prev-frame texture: nearest filtering keeps the
+            # 1:1 background sampling crisp and avoids the
+            # mipmap-incomplete trap (default min filter would otherwise
+            # require ``build_mipmaps()``).
+            self._bg_tex.filter = (moderngl.NEAREST, moderngl.NEAREST)
             try:
                 self._program["u_background"] = _BACKGROUND_TEXTURE_UNIT
             except KeyError:

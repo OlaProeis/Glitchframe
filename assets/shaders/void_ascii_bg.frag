@@ -62,19 +62,27 @@ void main() {
     vec3 p1 = palette_pick(1);
     vec3 p3 = palette_pick(3);
     vec3 p4 = palette_pick(4);
-    // Brighter base wash so ``col * a`` is non-negligible when bg is (0,0,0)
-    vec3 c0 = p0 * (0.38 + 0.35 * rms_g + 0.22 * hold);
+    // Audio-gated wash: ramp the base brightness with energy so silent
+    // sections fade toward zero and the SDXL/AnimateDiff background can
+    // read through. (Previously a flat 0.38 base + 0.04 * p1 + 0.03 * p4
+    // ambient lift painted the frame even when ``rms`` was ~0 and combined
+    // with the 0.28 alpha floor below to fully hide the background.)
+    vec3 c0 = p0 * (0.10 + 0.55 * rms_g + 0.22 * hold);
     vec3 c1 = mix(p1, p3, 0.35 * t_lo + 0.25 * t_hi);
     vec3 col = c0;
     col += c1 * (0.12 + 0.28 * t_hi) * vig;
     col += (n - 0.5) * 0.06 * (0.5 + onset_env);
     col += p4 * 0.10 * t_hi * (1.0 - vig);
     col = mix(col, col * 0.62, 0.5 * tension);
-    // Ambient colour lift: keeps frame from reading as raw black
-    col += 0.04 * p1 + 0.03 * p4;
 
-    float a = (0.32 + 0.38 * rms + 0.14 * t_lo + 0.18 * hold) * i_eff;
-    a = clamp(a, 0.28, 0.78);
+    // Content-driven alpha (matches the contract in
+    // ``docs/technical/reactive-shader-layer.md``): luminance of the
+    // rendered colour drives opacity, with a small audio lift on hits.
+    // No floor — quiet + empty pixels stay transparent so the background
+    // reads through.
+    float content = clamp(dot(col, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
+    float audio_lift = 0.30 * rms + 0.18 * t_lo + 0.16 * hold;
+    float a = clamp((content + audio_lift) * i_eff, 0.0, 0.85);
     vec4 ov = vec4(col * a, a);
     if (u_comp_background > 0.5) {
         vec3 bg = texture(u_background, v_uv).rgb;

@@ -162,9 +162,17 @@ void main() {
     float luma = dot(col, vec3(0.2126, 0.7152, 0.0722));
     col = mix(col, vec3(luma), 0.30 * tension);
 
-    float alpha = clamp(0.55 + 0.40 * v, 0.0, 1.0)
-                * intensity
-                * (1.0 + 0.20 * hold);
+    // Content-driven alpha: ``v`` is the noise field amplitude (0..1) and
+    // ``col`` is the painted chrome colour. Use the rendered luminance so
+    // dark valleys of the noise let the SDXL/AnimateDiff background read
+    // through, plus a small ``v`` bias so chrome ridges peg fully opaque.
+    // The previous formula ``0.55 + 0.40 * v`` planted a 0.55 floor over
+    // every pixel and hid the background outright.
+    // See ``docs/technical/reactive-shader-layer.md``.
+    float content = clamp(dot(col, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
+    float audio_lift = 0.18 * hold + 0.14 * bass;
+    float alpha = clamp((max(content, v * 0.85) + audio_lift) * intensity,
+                        0.0, 1.0);
     vec3 rgb_pre = col * alpha;
     vec4 ov = vec4(rgb_pre, alpha);
     if (u_comp_background > 0.5) {

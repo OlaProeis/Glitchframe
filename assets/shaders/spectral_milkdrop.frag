@@ -269,9 +269,15 @@ void main() {
     float luma = dot(fresh, vec3(0.2126, 0.7152, 0.0722));
     fresh = mix(fresh, vec3(luma), 0.30 * tension);
 
-    // Ambient wash so the frame is never empty between hits.
-    fresh += mix(palette_pick(2), palette_pick(1), 0.5)
-           * (0.07 + 0.10 * rms_soft + 0.06 * spec_sum);
+    // Audio-gated ambient wash. The reactive layer is composited as a
+    // *premultiplied overlay* (see ``docs/technical/reactive-shader-layer.md``)
+    // so anything we lay down here also lifts the alpha in :func:`alpha`
+    // below — a constant ambient term would paint the whole frame opaque
+    // even during silent passages and hide the SDXL/AnimateDiff background.
+    // Gate on ``rms_soft + spec_sum`` so the wash ramps in with energy
+    // rather than sitting under every frame.
+    float wash_amp = 0.10 * rms_soft + 0.06 * spec_sum;
+    fresh += mix(palette_pick(2), palette_pick(1), 0.5) * wash_amp;
 
     // Continuous-UV hash grain (no chunky pixel blocks in encodes).
     vec2 g_uv = v_uv * vec2(1447.0, 1021.0) + vec2(time * 13.7, -time * 9.2);
@@ -306,10 +312,24 @@ void main() {
     float vign = 1.0 - smoothstep(0.45, 1.10, length(v_uv - 0.5) * 1.8);
     acc *= mix(0.84, 1.0, vign);
 
-    float a_base = 0.42 + 0.34 * rms_soft + 0.22 * bass_hit
-                 + 0.20 * hold + 0.16 * env + 0.14 * peak
-                 + 0.10 * ridge + 0.08 * spec_sum;
-    float alpha = clamp(a_base * i_eff, 0.30, 0.95);
+    // Content-driven alpha. Every other shader in ``assets/shaders/`` derives
+    // alpha from the rendered ``acc`` (see ``particles.frag``,
+    // ``tunnel_flight.frag``, ``geometry_pulse.frag``) so dark / empty regions
+    // of the shader output let the background show through. The previous
+    // formula here had a hard floor of 0.30 and a constant 0.42 base, which
+    // painted at minimum 30 % opacity over every pixel of every frame and
+    // completely hid the SDXL stills the compositor uploads as ``u_background``.
+    //
+    // ``content`` is the per-pixel luminance of the toned-mapped accumulator
+    // (already includes trails + peak whites + vignette), and ``audio_lift``
+    // is a small additive bonus on hits so the overlay punches harder during
+    // loud sections without painting the quiet ones. No floor: silent +
+    // empty pixels read as alpha = 0 and the SDXL still passes through
+    // untouched.
+    float content = clamp(dot(acc, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
+    float audio_lift = 0.22 * bass_hit + 0.18 * peak + 0.14 * hold
+                     + 0.10 * env + 0.08 * trace;
+    float alpha = clamp((content + audio_lift) * i_eff, 0.0, 0.95);
     vec3 premul = acc * alpha;
 
     vec4 ov = vec4(premul, alpha);

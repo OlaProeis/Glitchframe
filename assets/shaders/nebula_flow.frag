@@ -165,10 +165,17 @@ void main() {
     float vig_outer = mix(1.05, 0.85, tension);
     float vignette = smoothstep(vig_outer, 0.18, r);
 
-    float alpha = clamp((0.50 + 0.55 * cloud)
+    // Content-driven alpha: the nebula is the rendered ``cloud`` field plus
+    // ``stars`` highlights. Use ``cloud`` as the primary opacity term so
+    // dark voids of space let the SDXL/AnimateDiff background read
+    // through, with a small ``hold`` lift so post-drop blooms still pump.
+    // The previous ``0.50 + 0.55 * cloud`` baked a 50 % floor that painted
+    // the entire frame even where ``cloud`` was zero.
+    // See ``docs/technical/reactive-shader-layer.md``.
+    float alpha = clamp(cloud
                         * vignette
                         * intensity
-                        * (1.0 + 0.25 * hold),
+                        * (1.0 + 0.30 * hold),
                         0.0, 1.0);
     vec3 col = neb * alpha;
     vec4 ov = vec4(col, alpha);

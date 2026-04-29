@@ -133,9 +133,15 @@ void main() {
     col += vec3(grain) * 0.06;
 
     float rms_g = rms * rms;
-    float alpha = clamp(intensity
-                        * (0.55 + 0.18 * rms_g + 0.10 * bass_hit + 0.18 * hold),
-                        0.0, 1.0);
+    // Content-driven alpha: opacity tracks the rendered ``col`` luminance
+    // so dark scanlines / blanking regions let the SDXL/AnimateDiff
+    // background read through. The previous flat 0.55 base painted the
+    // frame at >50 % opacity regardless of content. Audio lift keeps the
+    // VHS layer punchy on hits and during drops.
+    // See ``docs/technical/reactive-shader-layer.md``.
+    float content = clamp(dot(col, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
+    float audio_lift = 0.22 * rms_g + 0.14 * bass_hit + 0.20 * hold;
+    float alpha = clamp((content + audio_lift) * intensity, 0.0, 1.0);
     vec3 rgb_pre = col * alpha;
     vec4 ov = vec4(rgb_pre, alpha);
     if (u_comp_background > 0.5) {

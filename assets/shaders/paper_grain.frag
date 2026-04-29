@@ -130,9 +130,16 @@ void main() {
     float vig = smoothstep(vig_outer, 0.28, r);
     base *= 0.55 + 0.55 * vig;
 
-    float alpha = clamp(intensity
-                        * (0.55 + 0.14 * rms_g + 0.08 * bass_hit + 0.08 * hold),
-                        0.0, 1.0);
+    // Content-driven alpha: derive opacity from the rendered ``base``
+    // luminance so paper-thin regions let the SDXL/AnimateDiff background
+    // show through. The previous formula had a flat 0.55 base regardless of
+    // content, which painted the entire frame at >50 % opacity even when
+    // ``base`` was near-black. ``audio_lift`` lifts the floor on hits so
+    // the wash still pumps without permanently hiding the background.
+    // See ``docs/technical/reactive-shader-layer.md`` for the contract.
+    float content = clamp(dot(base, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
+    float audio_lift = 0.18 * rms_g + 0.12 * bass_hit + 0.10 * hold;
+    float alpha = clamp((content + audio_lift) * intensity, 0.0, 1.0);
     vec3 rgb_pre = base * alpha;
     vec4 ov = vec4(rgb_pre, alpha);
     if (u_comp_background > 0.5) {

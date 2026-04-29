@@ -67,6 +67,39 @@ void main() {
 
 Missing or malformed analysis sections degrade to zero-valued uniforms rather than raising, so the renderer stays usable with synthetic mocks.
 
+## Alpha contract — content-driven, no floors
+
+Every bundled shader writes a **premultiplied RGBA overlay** that the
+compositor (or the in-shader composite when ``u_comp_background = 1``)
+alpha-blends over the background:
+
+```glsl
+vec3 rgb = ov.rgb + bg * (1.0 - ov.a);
+```
+
+To keep the background (SDXL stills, AnimateDiff, static Ken Burns)
+visible, **the alpha must be content-driven**: it should track the
+brightness of the rendered RGB, optionally lifted by audio terms on
+hits. Hard floors (``clamp(alpha, 0.30, …)``) and constant bases
+(``alpha = 0.55 + …``) paint every pixel of every frame at ≥ floor
+opacity and hide the background outright — that's a bug, not a
+feature. The canonical pattern is:
+
+```glsl
+float content    = clamp(dot(col, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
+float audio_lift = 0.18 * bass_hit + 0.14 * hold;  // shader-specific
+float alpha      = clamp((content + audio_lift) * intensity, 0.0, 1.0);
+```
+
+Reference implementations: ``particles.frag``, ``tunnel_flight.frag``,
+``geometry_pulse.frag``, ``spectral_milkdrop.frag`` (luma-driven with a
+small audio lift), ``vhs_tracking.frag``, ``paper_grain.frag``,
+``liquid_chrome.frag``, ``nebula_flow.frag`` / ``nebula_drift.frag``
+(``alpha ≈ cloud * vignette * intensity``). The one deliberate
+exception is ``synth_grid.frag``, where the synthwave ground plane is
+explicitly opaque (``local_alpha = 1.0``) and only the sky bleeds
+through — the comment in the shader documents why.
+
 ## Shader authoring guide — how to consume each signal
 
 All new uniforms are declared in every bundled `.frag` file today
