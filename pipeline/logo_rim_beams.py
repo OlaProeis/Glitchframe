@@ -57,7 +57,21 @@ from pipeline.logo_rim_lights import _layer_srgb_tints
 # Internal supersample factor for beam rasterisation: draw + blur at this
 # resolution, then box-average down to output pixels. Keeps length/thickness
 # (in output px) identical while reducing stair-stepping on diagonals.
-_BEAM_ANTIALIAS_SUPERSAMPLE: int = 2
+#
+# Set back to ``1`` after measuring that ``ss=2`` was the sole driver of the
+# Pinokio render slowdown reported on 2026-04-29: at ``ss=2`` the per-beam
+# rasterise + blur runs on a 2160x3840 buffer (4x the pixels of the 1080p
+# output), inflating per-beam cost from ~350 ms to ~1.5 s and dragging
+# multi-beam frames from ~0.6 s to >4 s. A direct A/B comparison on the
+# production beam config (3 beams, default ``BeamConfig`` + 2.6 px blur)
+# showed the supersample cost a 4.88x slowdown for at most a **1 / 255**
+# per-channel pixel difference -- well below human perception, and
+# completely dominated by the existing halo blur (sig_h ~= 5 output px) which
+# already smooths any sub-pixel diagonal aliasing the supersample was meant
+# to address. Keep the constant in place (rather than deleting the
+# downsample machinery) so it can be re-enabled per-preset if a future tight
+# beam configuration ever benefits visibly.
+_BEAM_ANTIALIAS_SUPERSAMPLE: int = 1
 
 
 # Lazy module-level thread pool used to parallelise per-beam rasterisation +
