@@ -23,7 +23,7 @@ GPU fragment-shader pass via **moderngl** running in a **standalone OpenGL 3.3+ 
 - **`particles.frag`** — cellular noise field; per-cell radius reacts to the mapped spectrum band; drift speed scales with `rms`.
 - **`geometry_pulse.frag`** — concentric rings pulsing on onsets; ring tone mixes on `rms`, spacing modulates with `time`.
 - **`tunnel_flight.frag`** — first-person wireframe tunnel (spiral lattice, corner nodes, dual-layer line glow); scroll and palette cross-fade with `rms` / `bass_hit`, sparks on high-band transients.
-- **`spectral_milkdrop.frag`** — feedback-loop spectral visual: previous-frame warp (zoom/spin/spectral curl + chromatic split on `transient_hi`) blended with a fresh interference layer driven by all eight `band_energies`, `beat_phase` / `bar_phase`, `bass_hit`, transients, `build_tension`, `drop_hold`, and onset envelopes.
+- **`spectral_milkdrop.frag`** — Milkdrop-style hybrid: curl-noise *translation* feedback (no inward radial zoom — deliberately avoids the tunnel composition), 6 ↔ 8-fold polar-wedge kaleidoscope on the fresh layer, domain-warped FBM smoke filaments (`f(p + f(p + f(p)))`), audio-driven Lissajous waveform trace summed over all 8 `band_energies` and mirrored through the kaleidoscope, slow 5-slot hue-cycling palette ramp. Reactivity routes the same uniform stack as the rest of the library (`bass_hit` / `transient_*` / `onset_*` / `build_tension` / `drop_hold` / `bar_phase` / `beat_phase`) into flow speed, kaleidoscope step, palette hue, ridge brightness, waveform amplitude, and post-drop palette[4] bloom.
 
 Every fragment shader expects the same uniform contract and writes premultiplied RGBA so downstream compositing can alpha-blend without further math.
 

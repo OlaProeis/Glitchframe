@@ -1,12 +1,21 @@
 #version 330
 
-// Milkdrop-inspired spectral feedback: zoom-rotate-smear of the previous
-// frame plus a fresh interference layer (soft plasma + sharp rings/rays).
-// Crisp detail + brighter chill sections: higher floors on emit/alpha/fine
-// structure, beat/onset gates so rings/beams/grid pulse more often, and a
-// second scaled grid + polar moiré layer driven by a shared ``gate``.
-// Polish: continuous grain (no screen-pixel blocks), fwidth-softened grid,
-// peak whites on hits, gentler global tone-map so highlights can approach 1.0.
+// Future-plasma Milkdrop-style preset:
+//   * Curl-noise *translation* feedback (no inward radial zoom — kills the
+//     tunnel composition the previous revision had drifted into).
+//   * Polar wedge kaleidoscope (6 ↔ 8 fold per quarter-bar) on the fresh
+//     layer — the iconic Milkdrop mirror symmetry.
+//   * Domain-warped FBM smoke filaments (``f(p + f(p + f(p)))``) replace
+//     concentric rings / radial beams with organic flowing threads.
+//   * Audio-driven Lissajous "waveform" trace mirrored through the
+//     kaleidoscope — the signature Milkdrop element, summed over all 8
+//     ``band_energies`` so each frequency bin warps the curve differently.
+//   * Slow 5-slot hue-cycling palette ramp so the look never sits on a
+//     single colour pair.
+//
+// All techniques (value-noise FBM, curl from FBM partial derivatives,
+// polar wedge fold, domain warp) are textbook public-domain GLSL — no
+// third-party shader code.
 
 in vec2 v_uv;
 out vec4 out_color;
@@ -14,16 +23,16 @@ out vec4 out_color;
 uniform vec2 resolution;
 uniform float time;
 uniform float beat_phase;
-uniform float bar_phase;
+uniform float bar_phase;       // 0..1 across the current 4-beat bar
 uniform float rms;
 uniform float onset_pulse;
-uniform float onset_env;
+uniform float onset_env;       // continuous normalised onset-strength envelope
 uniform float bass_hit;
-uniform float transient_lo;
-uniform float transient_mid;
-uniform float transient_hi;
-uniform float build_tension;
-uniform float drop_hold;
+uniform float transient_lo;    // low-band transient (kick / sub)
+uniform float transient_mid;   // mid-band transient (snare / body)
+uniform float transient_hi;    // high-band transient (hats / air)
+uniform float build_tension;   // 0..1 pre-drop smoothstep ramp
+uniform float drop_hold;       // post-drop exponential afterglow
 uniform float intensity;
 uniform float band_energies[8];
 uniform vec3 u_palette[5];
@@ -41,10 +50,68 @@ vec3 palette_pick(int idx) {
     return u_palette[i];
 }
 
+// Cycling palette ramp — the input ``t`` is mod-tiled across the palette
+// so a continuous monotonic input produces a continuous hue cycle through
+// all 5 slots and back to slot 0 (rather than clamping at the last slot).
+vec3 palette_ramp(float t) {
+    int n = max(1, u_palette_size);
+    float fn = float(n);
+    float f = mod(t * fn, fn);
+    int i0 = int(floor(f));
+    int i1 = int(mod(float(i0) + 1.0, fn));
+    return mix(palette_pick(i0), palette_pick(i1), fract(f));
+}
+
 float hash21(vec2 p) {
     p = fract(p * vec2(123.34, 456.21));
     p += dot(p, p + 45.32);
     return fract(p.x * p.y);
+}
+
+float vnoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    float a = hash21(i);
+    float b = hash21(i + vec2(1.0, 0.0));
+    float c = hash21(i + vec2(0.0, 1.0));
+    float d = hash21(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+float fbm(vec2 p) {
+    float v = 0.0;
+    float amp = 0.5;
+    for (int i = 0; i < 4; i++) {
+        v += amp * vnoise(p);
+        p = p * 2.05 + vec2(7.3, 11.7);
+        amp *= 0.55;
+    }
+    return v;
+}
+
+// Divergence-free 2D curl from FBM partial derivatives — gives an
+// organic flow field that translates the feedback texture instead of
+// pulling everything toward the centre.
+vec2 curl(vec2 p) {
+    const float e = 0.06;
+    float a = fbm(p + vec2(0.0, e));
+    float b = fbm(p - vec2(0.0, e));
+    float c = fbm(p + vec2(e, 0.0));
+    float d = fbm(p - vec2(e, 0.0));
+    return vec2(a - b, -(c - d));
+}
+
+// Polar wedge kaleidoscope: fold the angle into ``[0, TAU/n]`` then
+// reflect across the bisector so adjacent wedges mirror each other.
+// ``n`` must be an integer ≥ 2 for the wedges to tile the circle.
+vec2 kaleido(vec2 p, float n) {
+    float r = length(p);
+    float a = atan(p.y, p.x);
+    float wedge = TAU / max(n, 2.0);
+    a = mod(a, wedge);
+    a = abs(a - wedge * 0.5);
+    return r * vec2(cos(a), sin(a));
 }
 
 void main() {
@@ -53,195 +120,196 @@ void main() {
     float t_hi = clamp(transient_hi, 0.0, 1.0);
     float tension = clamp(build_tension, 0.0, 1.0);
     float hold = clamp(drop_hold, 0.0, 1.0);
+    float pulse = clamp(onset_pulse, 0.0, 1.0);
+    float env = clamp(onset_env, 0.0, 1.0);
     float rms_g = rms * rms;
     float rms_soft = sqrt(clamp(rms, 0.0, 1.0));
     float i_eff = clamp(intensity, 0.15, 1.0);
-    // Peaks twice per beat — extra chances for structure to pop without waiting for a drop
-    float pulse_beat = pow(sin(beat_phase * TAU), 2.0);
-    // Shared 0..1 gate: scales secondary pattern + boosts highlights between drops
+
+    float aspect = resolution.x / max(resolution.y, 1.0);
+    vec2 p = v_uv - 0.5;
+    p.x *= aspect;
+
+    // -----------------------------------------------------------------
+    //  FEEDBACK WARP — translate through curl-noise + tiny bar swirl.
+    //  Critical: no inward radial zoom (that's the tunnel look we are
+    //  walking away from). A small bass-driven out-breathe stops the
+    //  feedback texture from pooling at the centre on a long hold.
+    // -----------------------------------------------------------------
+    vec2 cp = p * 1.20 + vec2(time * 0.030, time * 0.018);
+    vec2 flow = curl(cp);
+    float flow_amp = (0.0030 + 0.0042 * rms_g + 0.0050 * t_lo
+                    + 0.0034 * bass_hit + 0.0022 * env)
+                   * mix(1.0, 0.55, tension)
+                   * (1.0 + 0.55 * hold);
+    vec2 warp = flow * flow_amp;
+
+    // Tiny bar-synced swirl — a few mrad per frame, audio-jittered.
+    float swirl = 0.00080
+                + 0.00140 * sin(bar_phase * TAU)
+                + 0.00280 * t_mid
+                + 0.00170 * t_hi
+                + 0.00060 * sin(time * 0.21);
+    float cs = cos(swirl);
+    float sn = sin(swirl);
+    vec2 q = vec2(cs * p.x - sn * p.y, sn * p.x + cs * p.y);
+    // Subtle out-breathing pulse — opposite of the original inward zoom.
+    float breathe = 1.0 + 0.014 * bass_hit + 0.010 * t_lo - 0.008 * tension;
+    q *= breathe;
+    q.x /= aspect;
+
+    vec2 uv_s = q + 0.5 + warp;
+    uv_s = clamp(uv_s, 0.001, 0.999);
+
+    // Hi-band chromatic split on the trail sample.
+    float split = (0.0014 + 0.0042 * t_hi + 0.0022 * pulse) / max(aspect, 0.5);
+    vec2 ox = vec2(split, 0.0);
+    vec4 prev_c = texture(u_prev_frame, uv_s);
+    vec3 prev_rgb = vec3(
+        texture(u_prev_frame, clamp(uv_s + ox, 0.001, 0.999)).r,
+        prev_c.g,
+        texture(u_prev_frame, clamp(uv_s - ox, 0.001, 0.999)).b
+    );
+    float decay = 0.870 + 0.055 * hold - 0.060 * tension + 0.022 * rms_g;
+    decay = clamp(decay, 0.74, 0.95);
+    vec3 trail = prev_rgb * decay * u_has_prev;
+
+    // -----------------------------------------------------------------
+    //  KALEIDOSCOPE — alternate 6 ↔ 8 fold every quarter-bar so the
+    //  symmetry shifts on the downbeat without sliding through invalid
+    //  non-integer wedge counts (which would tear at angle = ±π).
+    // -----------------------------------------------------------------
+    float n_step = floor(bar_phase * 4.0);
+    float n_fold = 6.0 + 2.0 * mod(n_step, 2.0);
+    vec2 kp = kaleido(p, n_fold);
+
+    // -----------------------------------------------------------------
+    //  FRESH LAYER — domain-warped FBM smoke filaments inside the wedge.
+    //  Spectrum-weighted offsets so each band paints into the warp.
+    // -----------------------------------------------------------------
+    float spec_w =
+          band_energies[0] * 0.020 + band_energies[1] * 0.018
+        + band_energies[2] * 0.014 + band_energies[3] * 0.012
+        + band_energies[4] * 0.010 + band_energies[5] * 0.008
+        + band_energies[6] * 0.007 + band_energies[7] * 0.006;
     float spec_sum = band_energies[0] + band_energies[1] + band_energies[2]
                    + band_energies[3] + band_energies[4] + band_energies[5]
                    + band_energies[6] + band_energies[7];
-    spec_sum = clamp(spec_sum * 0.11, 0.0, 1.0);
+    spec_sum = clamp(spec_sum * 0.125, 0.0, 1.0);
 
-    float gate = clamp(
-          0.18
-        + 0.52 * onset_pulse
-        + 0.42 * bass_hit
-        + 0.38 * t_mid
-        + 0.32 * pulse_beat
-        + 0.22 * onset_env
-        + 0.32 * t_hi
-        + 0.35 * hold
-        + 0.14 * rms_soft
-        + 0.12 * spec_sum,
-        0.0,
-        1.0
+    vec2 d_off = vec2(time * 0.045, -time * 0.030)
+               + 0.42 * vec2(sin(bar_phase * TAU), cos(bar_phase * TAU));
+    vec2 q1 = vec2(
+        fbm(kp * 1.6 + d_off),
+        fbm(kp * 1.6 + d_off + vec2(5.2, 1.3))
     );
-
-    float aspect = resolution.x / max(resolution.y, 1.0);
-    vec2 q = v_uv - 0.5;
-    q.x *= aspect;
-
-    // --- Feedback warp (slightly milder = less sampled blur per frame) ---
-    float zoom = 0.965
-               + 0.028 * rms_g
-               + 0.034 * bass_hit
-               + 0.024 * t_lo
-               - 0.015 * tension
-               + 0.010 * hold
-               + 0.006 * onset_env;
-    float spin = 0.0011 * (1.0 + 2.2 * rms_g)
-               + 0.0042 * t_mid
-               + 0.0024 * sin(bar_phase * TAU)
-               + 0.009 * t_hi * sin(time * 14.0 + length(q) * 18.0);
-    float cr = cos(spin);
-    float sr = sin(spin);
-    q = vec2(cr * q.x - sr * q.y, sr * q.x + cr * q.y) * zoom;
-
-    float spec_w =
-          band_energies[0] * 0.010 + band_energies[1] * 0.009
-        + band_energies[2] * 0.008 + band_energies[3] * 0.007
-        + band_energies[4] * 0.006 + band_energies[5] * 0.005
-        + band_energies[6] * 0.004 + band_energies[7] * 0.004;
-    spec_w *= 0.62 * (1.0 + 0.6 * beat_phase + 0.35 * bass_hit);
-    q += vec2(
-        spec_w * sin(time * 3.3 + q.y * 9.0 + beat_phase * TAU * 2.0),
-        spec_w * cos(time * 2.9 - q.x * 8.0 + bar_phase * TAU)
+    vec2 q2 = vec2(
+        fbm(kp * 2.2 + 3.8 * q1 + vec2(1.7, 9.2 + spec_w * 6.0)),
+        fbm(kp * 2.2 + 3.8 * q1 + vec2(8.3, 2.8 - spec_w * 6.0))
     );
+    float fbm_v = fbm(kp * 2.6 + 4.0 * q2);
 
-    q.x /= aspect;
-    vec2 uv_s = q + 0.5;
-    uv_s = clamp(uv_s, 0.002, 0.998);
+    // Bright filament ridges (Milkdrop "smoke threads").
+    float ridge = 1.0 - abs(fbm_v - 0.5) * 2.0;
+    ridge = pow(clamp(ridge, 0.0, 1.0), 6.0);
+    // Secondary fine ridge for crunch on hats / drops.
+    float fine_v = fbm(kp * 6.5 + 2.0 * q2 + vec2(time * 0.09, -time * 0.07));
+    float fine = pow(clamp(1.0 - abs(fine_v - 0.5) * 2.0, 0.0, 1.0), 14.0);
 
-    float split = (0.0018 + 0.004 * t_hi + 0.002 * onset_pulse) / max(aspect, 0.5);
-    vec2 off = vec2(split, 0.0);
-    vec4 prev_c = texture(u_prev_frame, uv_s);
-    vec3 prev_rgb = vec3(
-        texture(u_prev_frame, clamp(uv_s + off, 0.002, 0.998)).r,
-        prev_c.g,
-        texture(u_prev_frame, clamp(uv_s - off, 0.002, 0.998)).b
-    );
+    // -----------------------------------------------------------------
+    //  WAVEFORM TRACE — glowing horizontal+vertical sinusoids whose
+    //  amplitude is summed from all 8 band_energies. Drawn in folded
+    //  ``kp`` so the kaleidoscope mirror multiplies it across the screen.
+    // -----------------------------------------------------------------
+    float wphase = time * (0.85 + 0.55 * rms) + beat_phase * TAU * 0.5;
+    float wy = 0.0;
+    float wx = 0.0;
+    for (int i = 0; i < 8; i++) {
+        float k = float(i + 1);
+        float fk = 2.4 + k * 1.45;
+        wy += band_energies[i] * sin(kp.x * fk + wphase + k * 0.71);
+        wx += band_energies[i] * cos(kp.y * fk + wphase * 1.3 - k * 0.71);
+    }
+    float wave_gain = 0.058 + 0.048 * pulse + 0.038 * bass_hit + 0.026 * t_mid;
+    wy *= wave_gain;
+    wx *= wave_gain;
+    float trace_w = 0.0040 + 0.0070 * t_hi + 0.0040 * env;
+    float trace_y = 1.0 - smoothstep(0.0, trace_w * 1.6, abs(kp.y - wy));
+    float trace_x = 1.0 - smoothstep(0.0, trace_w * 1.6, abs(kp.x - wx));
+    // Soft halo around each line (wider falloff, lower amplitude).
+    float halo_y = 1.0 - smoothstep(0.0, trace_w * 6.0, abs(kp.y - wy));
+    float halo_x = 1.0 - smoothstep(0.0, trace_w * 6.0, abs(kp.x - wx));
+    float trace = clamp(trace_y + trace_x + 0.35 * (halo_y + halo_x), 0.0, 1.6);
 
-    float decay = 0.875 + 0.040 * hold - 0.050 * tension + 0.022 * rms_g;
-    decay += 0.018 * (1.0 - tension) * t_hi;
-    decay = clamp(decay, 0.76, 0.93);
-    vec3 trail = prev_rgb * decay * u_has_prev;
+    // -----------------------------------------------------------------
+    //  PALETTE — slow continuous hue cycle across all 5 slots, with
+    //  bar / FBM / beat modulation so the colour never freezes.
+    // -----------------------------------------------------------------
+    float hue = time * 0.038
+              + bar_phase * 0.45
+              + 0.20 * fbm_v
+              + 0.18 * sin(beat_phase * TAU * 0.5)
+              + 0.10 * spec_w;
+    vec3 base = palette_ramp(hue);
+    vec3 hot = palette_ramp(hue + 0.18 + 0.18 * t_mid);
+    vec3 spark = palette_ramp(hue + 0.55 + 0.30 * t_hi);
+    vec3 trace_col = palette_ramp(hue + 0.78);
 
-    // --- Fresh layer: soft plasma + sharp rings/rays (readable fine structure) ---
-    vec2 p = (v_uv - 0.5) * vec2(aspect, 1.0);
-    float rad = length(p);
-    float ang = atan(p.y, p.x);
+    vec3 fresh = mix(base * 0.55, base * 1.05, smoothstep(0.25, 0.75, fbm_v));
+    fresh = mix(fresh, hot * 1.30, ridge * (0.55 + 0.45 * env));
+    fresh = mix(fresh, spark, fine * (0.45 + 0.55 * t_hi + 0.25 * pulse));
+    fresh += trace_col * trace * (0.32 + 0.85 * pulse + 0.45 * t_mid + 0.32 * env);
 
-    float spec_phase =
-          band_energies[0] * 5.0 + band_energies[1] * 4.2
-        + band_energies[2] * 3.6 + band_energies[3] * 3.0
-        + band_energies[4] * 2.4 + band_energies[5] * 2.0
-        + band_energies[6] * 1.6 + band_energies[7] * 1.3;
+    // Drop afterglow — palette[4] bloom riding the bright FBM tips only.
+    fresh += palette_pick(4) * (0.30 * hold) * smoothstep(0.30, 0.85, fbm_v);
 
-    float wob = sin(beat_phase * TAU * 2.0) * 0.15 + cos(bar_phase * TAU) * 0.1;
-    float plasma_raw =
-          sin(rad * (26.0 + 10.0 * rms) - time * 2.9 + spec_phase * 2.1 + wob)
-        * cos(ang * (6.0 + 2.0 * hold) + time * 1.15 + bar_phase * TAU * 0.5)
-        + 0.32 * sin(rad * 52.0 + bass_hit * 5.0 - time * 4.2)
-        + 0.18 * sin(rad * 88.0 - time * 5.5 + spec_phase * 3.0);
-    float plasma = plasma_raw * 0.5 + 0.5;
+    // Build-up dampening: pull toward cool slots and desaturate.
+    vec3 cold = mix(palette_pick(0), palette_pick(1), smoothstep(0.20, 0.80, fbm_v));
+    fresh = mix(fresh, cold, 0.55 * tension);
+    float luma = dot(fresh, vec3(0.2126, 0.7152, 0.0722));
+    fresh = mix(fresh, vec3(luma), 0.30 * tension);
 
-    // Thin bright concentric ridges (high exponent = sharp peaks)
-    float ring_wave = sin(rad * (40.0 + 14.0 * rms + 6.0 * bass_hit) - time * 3.4
-                    + spec_phase * 1.7 + 0.4 * sin(ang * 3.0));
-    float rings = pow(clamp(abs(ring_wave), 0.0, 1.0), 8.0);
-    rings += 0.55 * pow(clamp(abs(sin(rad * 78.0 - time * 6.0 + spec_phase * 2.0)), 0.0, 1.0), 12.0);
+    // Ambient wash so the frame is never empty between hits.
+    fresh += mix(palette_pick(2), palette_pick(1), 0.5)
+           * (0.07 + 0.10 * rms_soft + 0.06 * spec_sum);
 
-    // Narrow radial beams (audio-scalloped count)
-    float beam_k = 10.0 + 7.0 * beat_phase + 3.0 * rms + 4.0 * t_mid;
-    float beams = pow(clamp(abs(cos(ang * beam_k + time * 2.1 + bar_phase * TAU)), 0.0, 1.0), 16.0);
-    beams += 0.4 * pow(clamp(abs(cos(ang * (beam_k * 1.37) - time * 1.6)), 0.0, 1.0), 20.0);
-
-    // Brighter floors so structure reads in quiet sections; gate widens peaks
-    float fine = rings * (0.30 + 0.50 * rms_g + 0.32 * onset_env + 0.22 * pulse_beat + 0.18 * rms_soft)
-                     * (0.65 + 0.35 * gate)
-               + beams * (0.24 + 0.42 * t_hi + 0.28 * onset_pulse + 0.20 * pulse_beat + 0.14 * beat_phase)
-                     * (0.60 + 0.40 * gate);
-
-    // --- Second pattern: scaled/rotating grid + polar moiré (``gate`` drives scale & strength) ---
-    float dens = mix(14.0, 46.0, gate) + 10.0 * rms_soft + 6.0 * pulse_beat;
-    float br = bar_phase * TAU * 0.18 + time * 0.07 + 0.4 * onset_pulse;
-    vec2 guv = v_uv - 0.5;
-    guv = vec2(cos(br) * guv.x - sin(br) * guv.y, sin(br) * guv.x + cos(br) * guv.y) + 0.5;
-    vec2 gf = fract(guv * dens) - 0.5;
-    float lw = 0.042 - 0.018 * gate + 0.012 * (1.0 - rms_soft);
-    float ax = fwidth(gf.x) * 1.25;
-    float ay = fwidth(gf.y) * 1.25;
-    float gx = 1.0 - smoothstep(0.0, lw + ax, abs(gf.x));
-    float gy = 1.0 - smoothstep(0.0, lw + ay, abs(gf.y));
-    float grid = pow(max(gx, gy), 4.0);
-
-    float moire_scl = mix(18.0, 52.0, gate) + 8.0 * bass_hit + 6.0 * pulse_beat;
-    float moire = pow(
-        clamp(abs(sin(rad * moire_scl - time * 2.7 + spec_phase + ang * 2.0)), 0.0, 1.0),
-        7.0
-    );
-
-    float pattern_b = clamp(grid * (0.35 + 0.65 * gate) + moire * (0.25 + 0.55 * gate), 0.0, 1.0);
-
-    vec3 c_lo = mix(palette_pick(0), palette_pick(1), plasma);
-    vec3 c_hi = mix(palette_pick(2), palette_pick(3), 1.0 - plasma);
-    vec3 fresh = mix(c_lo, c_hi, 0.5 + 0.45 * sin(time * 0.37 + rad * 8.0));
-    // Ambient wash so the frame is never empty black between hits
-    fresh += mix(palette_pick(2), palette_pick(1), 0.5) * (0.10 + 0.14 * rms_soft + 0.06 * pulse_beat);
-
-    vec3 edge_col = mix(palette_pick(1), palette_pick(4), 0.5 + 0.5 * sin(time * 0.9 + spec_phase));
-    fresh = mix(fresh, fresh + edge_col * 1.15, clamp(fine, 0.0, 1.0));
-
-    vec3 pb_col = mix(palette_pick(3), palette_pick(4), 0.4 + 0.6 * gate);
-    fresh += pb_col * pattern_b * (0.22 + 0.62 * gate + 0.15 * onset_env);
-
-    // High-frequency hash in continuous UV — avoids large square blocks from
-    // ``floor(v_uv * resolution / …)`` (read as chunky “low res” in encodes).
+    // Continuous-UV hash grain (no chunky pixel blocks in encodes).
     vec2 g_uv = v_uv * vec2(1447.0, 1021.0) + vec2(time * 13.7, -time * 9.2);
     float grain = hash21(g_uv) + 0.5 * hash21(g_uv * 1.91 + 17.0) - 0.75;
-    fresh += vec3(grain * 0.028) * (0.35 + onset_env + 0.55 * t_hi);
-    fresh = mix(fresh, palette_pick(4), 0.12 + 0.35 * onset_pulse + 0.2 * onset_env);
-    fresh += palette_pick(3) * (0.28 * t_mid + 0.42 * t_hi);
-    fresh += vec3(0.55, 0.92, 1.0) * t_hi * 0.22 * (1.0 - 0.6 * tension);
-    fresh = mix(fresh, fresh * vec3(0.72, 0.78, 0.95), 0.32 * tension);
+    fresh += vec3(grain) * (0.022 + 0.038 * t_hi + 0.022 * env);
 
-    float emit = (0.36 + 0.48 * rms_g + 0.42 * rms_soft + 0.44 * bass_hit + 0.24 * t_lo)
+    // -----------------------------------------------------------------
+    //  EMIT / TRAIL COMBINE
+    // -----------------------------------------------------------------
+    float emit = (0.40 + 0.42 * rms_g + 0.36 * bass_hit + 0.30 * t_lo
+                  + 0.20 * env + 0.18 * pulse + 0.20 * hold
+                  + 0.14 * ridge + 0.20 * trace)
                * (1.0 - 0.22 * tension)
-               * (1.0 + 0.50 * hold + 0.32 * onset_pulse)
-               + 0.10 * onset_env
-               + 0.07 * pulse_beat
-               + 0.12 * pattern_b;
-    emit *= i_eff;
+               * i_eff;
 
     vec3 acc = trail + fresh * emit;
-    // Partial tone-map only — leaves more headroom for peak mix toward white
-    acc = acc / (1.0 + acc * 0.07);
+    // Soft Reinhard tone-map with headroom for peak whites.
+    acc = acc / (1.0 + acc * 0.085);
 
-    float vign = 1.0 - smoothstep(0.35, 1.15, length(v_uv - 0.5) * 1.85);
-    acc *= mix(0.84, 1.0, vign) * (0.90 + 0.10 * (1.0 - tension));
-
-    // Near-white cores on strong hits (premultiplied path: push rgb toward alpha)
+    // Peak whites on hits — push small bright cores so drops feel snappy.
     float peak = clamp(
-          onset_pulse * 0.95
-        + bass_hit * 0.85
-        + hold * 0.45
-        + gate * 0.35
-        + t_hi * 0.25
-        + fine * 0.2,
-        0.0,
-        1.0
-    );
-    float peak2 = peak * peak;
-    acc = mix(acc, vec3(1.0), peak2 * 0.62);
-    acc += vec3(1.0) * 0.12 * peak * (0.35 + 0.65 * clamp(fine, 0.0, 1.0));
+          pulse * 0.85
+        + bass_hit * 0.70
+        + hold * 0.40
+        + t_hi * 0.30
+        + ridge * 0.25
+        + trace * 0.55,
+        0.0, 1.0);
+    acc = mix(acc, vec3(1.0), peak * peak * 0.55);
 
-    float a_base = 0.40 + 0.36 * rms_soft + 0.26 * rms_g
-                 + 0.26 * bass_hit + 0.16 * hold + 0.11 * t_mid
-                 + 0.10 * onset_env + 0.08 * pulse_beat + 0.07 * gate
-                 + 0.12 * peak;
-    float alpha = clamp(a_base * i_eff, 0.30, 0.94);
+    // Edge-soft vignette so the corners don't out-shine the centre.
+    float vign = 1.0 - smoothstep(0.45, 1.10, length(v_uv - 0.5) * 1.8);
+    acc *= mix(0.84, 1.0, vign);
+
+    float a_base = 0.42 + 0.34 * rms_soft + 0.22 * bass_hit
+                 + 0.20 * hold + 0.16 * env + 0.14 * peak
+                 + 0.10 * ridge + 0.08 * spec_sum;
+    float alpha = clamp(a_base * i_eff, 0.30, 0.95);
     vec3 premul = acc * alpha;
 
     vec4 ov = vec4(premul, alpha);

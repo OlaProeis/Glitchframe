@@ -1727,10 +1727,15 @@ See `docs/technical/visual-style-presets.md` for the full schema and
                     choices=[
                         ("SDXL AI stills", MODE_SDXL_STILLS),
                         ("Static image + Ken Burns (RMS)", MODE_STATIC_KENBURNS),
-                        ("AnimateDiff loops (SDXL, GPU)", MODE_ANIMATEDIFF),
+                        ("AnimateDiff loops (SDXL, GPU) — (broken)", MODE_ANIMATEDIFF),
                     ],
-                    value=MODE_ANIMATEDIFF,
-                    info=f"Canonical values: {', '.join(BACKGROUND_MODES)}",
+                    value=MODE_SDXL_STILLS,
+                    info=(
+                        f"Canonical values: {', '.join(BACKGROUND_MODES)}. "
+                        "AnimateDiff is currently broken: SDXL+MotionAdapter "
+                        "produces all-black frames under FP16 due to a VAE "
+                        "NaN issue — kept in the list for parity, do not use."
+                    ),
                 )
                 static_bg_file = gr.File(
                     label="Static background image (Ken Burns)",

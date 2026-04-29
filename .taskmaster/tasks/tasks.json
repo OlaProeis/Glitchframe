@@ -2,7 +2,7 @@
   "master": {
     "tasks": [
       {
-        "id": "1",
+        "id": 1,
         "title": "Project Setup and Directory Structure",
         "description": "Initialize Python 3.11 project with uv/pip, create directory layout, requirements.txt, and basic config.py with paths and presets registry.",
         "details": "Use `uv init glitchframe`; create folders: pipeline/, presets/, assets/shaders/, assets/fonts/, cache/, outputs/; generate requirements.txt with gradio==4.x, torch==2.x (cuda12), diffusers, librosa, soundfile, moderngl, skia-python, pillow, numpy; config.py with default paths, preset dict loading YAMLs.",
@@ -17,7 +17,7 @@
         "updatedAt": "2026-04-16T21:05:06.262Z"
       },
       {
-        "id": "2",
+        "id": 2,
         "title": "Gradio UI Skeleton Implementation",
         "description": "Build single-page Gradio layout with all input sections: Audio, Metadata, Branding, Lyrics, Visual style, Output settings, Actions buttons.",
         "details": "In app.py: gr.Interface or Blocks with Tabs/Rows for sections; file uploads for audio/logo; Textboxes for metadata/lyrics/prompt; Dropdown for presets; Sliders for opacity/intensity; Buttons for Analyze/Preview/Render; Progress panel with gr.Progress.",
@@ -34,7 +34,7 @@
         "updatedAt": "2026-04-16T21:12:10.100Z"
       },
       {
-        "id": "3",
+        "id": 3,
         "title": "Audio Loading and Waveform Preview",
         "description": "Implement audio file upload handling, 44.1kHz mono mixdown for analysis, stereo original preservation, waveform preview/play/scrub in Gradio.",
         "details": "Use soundfile/librosa to load MP3/WAV/FLAC; resample to 44100Hz mono; generate numpy waveform; Gradio Audio component for preview, custom JS for scrub if needed; hash song for cache dir.",
@@ -51,7 +51,7 @@
         "updatedAt": "2026-04-16T21:16:02.118Z"
       },
       {
-        "id": "4",
+        "id": 4,
         "title": "Audio Analyzer with BeatNet and Features",
         "description": "Implement Analyze button: tempo/beats (BeatNet/madmom), onsets (librosa), spectral bands (8 log-mel), RMS, structural segments; cache analysis.json.",
         "details": "pipeline/audio_analyzer.py: load vocals via demucs('htdemucs_ft'); BeatNet for beats; librosa.onset.onset_strength.peaks; librosa.feature.melspectrogram(8 bands); librosa.rms; librosa.segment; save json with beats/onsets/spectrum/rms/segments.",
@@ -68,7 +68,7 @@
         "updatedAt": "2026-04-16T21:24:09.143Z"
       },
       {
-        "id": "5",
+        "id": 5,
         "title": "Orchestrator Core with Song Hashing and Caching",
         "description": "Create orchestrator.py to coordinate pipeline stages, compute song_hash from audio+metadata, manage cache/<hash>/, skip re-analysis if exists.",
         "details": "Hash = hashlib.sha256(audio_bytes + metadata_str); mkdir cache/<hash>; load/save analysis.json/stems; orchestrate stages sequentially with progress callbacks to Gradio.",
@@ -86,7 +86,7 @@
         "updatedAt": "2026-04-16T21:35:33.030Z"
       },
       {
-        "id": "6",
+        "id": 6,
         "title": "Preset System and YAML Loading",
         "description": "Define presets/neon-synthwave.yaml etc. with SD prompt/shader/typography/color; load in config.py; populate Gradio dropdown.",
         "details": "YAML schema: {prompt: str, shader: str, typo_style: str, colors: list}; config.py registry[list]; Gradio dropdown onchange loads fields; create 6 presets as specified.",
@@ -103,7 +103,7 @@
         "updatedAt": "2026-04-17T07:14:22.654Z"
       },
       {
-        "id": "7",
+        "id": 7,
         "title": "Simple Spectrum Visualizer Renderer (M1)",
         "description": "For M1: render plain 1080p video with solid color bg + spectrum overlay from analysis, pipe raw BGR to ffmpeg NVENC, mux audio.",
         "details": "pipeline/renderer.py: loop over frames at 30fps, interpolate spectrum[frame], draw bars with numpy/Pillow; ffmpeg cmd as spec'd: rawvideo bgr24 stdin -> h264_nvenc cq19; test end-to-end.",
@@ -121,7 +121,7 @@
         "updatedAt": "2026-04-16T21:38:48.098Z"
       },
       {
-        "id": "8",
+        "id": 8,
         "title": "Moderngl Reactive Shader Layer",
         "description": "Implement GPU shader pass with moderngl offscreen FBO for reactive overlays driven by beat_phase, band_energies[8], rms, onset_pulse.",
         "details": "assets/shaders/: glsl files for spectrum/particles/geometry (e.g. #version 330; uniforms vec4 band_energies; frag: color based on sin(time)*rms); moderngl.Context offscreen 1920x1080 RGBA; render_frame(uniforms_dict) -> np.array alpha.",
@@ -138,7 +138,7 @@
         "updatedAt": "2026-04-16T21:48:27.899Z"
       },
       {
-        "id": "9",
+        "id": 9,
         "title": "Preset Shader Selection and Reactive Intensity",
         "description": "Integrate presets to select shader, apply intensity slider (0-100%) scaling uniforms, composite reactive RGBA onto bg.",
         "details": "In reactive_layer.py: load preset.shader glsl; uniforms['intensity'] = slider/100; gl.teximage background_rgb; render -> alpha_blend.",
@@ -156,7 +156,7 @@
         "updatedAt": "2026-04-17T07:56:02.450Z"
       },
       {
-        "id": "10",
+        "id": 10,
         "title": "Logo Compositing",
         "description": "Load optional logo PNG, apply position (corners/center), opacity slider, blend RGBA fixed per frame.",
         "details": "Pillow: Image.open(logo).resize; position mapping dict; alpha = opacity/100; np blend logo_rgba onto frame.",
@@ -174,7 +174,7 @@
         "updatedAt": "2026-04-17T07:57:27.116Z"
       },
       {
-        "id": "11",
+        "id": 11,
         "title": "Lyrics Alignment with WhisperX",
         "description": "Implement lyrics_aligner.py: demucs vocals, WhisperX large-v3 word timestamps, Needleman-Wunsch align user lyrics to tokens.",
         "details": "whisperx.load_model('large-v3'); transcribe(vocals.wav, word_timestamps=True); dtw_align(user_lines, whisper_words) -> [{'word':str, 'line_idx':int, 't_start':float, 't_end':float}]; save lyrics.aligned.json.",
@@ -191,7 +191,7 @@
         "updatedAt": "2026-04-16T21:31:08.223Z"
       },
       {
-        "id": "12",
+        "id": 12,
         "title": "Skia Kinetic Typography Layer",
         "description": "Render typography with skia-python: per-word motions (pop-in/beat-shake etc.), lower-third layout, fonts from assets/, driven by aligned.json.",
         "details": "skia.Canvas RGBA; load preset font (TTF); for frame t: active_words = [w for w in lyrics if t in [w.t_start, w.t_end]]; animate pos/scale/alpha per preset motion curves; prev line fade.",
@@ -209,7 +209,7 @@
         "updatedAt": "2026-04-17T07:21:51.924Z"
       },
       {
-        "id": "13",
+        "id": 13,
         "title": "Frame Compositor Pipeline",
         "description": "Integrate bg + reactive + typo + logo: per-frame loop pull/interpolate, blend RGBA layers, write BGR to ffmpeg stdin.",
         "details": "pipeline/compositor.py: queue.Queue bounded; for i in range(total_frames): bg = interp_bg(i/fps); reactive=render_reactive(i); typo=render_typo(i); logo_blend; pipe bgr24 bytes to ffmpeg.proc.stdin.",
@@ -229,7 +229,7 @@
         "updatedAt": "2026-04-17T08:03:23.343Z"
       },
       {
-        "id": "14",
+        "id": 14,
         "title": "SDXL Background Stills Generator",
         "description": "AI stills mode: diffusers SDXL FP16, generate N=ceil(dur/8s) keyframes from sections+preset prompt, FILM interpolate/crossfade.",
         "details": "from diffusers import StableDiffusionXLPipeline; pipe=...to('cuda:0', torch.float16); prompts=[preset+section_desc]; images=pipe(prompts).images; resize 1920x1080; save cache/background/keyframe_{i}.png; interp func.",
@@ -247,7 +247,7 @@
         "updatedAt": "2026-04-17T07:29:59.440Z"
       },
       {
-        "id": "15",
+        "id": 15,
         "title": "Background Modes Integration",
         "description": "Add AnimateDiff (stretch), static image upload/KenBurns; select mode in UI, feed to compositor.",
         "details": "If static: upload img, KenBurns zoom/pan on RMS; AnimateDiff: short loops per section (use diffusers AnimateDiffPipeline if avail); cache/background/.",
@@ -264,7 +264,7 @@
         "updatedAt": "2026-04-17T07:50:57.753Z"
       },
       {
-        "id": "16",
+        "id": 16,
         "title": "Thumbnail Generator",
         "description": "Pick frame at first chorus downbeat/loudest 1s, overlay Artist—Title big text with preset typo, save 1920x1080 PNG.",
         "details": "pipeline/thumbnail.py: chorus_t = segments[1] or argmax(rms); frame = compositor.get_frame(chorus_t); skia overlay title_text; PIL save.",
@@ -282,7 +282,7 @@
         "updatedAt": "2026-04-17T08:06:16.989Z"
       },
       {
-        "id": "17",
+        "id": 17,
         "title": "Metadata Generator",
         "description": "Generate metadata.txt: title, desc w/lyrics/chapters, tags from genre/preset.",
         "details": "pipeline/metadata.py: title=f'{artist} — {title} [Official Visualizer]'; chapters=[f'{t//60:02d}:{t%60:02d} {seg}' for seg,t in segments]; tags=list; write file.",
@@ -300,7 +300,7 @@
         "updatedAt": "2026-04-17T08:09:27.884Z"
       },
       {
-        "id": "18",
+        "id": 18,
         "title": "Progress, Preview 10s, Polish and Error Handling",
         "description": "Add live progress/ETA/log to Gradio; Preview 10s from loudest section; 4K/fps options; resumable renders; validate A/V sync.",
         "details": "Gradio queue+progressbar; preview: slice analysis[loudest_10s]; try/except per stage w/ resume from cache; post-render ffprobe check drift<50ms; outputs/<run_id=hash>/.",
@@ -321,7 +321,7 @@
         "updatedAt": "2026-04-17T08:21:51.079Z"
       },
       {
-        "id": "19",
+        "id": 19,
         "title": "Scope Preview to 10s Window with Background Optimization",
         "description": "Modify orchestrator to pass preview time range to BackgroundSource generators (SDXL, AnimateDiff, Ken Burns) for partial asset generation only within loudest 10s + padding; ensure full render completes missing assets with proper cache keys for unchanged quality.",
         "details": "1. In orchestrator.py (from Task 5), add preview_start/end params from Task 18 loudest_10s analysis: def ensure_backgrounds(hash, preview_range=None, full_duration=None): if preview_range: t_start, t_end = preview_range; padding=1.0s; gen_range=(max(0,t_start-padding), min(full_duration, t_end+padding)) else: gen_range=(0,full_duration)\n2. Update BackgroundSource.ensure(mode, song_hash, time_range=gen_range): cache_key=f'{hash}_{mode}_{gen_range[0]:.1f}_{gen_range[1]:.1f}' to distinguish partial/full caches in cache/<hash>/backgrounds/\n3. Modify Task14 SDXL: pipe(prompts_for_range=[section_desc for t in np.arange(gen_range[0],gen_range[1],8)]).images → keyframe_{t:.1f}.png\n4. Task15 AnimateDiff/KenBurns: generate loops/zooms only for gen_range, save with time-specific keys\n5. Full render: call ensure_backgrounds(hash, full_duration=analysis['duration']) to fill gaps, using existing partial cache\n6. Update docs/preview-and-render.md: explain partial caching; background-modes.md: time-range param; Gradio: 'Preview generates backgrounds for 10s window only (~2min vs 25min)'\n7. Cache manifest.json: track generated ranges per mode for resume logic.",
@@ -341,7 +341,7 @@
         "updatedAt": "2026-04-23T11:28:17.356Z"
       },
       {
-        "id": "20",
+        "id": 20,
         "title": "Bass-Driven Logo Beat Pulse with Low-Frequency Energy",
         "description": "Replace generic beat pulse with bass/kick-driven animation using low-frequency energy from analysis.json; add tunable sensitivity in CompositorConfig and preserve optional 'every beat' mode.",
         "details": "**Core Changes in compositor/beat_pulse.py:**\n1. Load analysis.json: extract **low-freq energy** - use `spectrum_bands[0:2]` (bass ~20-250Hz, 8 log-mel bands from Task 4) or compute `librosa.feature.rms(y=librosa.stft(analysis['audio'], n_fft=2048)[:,:,:2])` for sub-bass.\n2. **Bass envelope generator**: `def bass_envelope(analysis, frame_time, sensitivity=1.0): bass_energy = np.mean(spectrum_bands[frame_time*sr//hop:frame_time*sr//hop+frame_len, 0:2]); return np.clip(bass_energy*sensitivity, 0, 1)`\n3. **Alternative signals**: kick-detect = `onset_strength[beats] > threshold` filtered to bass band, or `librosa.onset.onset_strength(analysis['audio'].lowpass(250))` peaks.\n4. **Logo params**: `scale = 1.0 + 0.3*bass_envelope; opacity = 0.7 + 0.3*bass_envelope` (smooth with `scipy.signal.sosfilt` 0.1s attack/decay).\n5. **Config**: In `CompositorConfig`: `pulse_mode='bass' | 'beats' | 'hybrid'; bass_sensitivity=Slider(0.1-3.0, default=1.0)`; Gradio slider in UI.\n6. **Fallback**: If `pulse_mode='beats'`, use existing `beat_grid` interpolation.\n7. **Docs**: Update `title-and-beat-pulse.md`: explain bass vs beats modes, sensitivity tuning, freq ranges used.\n**Extend audio_analyzer.py if needed**: Add `bass_rms = librosa.rms(librosa.stft(audio)[:,:,:2])` to analysis.json.\n**Cache**: `pulse_cache/{song_hash}_{mode}_{sensitivity:.1f}.npy` for envelope per frame.",
@@ -361,7 +361,7 @@
         "updatedAt": "2026-04-23T11:28:17.471Z"
       },
       {
-        "id": "21",
+        "id": 21,
         "title": "Overnight / multi-song render queue",
         "description": "Allow queuing multiple full-pipeline jobs (ingest + analysis + background + compositor) so batches can run unattended, with stable file paths for uploads and clear per-job success/failure handling.",
         "details": "Define a durable job spec (serialize OrchestratorInputs or equivalent: song_hash or audio path, background mode, preset, lyrics toggle/text, resolution/fps, metadata, paths to copied logo/static assets). Prefer phased delivery: (A) CLI or script that reads JSON/JSONL and calls orchestrate_full_render sequentially; (B) optional Gradio: Add to queue, list/clear, background worker thread or subprocess so the UI stays responsive. Copy Gradio temp uploads into per-job folders when enqueueing. Between jobs, rely on existing GPU memory teardown patterns. Document in docs/technical/ or handover: queue file format, overnight usage.",
@@ -379,7 +379,7 @@
         "updatedAt": "2026-04-23T11:28:17.474Z"
       },
       {
-        "id": "22",
+        "id": 22,
         "title": "Single primary export action in Gradio (full pipeline UX)",
         "description": "Reduce perceived multi-step friction: one clear control that runs the same chain as Render full video today (analysis + optional lyrics alignment + background ensure + compositor + metadata), with advanced actions still available.",
         "details": "orchestrate_full_render already chains stages; the gap is UX/documentation. Add a prominent Export / Run full pipeline button (or rename and group) that uses the same code path as btn_render. Clarify in UI copy that Analyze / Align are optional precache/debug; when typography is enabled, render includes alignment if lyrics text present. Update docs/technical/gradio-ui.md and preview-and-render.md to describe the one-button story. Do not change stage order in orchestrator unless product requires it.",
@@ -397,7 +397,7 @@
         "updatedAt": "2026-04-23T11:28:17.477Z"
       },
       {
-        "id": "23",
+        "id": 23,
         "title": "Timestamped section headers for lyrics alignment",
         "description": "Allow the user to mark section boundaries with a single line that carries both a human-readable label (Verse 1, Chorus, Pre-chorus, Bridge, Outro, ...) AND a [m:ss] timestamp. The header produces both a section break (equivalent to today's `---`) and an immovable line anchor on the first lyric line of that section, eliminating the need to stack `---` with an inline `[m:ss]` on every section start. This becomes the ergonomic primary input channel for coarse section-level timing.",
         "details": "Extend `pipeline/lyrics_aligner.py` parser in `_split_user_lyrics`:\n\n1. Recognise a new header line form. Canonical examples (support all so users can paste whatever is natural):\n   * `[Verse 1 0:12]`\n   * `[Chorus 1:00]`\n   * `[Pre-chorus 0:42.5]`\n   * `[0:12 Verse 1]` (time before label)\n   * `[Outro 2:55]`\n   Accept either a `[m:ss]` / `[m:ss.mmm]` / `[h:mm:ss]` token inside the brackets (order-insensitive relative to the label). The header is matched on the ENTIRE trimmed line; lines that start with `[` but don't match the header grammar fall through to `_parse_anchor_prefix` (legacy bare-anchor lines) unchanged.\n2. On match: emit both a section break (append to `section_starts`) AND record the timestamp in `line_anchors` keyed to the NEXT real lyric line emitted after the header. Collapse consecutive headers the same way consecutive `---` markers are collapsed.\n3. Preserve the label text on the output so downstream logging and the editor can surface it (e.g. the Section-fingerprint log line can print `chosen=[Verse 1: 12.00s, Chorus: 42.50s, ...]`). This requires a small widening of the tuple returned by `_split_user_lyrics` or a sibling dict `section_labels: dict[int, str]` keyed by section index.\n4. Backward compatibility: `---`, `--- <tag>`, bare `[m:ss]` prefixes on lyric lines, and bare `[m:ss]` on a standalone line must continue to work with identical semantics. Cache hashes for existing songs that use only legacy forms must not change (fold labels into `_lyrics_cache_key` canonical form only when labels/header-timestamps are actually present).\n5. Wire the header timestamps into the existing `forced_sec` dict that feeds `_assign_sections_via_temporal_dp` — they should behave identically to today's inline `[m:ss]` anchors (score 2.0, dominates fingerprint match scores capped at 1.0).\n6. Optional polish: surface `section_labels` in the persisted `lyrics.aligned.json` payload so the visual editor can display section badges on the waveform.",
@@ -412,7 +412,7 @@
         "updatedAt": "2026-04-23T11:28:17.480Z"
       },
       {
-        "id": "24",
+        "id": 24,
         "title": "Logo rim lights: line mask, silhouette, and fallbacks",
         "description": "Add preprocessing utilities to derive a stroke/line energy mask (high-luma + optional edge emphasis), a full alpha silhouette, logo centroid, and a confidence score. When line energy is too weak, expose a clear fallback to outer-halo-only behavior for generic logos.",
         "details": "Implement in `pipeline/logo_composite.py` or a small sibling module (e.g. `pipeline/logo_rim_lights.py`). Steps: (1) Convert logo RGBA to linear-ish gray or max(R,G,B) for luma; threshold + optional Scharr/Sobel magnitude; multiply by alpha. (2) Centroid and bounding geometry from alpha for polar coordinates. (3) `line_mask_strength` scalar; if below epsilon, set `use_line_features=False` for later stages. (4) Optional light morphology (dilate/erode) to stabilize thin strokes. (5) Keep APIs pure NumPy, documented. PRD: `.taskmaster/docs/prd-logo-rim-lights.txt`.",
@@ -427,7 +427,7 @@
         "updatedAt": "2026-04-22T00:00:00.000Z"
       },
       {
-        "id": "25",
+        "id": 25,
         "title": "Logo rim lights: traveling wave, radial field, and inward mix",
         "description": "Build the core rim render: phase angle θ(t,ω) around the logo centroid, radial falloff, and smooth blending of outer halo vs line-local energy. Support configurable inward bleed using distance-to-edge or distance transform so light can read as moving into white strokes when enabled.",
         "details": "Depends on task 24 outputs. For each frame: compute angular position of each pixel in logo patch coords; modulate emissive intensity with smooth periodic functions of θ + global phase(t). Combine outer ring (alpha dilated minus core) with line mask contribution. Inward: weight by DT from alpha edge or luma. Use soft ramps (smoothstep) for all transitions. Output premultiplied RGBA patch for `_blend_premult_rgba_patch` (same stack as current glow). Reuse padding/blur where helpful but allow higher-quality multi-pass given hardware budget. Disable tqdm-style noise; keep per-frame work predictable.",
@@ -444,7 +444,7 @@
         "updatedAt": "2026-04-22T11:09:50.360Z"
       },
       {
-        "id": "26",
+        "id": 26,
         "title": "Logo rim lights: multi-color layers and smooth color motion",
         "description": "Layer 2–3 rim contributions with distinct hues, phase offsets, and optional hue rotation over time. Ensure smooth cross-blends and no banding; tune for neon aesthetic (saturation, optional slight flicker).",
         "details": "Depends on 25. Implement as weighted sum of colored emissive layers in linear light where practical, or gamma-aware blend. Parameters: `color_spread`, `layer_phase_offsets`, `hue_drift_per_sec`, optional per-preset default colors from shadow/base hex. Seeded variety from `song_hash` for repeatability. When `use_line_features` is false, reduce to simpler dual-tone halo that still animates. Document recommended defaults in code comments.",
@@ -461,7 +461,7 @@
         "updatedAt": "2026-04-22T11:37:20.074Z"
       },
       {
-        "id": "27",
+        "id": 27,
         "title": "Logo rim lights: beat, snare, and bass modulation",
         "description": "Modulate global intensity, phase velocity, and inward-mix with existing audio tracks: at minimum snare-glow and bass pulse envelopes from `pipeline/beat_pulse.py` and compositor timing (absolute t).",
         "details": "Extend compositor path so per-frame `t_sec` and prebuilt tracks (or values) can scale: `glow_strength` analog, `rim_phase_mul`, `rim_inward_mul`. Snare hit → brief intensity + optional phase kick; smooth with short attack/release to avoid stutter. Preserve behavior when snare/bass features disabled. Align with `OrchestratorInputs` fields already on `CompositorConfig`.",
@@ -478,7 +478,7 @@
         "updatedAt": "2026-04-22T11:45:47.902Z"
       },
       {
-        "id": "28",
+        "id": 28,
         "title": "Logo rim lights: `composite_logo_onto_frame` and compositor wiring",
         "description": "Plumb a cohesive rim config (or explicit kwargs) from `render_full_video` / compositor into `composite_logo_onto_frame`, including `t_sec`, `song_hash`, and all visual toggles. Preserve classic single-color alpha blur as `mode=classic` or auto when rim disabled.",
         "details": "Refactor `logo_composite.py` to separate classic `_neon_glow_patch` from new `build_rim_light_patch` (names indicative). Call order: optional rim stack behind logo, then optional classic glow if both requested for transition period, or mutual exclusion via enum `LogoGlowMode` (document choice). `Compositor` passes frame time and resolved modulation from task 27. No allocation explosions: reuse scratch buffers if the API allows; document thread-safety (single render thread).",
@@ -495,7 +495,7 @@
         "updatedAt": "2026-04-22T11:48:00.080Z"
       },
       {
-        "id": "29",
+        "id": 29,
         "title": "Logo rim lights: OrchestratorInputs + Gradio Branding UI",
         "description": "Add user-facing controls: rim mode (off / classic / new), travel speed, color spread, inward bleed amount, optional direction, and snare/bass link toggles. Wire defaults in `orchestrator.py` and `app.py` to match product intent (off or subtle default if safer).",
         "details": "Follow existing Gradio patterns (sliders, checkboxes, dropdown). Map to `OrchestratorInputs` and `CompositorConfig`. Validate ranges; show tooltips. Ensure `build_gradio` handlers pass new args. No change to song cache key for audio; branding-only. Cross-ref `docs/technical/gradio-ui.md` for the Branding section update (task 30).",
@@ -512,7 +512,7 @@
         "updatedAt": "2026-04-22T11:50:34.229Z"
       },
       {
-        "id": "30",
+        "id": 30,
         "title": "Logo rim lights: tests, `docs/technical`, and `docs/index.md`",
         "description": "Complete unit/integration coverage for tasks 24–28, add `docs/technical/logo-rim-lights.md` describing behavior and controls, and add one line to `docs/index.md`.",
         "details": "Document: mask fallback, multi-color, beat modulation, determinism, and how to A/B against classic glow. Keep prose consistent with other technical docs. Run `uv run pytest` (or project standard). Update `current-handover-prompt` only if your project convention requires; otherwise skip.",
@@ -529,7 +529,7 @@
         "updatedAt": "2026-04-23T11:30:08.038Z"
       },
       {
-        "id": "31",
+        "id": 31,
         "title": "Analysis schema v2: bump version + cache invalidation",
         "description": "Bump `ANALYSIS_SCHEMA_VERSION` in `pipeline/audio_analyzer.py` from 1 to 2 so the new `events` / extended signals block is always present. Cache hits with `schema_version < 2` must force a full re-analyze once and then cache the v2 payload.",
         "details": "In `analyze_song`, after loading an existing `analysis.json`, compare `data.get('schema_version')` to `ANALYSIS_SCHEMA_VERSION`; on mismatch drop into the recompute path instead of returning the cached payload. Write `schema_version: 2` in the final dict. Do not rename existing keys (`beats`, `onsets`, `rms`, `spectrum`, `segments`); only *add* keys so old consumers keep working while the codebase is mid-migration. Keep the separate demucs-only refresh path (vocals upgrade on cache hit) intact for v2 caches.",
@@ -544,7 +544,7 @@
         "updatedAt": "2026-04-22T12:57:24.284Z"
       },
       {
-        "id": "32",
+        "id": 32,
         "title": "Generalized band pulse tracks (lo / mid / hi)",
         "description": "Generalize `build_bass_pulse_track` in `pipeline/beat_pulse.py` into `build_band_pulse_track(*, band_lo, band_hi, decay_sec, sensitivity, norm_percentile)` and expose three convenience builders: `build_lo_transient_track`, `build_mid_transient_track`, `build_hi_transient_track`. These produce `PulseTrack` envelopes for kick/sub, snare/mids, and hats/sparkle respectively.",
         "details": "Reuse the existing shape (positive diff of averaged bands → one-pole decay → percentile norm). Defaults: lo = bands [0,2) decay 0.34s; mid = bands [3,6) decay 0.12s; hi = bands [6,8) decay 0.06s; all 90th-percentile norm. Keep `build_bass_pulse_track` (used by logo) as a thin wrapper around `build_band_pulse_track`. Export new names from `__all__`. Covered by direct unit tests similar to `test_beat_pulse.py`.",
@@ -561,7 +561,7 @@
         "updatedAt": "2026-04-22T12:57:24.294Z"
       },
       {
-        "id": "33",
+        "id": 33,
         "title": "Continuous onset-strength sampler",
         "description": "Add a time-domain sampler for the existing `onsets.strength` array in `analysis.json` so shaders get a continuous transient envelope alongside the discrete `onset_pulse`.",
         "details": "Implement `_interp_onset_strength(analysis, t) -> float` in `pipeline/reactive_shader.py` (or a private helper next to `_interp_scalar_series`). The onsets block carries `frame_rate_hz` (not `fps`), so accept that key too. Normalise once (per-load) by the 95th percentile so the output is roughly [0,1] without a single outlier crushing everything. Cache the normalised array on the analysis dict under `analysis['_onset_env_cache']` keyed by id, or recompute cheaply each call — document the choice.",
@@ -578,7 +578,7 @@
         "updatedAt": "2026-04-22T13:07:08.129Z"
       },
       {
-        "id": "34",
+        "id": 34,
         "title": "Drop + build-up detector (`pipeline/musical_events.py`)",
         "description": "New module that detects drop events and a build-up tension envelope from RMS + 8-band mel spectrum + segment boundaries already in `analysis.json`. Persist the output under a new `events` key so every render samples the same deterministic events.",
         "details": "Algorithm (deterministic, no ML): (1) smooth RMS ~0.3s; (2) take positive RMS step over a ~0.5s lag window; (3) multiply by low-band energy step over the same lag (to gate mids-only false positives); (4) peak-pick above percentile + absolute floor; (5) snap to the nearest segment boundary within ±1.0s OR keep if the local jump is very strong; (6) de-dupe within a 5s window. For `build_tension(t)`: for each drop `t_d` with confidence `c`, rise linearly (or smoothstep) over [t_d - T_build, t_d] to `c`, snap back to 0 just after `t_d`; take max across overlapping build windows. Persist: `events = { 'drops': [{'t', 'confidence'}...], 'build_tension': {'fps': int, 'values': [float]}, 'build_window_sec': float }`. Call from `analyze_song` right after segments, before writing JSON.",
@@ -595,7 +595,7 @@
         "updatedAt": "2026-04-22T12:57:24.297Z"
       },
       {
-        "id": "35",
+        "id": 35,
         "title": "Bar-phase helper (downbeat-aware)",
         "description": "Add a `bar_phase_at(t, downbeats, beats_per_bar=4, bpm=None) -> float` helper that returns the [0,1) position within a 4-beat bar based on BeatNet downbeats, falling back to beat-grid + bpm when downbeats are absent.",
         "details": "When downbeats exist, find the most recent downbeat `d_prev` and next `d_next`; return `(t - d_prev) / (d_next - d_prev)`. When only beats exist, group beats into bars of length `beats_per_bar` and return phase within the bar. Outside the grid, fall back to `beat_phase_at` behaviour extrapolated with `60/bpm * beats_per_bar` as the bar period. Lives in `pipeline/reactive_shader.py` near `_beat_phase_at`.",
@@ -612,7 +612,7 @@
         "updatedAt": "2026-04-22T13:07:08.140Z"
       },
       {
-        "id": "36",
+        "id": 36,
         "title": "Extend `uniforms_at_time` with new signals",
         "description": "Add `onset_env`, `build_tension`, and `bar_phase` to the uniform dict returned by `uniforms_at_time` in `pipeline/reactive_shader.py`. `transient_lo/mid/hi` and `drop_hold` are still injected by the compositor (like today’s `bass_hit`) to avoid coupling the sampler to the `PulseTrack` machinery.",
         "details": "Pull keys defensively with zero fallback on missing `events`. Extend `ShaderUniforms` to mirror the new keys so typed callers stay exhaustive. Update the Gradio one-frame reactive preview in `app.py` to also merge `transient_*` + `drop_hold` at `t=0` so the preview doesn’t read zero for every new signal.",
@@ -632,7 +632,7 @@
         "updatedAt": "2026-04-22T13:07:08.144Z"
       },
       {
-        "id": "37",
+        "id": 37,
         "title": "Compositor wiring for new pulse tracks + drop hold",
         "description": "Build the three transient tracks (lo/mid/hi) plus a `drop_hold` sampler once per render in `pipeline/compositor.py`, and inject them into the per-frame uniform dict alongside the existing `bass_hit`.",
         "details": "Add helpers analogous to `_shader_bass_track_for_analysis`: `_shader_transient_tracks_for_analysis` returns `(lo, mid, hi)` `PulseTrack | None`. Add a `_drop_hold_fn_for_analysis(analysis, decay_sec)` that closes over `events.drops` and returns `t -> float` (exp decay from the most recent drop). Pass into `_render_compositor_frame` and merge into `uniforms` after the existing `bass_hit` line. Expose decay + sensitivity knobs in `CompositorConfig` with sensible defaults; document in the dataclass docstring. Keep hot-path cost minimal: scalar lookups only.",
@@ -651,7 +651,7 @@
         "updatedAt": "2026-04-22T13:25:24.682Z"
       },
       {
-        "id": "38",
+        "id": 38,
         "title": "Declare new uniforms in existing `.frag` files",
         "description": "Add uniform declarations for `onset_env`, `transient_lo`, `transient_mid`, `transient_hi`, `build_tension`, `drop_hold`, `bar_phase` to every shader in `assets/shaders/` without changing their current visual behaviour. This is purely receiving – shaders can ignore the new signals until task 42.",
         "details": "Unused uniforms are silently skipped by `ReactiveShader` (see `docs/technical/reactive-shader-layer.md`), so declaring them costs nothing. Keep existing math untouched. This step makes it obvious during review that every shader has access to the full signal vocabulary.",
@@ -668,7 +668,7 @@
         "updatedAt": "2026-04-22T13:25:24.686Z"
       },
       {
-        "id": "39",
+        "id": 39,
         "title": "Docs for new analysis + reactive signal vocabulary",
         "description": "Document the new module + signals: update `docs/technical/audio-analyzer.md` (schema v2 + events block), update `docs/technical/reactive-shader-layer.md` (new uniforms contract), add `docs/technical/musical-events.md` (drop + build-up detection algorithm and tuning knobs), add one line to `docs/index.md`, and update `ai-context.md` “Where Things Live”.",
         "details": "Explain the why (shaders want continuous signals for a Milkdrop feel), the algorithm (deterministic drop detection), the output shape, and how shaders should consume each signal (e.g. `transient_hi` for sparkle, `build_tension` to dampen motion pre-drop, `drop_hold` to bloom post-drop). Keep prose style consistent with existing technical docs.",
@@ -686,7 +686,7 @@
         "updatedAt": "2026-04-22T13:25:24.689Z"
       },
       {
-        "id": "40",
+        "id": 40,
         "title": "Pilot shader: `nebula_flow` + `cosmic-flow` preset",
         "description": "Ship a new shader stem `nebula_flow` that uses the full new signal vocabulary (lo/mid/hi transients, build_tension, drop_hold, onset_env, bar_phase) for a Milkdrop-style nebula. Add a `cosmic-flow.yaml` preset pointing at it. Keep the original `nebula_drift` + `cosmic` preset untouched so A/B is trivial.",
         "details": "`transient_lo` drives nebula breathing with fast attack; `transient_hi` drives sparkle density; `build_tension` dampens drift and pushes toward the cold palette slots; `drop_hold` punches bloom via `palette[4]` and briefly increases FBM octave weights. `bar_phase` rotates the drift vector per bar so the look doesn’t feel looped. Add `nebula_flow` to `pipeline/builtin_shaders.py` allowlist. The preset stays on the existing 5-color palette contract.",
@@ -704,7 +704,7 @@
         "updatedAt": "2026-04-22T16:49:04.008Z"
       },
       {
-        "id": "41",
+        "id": 41,
         "title": "Feedback / warp framebuffer in `ReactiveShader`",
         "description": "Add optional ping-pong FBO support to `ReactiveShader` so fragment shaders can sample the previous composited frame (`u_prev_frame` + `u_has_prev`). This is the Milkdrop engine core — it unlocks trails, tunnels, liquid smears.",
         "details": "Allocate two framebuffers; swap roles each frame. Add a per-shader opt-in flag (e.g. presence of `u_prev_frame` uniform detected at link time, or an explicit constructor argument) so existing shaders pay zero cost. Bind the previous framebuffer’s color texture to a second texture unit; upload `u_has_prev = 1` only when a valid previous frame is available (i.e. not the first frame of a render). Reset state on re-use so the preview starts clean. Document VRAM cost (~16 MB at 1080p RGBA8).",
@@ -721,7 +721,7 @@
         "updatedAt": "2026-04-22T16:49:04.016Z"
       },
       {
-        "id": "42",
+        "id": 42,
         "title": "Propagate new signals to remaining 5 shaders",
         "description": "Revisit each of `spectrum_bars`, `particles`, `geometry_pulse`, `liquid_chrome`, `vhs_tracking`, `paper_grain`, `synth_grid` and use `transient_hi`, `build_tension`, `drop_hold`, and `bar_phase` where it makes musical sense. Keep visual continuity with the original feel; this is a tasteful upgrade, not a rewrite.",
         "details": "For each shader write a short design note (comment at the top of the frag) describing which signals drive which effect. Sanity-check the palette slot contract still reads sensibly. Do one shader per commit/PR so each change can be reviewed and reverted independently. Don’t use the feedback buffer here; that’s opt-in for flow-variants only.",
@@ -739,7 +739,7 @@
         "updatedAt": "2026-04-22T17:00:50.019Z"
       },
       {
-        "id": "43",
+        "id": 43,
         "title": "Create EffectsTimeline data model",
         "description": "Implement EffectKind Enum, EffectClip dataclass, EffectsTimeline class with load/save functions using atomic writes and validation",
         "details": "Create pipeline/effects_timeline.py with:\n- from enum import Enum; class EffectKind(Enum): BEAM, LOGO_GLITCH, SCREEN_SHAKE, COLOR_INVERT, CHROMATIC_ABERRATION, SCANLINE_TEAR, ZOOM_PUNCH\n- from dataclasses import dataclass; @dataclass class EffectClip: id: str, kind: EffectKind, t_start: float, duration_s: float, settings: dict, auto_source: bool\n- class EffectsTimeline: clips: list[EffectClip], auto_enabled: dict[EffectKind, bool], auto_reactivity_master: float\n- def load(cache_dir: str) -> EffectsTimeline, def save(cache_dir: str, timeline: EffectsTimeline) with .json.tmp + os.replace() + strict schema validation using pydantic or manual key checks",
@@ -754,7 +754,7 @@
         "updatedAt": "2026-04-23T11:29:14.399Z"
       },
       {
-        "id": "44",
+        "id": 44,
         "title": "Extract shared waveform peaks helper",
         "description": "Move compute_peaks from lyrics_editor.py to shared _waveform_peaks.py for reuse by both editors",
         "details": "Create pipeline/_waveform_peaks.py with def compute_peaks(audio_path: str, sample_rate: int) -> np.ndarray\nUpdate pipeline/lyrics_editor.py to import from _waveform_peaks\nAdd type hints and docstring matching existing implementation",
@@ -769,7 +769,7 @@
         "updatedAt": "2026-04-23T11:37:31.264Z"
       },
       {
-        "id": "45",
+        "id": 45,
         "title": "Implement screen_shake renderer",
         "description": "Create screen_shake.py returning shake_offset(t, clips, song_hash) -> (dx, dy)",
         "details": "pipeline/screen_shake.py:\ndef shake_offset(t: float, clips: list[EffectClip], song_hash: str) -> tuple[float, float]:\n  # Find active SCREEN_SHAKE clips at t\n  # seed = hash(song_hash + t)\n  # return amplitude_px * sin(frequency_hz * t + seed) scaled by settings\nUse existing glitch_seed_for_time pattern for determinism",
@@ -786,7 +786,7 @@
         "updatedAt": "2026-04-23T11:38:53.274Z"
       },
       {
-        "id": "46",
+        "id": 46,
         "title": "Implement color_invert renderer",
         "description": "Create color_invert.py returning invert_mix(t, clips) -> float in [0,1]",
         "details": "pipeline/color_invert.py:\ndef invert_mix(t: float, clips: list[EffectClip]) -> float:\n  # Interpolate active COLOR_INVERT clips at t\n  # Return weighted mix factor for lerping frame -> 255-frame",
@@ -803,7 +803,7 @@
         "updatedAt": "2026-04-23T11:40:34.701Z"
       },
       {
-        "id": "47",
+        "id": 47,
         "title": "Implement zoom_punch renderer",
         "description": "Create zoom_punch.py for brief scale-in/out of entire frame",
         "details": "pipeline/zoom_punch.py:\ndef zoom_scale(t: float, clips: list[EffectClip]) -> float:\n  # Brief punch curve (ease-in-out) based on clip settings\n  # Return scale factor >1.0 during punch, 1.0 elsewhere",
@@ -820,7 +820,7 @@
         "updatedAt": "2026-04-23T11:42:25.723Z"
       },
       {
-        "id": "48",
+        "id": 48,
         "title": "Implement effects_editor backend handlers",
         "description": "Create effects_editor.py with load_editor_state, save_edited_timeline, bake_auto_schedule",
         "details": "pipeline/effects_editor.py:\n- load_editor_state(cache_dir) -> {'clips': [...], 'peaks': [...], 'duration': float, 'ghost_events': [...]}\n- save_edited_timeline(cache_dir, json_payload, song_hash_from_dir) with validation\n- bake_auto_schedule(cache_dir) converts auto events to EffectClip records, dedupes vs existing clips (±20ms)",
@@ -838,7 +838,7 @@
         "updatedAt": "2026-04-23T11:45:46.417Z"
       },
       {
-        "id": "49",
+        "id": 49,
         "title": "Integrate effects into compositor",
         "description": "Update compositor.py to merge user clips with auto schedule and apply frame effects",
         "details": "Add CompositorConfig.effects_timeline: EffectsTimeline | None, auto_reactivity_master: float\nImplement _build_frame_effects_context(cfg) -> fast per-frame callables\nIn _render_compositor_frame: apply zoom_punch -> screen_shake -> chromatic_aberration -> scanline_tear -> color_invert order\nMaster slider scales ONLY auto paths\nAlso: merge user BEAM clips into _build_beam_render_context (additive, no 10 s gate on user clips) and user LOGO_GLITCH clips into the impact-glitch envelope path in the same additive way",
@@ -860,7 +860,7 @@
         "updatedAt": "2026-04-23T11:58:25.608Z"
       },
       {
-        "id": "50",
+        "id": 50,
         "title": "Create effects timeline HTML/JS editor",
         "description": "Implement build_editor_html mirroring lyrics editor pattern with 7 effect rows + ghost markers",
         "details": "In effects_editor.py: def build_editor_html(state, audio_url, container_id, state_js_var) -> str\nInline vanilla JS + CSS for:\n- Waveform canvas + 7 color-coded rows\n- Drag/resize clips, multi-select, rubber-band, +/- zoom\n- Per-clip gear panels bound to settings dict\n- Ghost auto markers, per-row auto disable checkboxes\n- Master reactivity slider\nUse <script type=\"text/plain\"> + onerror pattern",
@@ -877,7 +877,7 @@
         "updatedAt": "2026-04-23T12:08:45.638Z"
       },
       {
-        "id": "51",
+        "id": 51,
         "title": "Add Effects timeline Gradio tab",
         "description": "Add new gr.Tab after Lyrics timeline with Load/Save/Bake/Clear buttons",
         "details": "In app.py:\n- gr.Tab(\"Effects timeline\", elem_id=\"effects-tab\")\n- gr.HTML for editor, hidden gr.Textbox for state\n- Buttons calling _load_effects_editor(), _save_effects_editor(), etc.\nMirror exact lyrics editor wiring pattern",
@@ -894,7 +894,7 @@
         "updatedAt": "2026-04-23T12:18:04.197Z"
       },
       {
-        "id": "52",
+        "id": 52,
         "title": "Wire orchestrator integration",
         "description": "Add OrchestratorInputs.effects_timeline_enabled and auto_reactivity_master",
         "details": "Update orchestrator to load effects_timeline.json when enabled\nThread into CompositorConfig alongside master multiplier\nDefault: effects_timeline_enabled=True, auto_reactivity_master=1.0",
@@ -911,7 +911,7 @@
         "updatedAt": "2026-04-23T12:27:48.111Z"
       },
       {
-        "id": "53",
+        "id": 53,
         "title": "Add comprehensive tests and docs",
         "description": "Create all specified test files and documentation",
         "details": "Tests:\n- tests/test_effects_timeline.py (JSON roundtrip, validation, bake)\n- tests/test_effects_editor.py (handlers)\n- tests/test_screen_shake.py etc. for each renderer\n- tests/test_compositor_effects_timeline.py (regression guard)\nDocs:\n- docs/technical/effects-timeline-editor.md\n- docs/technical/effects-timeline-renderers.md\n- Update docs/index.md and ai-context.md",
@@ -939,7 +939,7 @@
         "updatedAt": "2026-04-23T12:31:43.727Z"
       },
       {
-        "id": "54",
+        "id": 54,
         "title": "Implement chromatic_aberration renderer",
         "description": "Create chromatic_aberration.py for full-frame per-channel RGB shift driven by active CHROMATIC_ABERRATION clips",
         "details": "pipeline/chromatic_aberration.py:\ndef apply_chromatic_aberration(frame: np.ndarray, t: float, clips: list[EffectClip], song_hash: str) -> np.ndarray:\n  # Find active CHROMATIC_ABERRATION clips at t; early-return frame untouched if none.\n  # Per-clip settings: shift_px (float, max pixel offset of R/B channels), jitter (0..1, seeded per-frame wobble), direction_deg (optional fixed angle; default random-per-clip seeded from song_hash + clip.id).\n  # Per-frame seed: hash(song_hash + clip.id + round(t*1000)) -> reproducible jitter matching glitch_seed_for_time pattern.\n  # Implementation: split RGB -> np.roll / cv2.warpAffine by (dx, dy) computed from (shift_px, angle + jitter), recombine. G channel stays fixed; R and B shift opposite directions so the aberration reads.\n  # Clamp shift so it never exceeds min(H, W) * 0.1 to keep output readable.\n  # Return new ndarray, never mutate input in-place (keeps the compositor frame-queue invariant intact).\nKeep it pure NumPy (matches the pipeline's dependency floor); fall back to skimage/cv2 only if profiling shows a hot-path win.",
@@ -956,7 +956,7 @@
         "updatedAt": "2026-04-23T12:34:46.063Z"
       },
       {
-        "id": "55",
+        "id": 55,
         "title": "Implement scanline_tear renderer",
         "description": "Create scanline_tear.py for horizontal row-offset distortion driven by active SCANLINE_TEAR clips",
         "details": "pipeline/scanline_tear.py:\ndef apply_scanline_tear(frame: np.ndarray, t: float, clips: list[EffectClip], song_hash: str) -> np.ndarray:\n  # Find active SCANLINE_TEAR clips at t; early-return untouched if none.\n  # Per-clip settings: intensity (0..1, max horizontal offset as fraction of W), band_count (int, number of torn horizontal bands, default 3-6), band_height_px (optional), wrap_mode ('wrap' | 'clamp' | 'black', default 'wrap').\n  # Per-frame seed: hash(song_hash + clip.id + round(t*1000)). Pick band y-positions + per-band dx from RNG; apply np.roll along axis=1 per band.\n  # Accumulate contributions across overlapping clips (later clips stack on earlier). Return new ndarray.\n  # Keep shifts bounded to +/- intensity * W * 0.25 so tears never displace more than a quarter of the frame width.\nReference pattern: pipeline/logo_rim_beams.py deterministic seeding; pipeline/chromatic_aberration.py for the ndarray-in-ndarray-out contract.",
@@ -973,7 +973,7 @@
         "updatedAt": "2026-04-23T12:39:46.796Z"
       },
       {
-        "id": "56",
+        "id": 56,
         "title": "Unify analyser-timed FX under the effects timeline (single control surface)",
         "description": "Remove duplicate controls outside the Effects timeline editor for glitch, beams, and other kinds that are currently driven both from main Gradio (e.g. branding/impact) and from the timeline/ghost/bake path. The timeline becomes the only user-facing place to enable and shape those events.",
         "details": "Product model:\n- Default per-row `auto_enabled` in the effects editor to OFF for kinds that today stack invisible compositor auto on top of clips (at minimum LOGO_GLITCH and BEAM).\n- When the user turns auto ON for a row, materialize `EffectClip` rows from the same analyser sources as ghosts/bake (`build_ghost_events` / `bake_auto_schedule` logic)—no parallel compositor auto that adds the same hits again.\n- Clips on the timeline are authoritative: edit, shorten, or delete a clip and render matches.\n\nImplementation direction:\n1) LOGO_GLITCH: Stop surfacing standalone logo impact glitch controls in Branding (or repoint them into timeline-only semantics). Compositor must not sum `_impact_envelope_fn` with user clips when the timeline owns glitch—clips-only path. Decide fate of `logo_impact_glitch_strength` / sensitivity (fixed internal defaults, migrate to clip settings, or per-timeline JSON fields).\n2) BEAM: When timeline is authoritative, skip analyser `schedule_rim_beams` auto leg so baked/manual BEAM clips are not duplicated; auto ON generates beam clips from `_schedule_beams_for_ghosts` / same schedule as today.\n3) Audit ZOOM/SCREEN_SHAKE/CHROMATIC (already clip-first for render), SCANLINE_TEAR/COLOR_INVERT (ghost/bake gaps), and align defaults + docs.\n4) UX: Clarify auto checkbox + optional explicit “generate clips” flow; update `docs/technical/effects-timeline-editor.md`, `effects-timeline-compositor.md`, `effects-timeline-gradio-tab.md`; extend `tests/test_compositor_effects_timeline.py` and effects editor tests.\n\nMigration: existing `effects_timeline.json` files may need default `auto_enabled` false for affected kinds; document behaviour for old projects that relied on Branding sliders alone.",
@@ -989,16 +989,212 @@
         "recommendedSubtasks": 4,
         "expansionPrompt": "Divide into: 1) Compositor flags / timeline schema for clip-authoritative BEAM + LOGO_GLITCH and removal of duplicate auto paths; 2) Gradio/app.py remove or relocate Branding controls; effects_editor defaults + auto-on clip generation wiring; 3) SCANLINE/COLOR_INVERT and remaining kinds audit; 4) Docs + migration note + tests.",
         "updatedAt": "2026-04-26T17:15:00.000Z"
+      },
+      {
+        "id": 57,
+        "title": "GLSL Background Mode Implementation",
+        "description": "Add GLSL shader background mode that renders reactive shaders at full opacity as the primary background source, integrated into the UI dropdown while keeping SDXL as default.",
+        "details": "Create `pipeline/background_glsl.py` implementing `BackgroundSource` protocol with `GLSLBackground` class: `size()` returns fixed 1920x1080, `ensure()` initializes moderngl Context offscreen FBO, `background_frame(t)` renders chosen `.frag` from `assets/shaders/` (allowlisted via `pipeline.builtin_shaders.BUILTIN_SHADERS`) using shared resolution helper for program caching by stem, feeds audio uniforms from `uniforms_at_time(t)` (`onset_env`, `bar_phase`, `build_tension`, `bass_hit`, `transient_lo/mid/hi`, `drop_hold`) for reactivity, outputs full RGB frame as numpy array; `close()` cleans up GL resources. Shader selected via preset `shader` field or new optional `background_shader` field. In `pipeline/background.py`: add `MODE_GLSL_BACKGROUND = 'glsl-background'`, append to `BACKGROUND_MODES`, extend `normalize_background_mode()` with aliases `['glsl', 'glsl-background', 'shader', 'shader-background', 'no ai (glsl shader)']`. Update `create_background_source()` to instantiate `GLSLBackground` for new mode. In `app.py`: add to Gradio background-mode dropdown as `GLSL shader (no AI)`, wire orchestrator label-mapping, keep SDXL default. For active `MODE_GLSL_BACKGROUND`: **skip** existing `reactive_shader` overlay pass entirely (no double-rendering same shader stem); document decision in code comments. Create `docs/technical/background-glsl-mode.md` mirroring `background-stills.md`/`background-modes.md` structure, add bullet to `docs/index.md`. Non-goals: no SDXL/AnimateDiff changes, no preset browser.",
+        "testStrategy": "Create `tests/test_background_glsl.py`: unit test `create_background_source('glsl-background')` returns `GLSLBackground` instance; test `normalize_background_mode()` maps all 5 aliases to `glsl-background`; mock moderngl Context/FBO/program, verify `GLSLBackground.size()` returns (1920,1080), `background_frame(0)` returns 1920x1080x3 RGB array with non-zero values when uniforms non-zero, `close()` called without GL errors; test closed-state safety (raises on `background_frame` post-close); integration: full render pipeline with `glsl-background` mode produces video using shader background (no SDXL keyframes), verify ffprobe 1080p30 output; manual: dropdown shows `GLSL shader (no AI)`, selects correctly, reactive to audio features.",
+        "status": "pending",
+        "dependencies": [
+          8,
+          36,
+          40,
+          67
+        ],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": 58,
+        "title": "Vendor Butterchurn JavaScript Assets and Headless Browser Shim",
+        "description": "Create self-contained vendor/butterchurn/ directory with pinned Butterchurn JS assets, presets, licenses, and a single-page HTML/JS shim exposing GLITCHFRAME_BC API for future headless Chromium integration.",
+        "details": "**Core Assets (`vendor/butterchurn/`):**\n- `butterchurn.min.js`: Download pinned version from https://github.com/jberg/butterchurn (MIT, record exact commit/tag in `VERSIONS.md`, use jsDelivr CDN for minified build if available)[1][3].\n- `butterchurn-presets-baron.json`: Convert ~760 presets from `butterchurn-presets-baron` npm package (https://github.com/uvmain/butterchurn-presets-baron, MIT) into single JSON index with `name` + `init` keys[1].\n- `presets/`: Flatten individual preset JSON files for lazy-loading.\n- `LICENSES.md`: Copy MIT licenses from both repos with proper attribution.\n- `VERSIONS.md`: Document pinned versions, source URLs, retrieval date, SHA256 hashes, and `scripts/fetch_butterchurn_vendor.py` run command.\n\n**HTML Shim (`vendor/butterchurn/index.html`):**\n- Load `butterchurn.min.js` + `butterchurn-presets-baron.json`.\n- Create fixed-size `<canvas>` (query param `?w=1920&h=1080`, default 1920x1080).\n- Expose `window.GLITCHFRAME_BC` API:\n  ```javascript\n  loadPreset(presetName: string): void\n  setAudioPCM(pcm: Float32Array): void  \n  renderFrameAt(tSeconds: number): void  // time-deterministic, no RAF\n  setSize(w: number, h: number): void\n  getCanvasDataURL(): string  // postMessage-compatible\n  ```\n- Use Butterchurn API per upstream docs, manual time advancement for reproducible frame N[1][8].\n\n**Fetcher (`scripts/fetch_butterchurn_vendor.py`):**\n- Idempotent script: download/validate SHA256 → write assets → generate `VERSIONS.md`.\n- Command: `uv run scripts/fetch_butterchurn_vendor.py` (document in `VERSIONS.md`).\n\n**Repo Integration:**\n- Add `vendor/butterchurn/*` to `.gitattributes` (binary for JS).\n- Commit all vendored assets.\n\n**Docs:** `docs/technical/butterchurn-vendor.md` (asset layout, API contract, refresh procedure, licenses); bullet in `docs/index.md`.",
+        "testStrategy": "Create `tests/test_butterchurn_vendor.py`:\n- Assert files exist: `index.html`, `butterchurn.min.js`, `LICENSES.md`, `VERSIONS.md`, `butterchurn-presets-baron.json`.\n- `json.load('butterchurn-presets-baron.json')` succeeds, `len(presets) > 700`, each has `'name'` + `'init'` keys.\n- `python scripts/fetch_butterchurn_vendor.py` is idempotent (no changes on re-run).\n- Manual: `file://` load `index.html` in Chrome → verify Butterchurn canvas renders, `window.GLITCHFRAME_BC` API methods exist.",
+        "status": "pending",
+        "dependencies": [
+          1,
+          53,
+          67
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 59,
+        "title": "ButterchurnRuntime Playwright-Driven Frame Pumping Class",
+        "description": "Implement `ButterchurnRuntime` class that uses Playwright to drive Butterchurn in headless Chromium frame-by-frame, loading vendored assets and exposing RGB frame extraction for deterministic rendering integration.",
+        "details": "Create `pipeline/butterchurn_runtime.py` with `ButterchurnRuntime` class implementing a clean public API: `__init__(width=1920, height=1080, preset_name=None)`, `load(preset_name: str)`, `advance_frame(audio_data: dict)`, `get_rgb_frame() -> np.ndarray` (BGR24 uint8, shape (H,W,3)).\n\n**Core Implementation:**\n- Use `playwright.sync_api` with headless Chromium (`browser = playwright.chromium.launch(headless=True)`).\n- Single persistent page per instance: `page = browser.new_page()`.\n- On `load(preset_name)`: `page.goto('file://' + path_to_vendor_index_html)`, inject preset via `page.evaluate()` using `butterchurn-presets-baron.json` data, call `GLITCHFRAME_BC.loadPreset(preset_name)`, resize viewport to **(width,height)**, wait for canvas ready (`page.wait_for_selector('canvas')`).\n- `advance_frame(audio_data)`: compute frame time from internal `self.frame_count / fps` (default 60fps), serialize audio uniforms (`bass`, `mid`, `treble`, `onset_env`, etc matching Milkdrop2 spec), `page.evaluate()` calls `GLITCHFRAME_BC.setTime(time_ms).setAudio(uniforms).renderFrame()`, wait minimal frame time or use `page.wait_for_timeout(16)`.\n- `get_rgb_frame()`: `canvas = page.locator('canvas').first`, `rgba_data = canvas.evaluate('() => Uint8Array.from(canvas.getContext(\"2d\").getImageData(0,0,canvas.width,canvas.height).data)')`, convert Uint8ClampedArray RGBA to numpy BGR24 (`np.frombuffer(rgba_data, np.uint8).reshape(H,W,4)[:,:,:3][...,::-1]`).\n\n**Determinism & State:** Track `self.frame_count`, `self.total_time_ms`, seed randoms via `song_hash` passed to constructor. Expose `reset()` to restart from frame 0 clean state. Handle preset not found: raise `ValueError(f'Preset {preset_name} not in presets index')`. Cache preset index on init from vendored JSON. Graceful shutdown: `__del__` closes browser/page.\n\n**Perf:** Target <50ms/frame end-to-end (load+advance+extract). Persistent context across calls. No screenshots—direct canvas pixel extraction. Document VRAM (~32MB Chromium + canvas). Integrate with compositor via `butterchurn_frame(t) -> RGB`.",
+        "testStrategy": "Create `tests/test_butterchurn_runtime.py`:\n- **Unit:** `runtime = ButterchurnRuntime(640,480)` succeeds, `runtime.get_rgb_frame()` raises before `load()`.\n- **Load:** `runtime.load('Flexi, martin + geiss - standard')`, verify no exception, `page.evaluate('GLITCHFRAME_BC.getCurrentPresetName()') == preset_name`.\n- **Frame Advance:** `for i in range(10): runtime.advance_frame({'bass':0.8+0.1*i, 'mid':0.3}); frame = runtime.get_rgb_frame()`; assert `frame.shape==(480,640,3)`, `frame.dtype==np.uint8`, `np.mean(frame)>10` (not black), consecutive frames differ (`np.mean(np.abs(frame1-frame2))>5`).\n- **Determinism:** Two `ButterchurnRuntime(song_hash='test123')` with identical audio sequence produce bit-identical frames (`np.array_equal(rt1.get_rgb_frame(), rt2.get_rgb_frame())` after same advances).\n- **Preset Index:** `len(runtime.presets)>700`, `any('Flexi' in p['name'] for p in runtime.presets)`.\n- **Integration Smoke:** Render 60 frames to mp4 via compositor pipeline, verify Butterchurn canvas visible + animating + audio-reactive (manual visual). Browser closes cleanly (`browser.is_closed` after `del runtime`).",
+        "status": "pending",
+        "dependencies": [
+          58
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 60,
+        "title": "Python Butterchurn Preset Index with Sort, Search, and Author Filter",
+        "description": "Create a pure Python preset index in `pipeline/butterchurn/presets.py` that parses the vendored Butterchurn presets JSON, extracts metadata, and provides sorting, searching, and author-filtering primitives as the single source of truth for preset enumeration.",
+        "details": "**File:** `pipeline/butterchurn/presets.py`\n\n**Core Data Structures:**\n```python\nfrom dataclasses import dataclass\nfrom typing import str, Optional, List, Dict, Any\nimport re\nimport json\nfrom pathlib import Path\n\n@dataclass(frozen=True)\nclass PresetEntry:\n    name: str  # filename stem, e.g. 'Flexi, martin + geiss - standard'\n    author: Optional[str]  # parsed from filename, e.g. 'Geiss' or None\n    filepath: Path  # relative path to preset JSON\n```\n\n**Author Parsing Logic:**\n```python\ndef parse_author(name: str) -> Optional[str]:\n    # Common patterns: 'Author - Title', 'Author, Title', 'Title by Author'\n    patterns = [\n        r'^([^\\s-]+)\\s*-\\s*(.*)$',  # 'Geiss - standard'\n        r'^([^,]+),\\s*(.*)$',        # 'Flexi, martin + geiss'\n        r'(.*)\\s+by\\s+([^\\s]+)$',  # 'Title by Author'\n    ]\n    for pattern in patterns:\n        match = re.match(pattern, name.strip(), re.IGNORECASE)\n        if match:\n            return match.group(1).strip().title()\n    return None\n```\n\n**Main Index Class:**\n```python\nclass ButterchurnPresetIndex:\n    def __init__(self, presets_json_path: Path):\n        self.presets_dir = presets_json_path.parent / 'presets'\n        with open(presets_json_path) as f:\n            presets_data = json.load(f)\n        self.entries: List[PresetEntry] = []\n        for preset_name, preset_data in presets_data.items():\n            if 'init' in preset_data:\n                author = parse_author(preset_name)\n                filepath = self.presets_dir / f'{preset_name}.json'\n                self.entries.append(PresetEntry(preset_name, author, filepath))\n\n    def search(self, query: str) -> List[PresetEntry]:\n        '''Full-text search across name+author'''\n        query_lower = query.lower()\n        return [e for e in self.entries \n                if (query_lower in e.name.lower() or \n                    query_lower in (e.author or '').lower())]\n\n    def filter_author(self, author: Optional[str]) -> List[PresetEntry]:\n        if not author:\n            return self.entries\n        author_clean = author.title()\n        return [e for e in self.entries if e.author == author_clean]\n\n    def sort(self, \n             key: str = 'name',  # 'name', 'author', 'random'\n             reverse: bool = False) -> List[PresetEntry]:\n        if key == 'random':\n            import random\n            return random.sample(self.entries, len(self.entries))\n        return sorted(self.entries, key=lambda e: getattr(e, key), reverse=reverse)\n\n    @property\n    def authors(self) -> List[str]:\n        return sorted({e.author for e in self.entries if e.author})\n\n# Global singleton\nPRESET_INDEX = None\n\ndef get_preset_index() -> ButterchurnPresetIndex:\n    global PRESET_INDEX\n    if PRESET_INDEX is None:\n        PRESET_INDEX = ButterchurnPresetIndex(\n            Path('vendor/butterchurn/butterchurn-presets-baron.json')\n        )\n    return PRESET_INDEX\n```\n\n**Usage Example:**\n```python\nidx = get_preset_index()\ngeiss_presets = idx.filter_author('Geiss')\nwave_presets = idx.search('wave')\nrandom_presets = idx.sort('random')[:10]\nall_authors = idx.authors\n```",
+        "testStrategy": "Create `tests/test_butterchurn_presets.py`:\n\n**Unit Tests:**\n- `index = get_preset_index()` loads successfully, `len(index.entries) >= 700`\n- `parse_author('Geiss - standard') == 'Geiss'`, `parse_author('Flexi, martin + geiss') == 'Flexi'`, `parse_author('noauthor') == None`\n- `len(index.authors) > 10`, all authors are title-case strings\n\n**Functional Tests:**\n- `len(index.search('geiss')) > 10`, `len(index.search('xyz')) == 0`\n- `len(index.filter_author('Geiss')) > 5`, `len(index.filter_author('Nobody')) == 0`\n- `len(index.filter_author(None)) == len(index.entries)`\n- `len(set(id(p) for p in index.sort('name'))) == len(index.entries)` (no duplicates)\n- `len(index.sort('random')) == len(index.entries)`\n\n**Integration:**\n- Verify `index.entries[0].filepath.exists()` for first 10 presets\n- Roundtrip: `sorted(index.filter_author('Geiss'), key=lambda e: e.name) == index.filter_author('Geiss').sort('name')`",
+        "status": "pending",
+        "dependencies": [
+          58
+        ],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": 61,
+        "title": "Butterchurn BackgroundSource Implementation and Factory Integration",
+        "description": "Implement ButterchurnBackground class inheriting from BackgroundSource and integrate it into the background factory, mode constants, and Gradio UI dropdown while keeping SDXL as default.",
+        "details": "**Core Implementation:**\n\n**1. `pipeline/background_butterchurn.py`:**\n```python\nclass ButterchurnBackground(BackgroundSource):\n    def __init__(self, cache_dir, *, preset_name: str, audio_path: Path, width: int = 1920, height: int = 1080, runtime: ButterchurnRuntime | None = None):\n        super().__init__(cache_dir)\n        self.preset_name = preset_name\n        self.audio_path = audio_path\n        self.width, self.height = width, height\n        self._runtime = runtime or ButterchurnRuntime(width, height)\n\n    @property\n    def size(self) -> tuple[int, int]:\n        return (self.height, self.width)\n\n    def ensure(self, force=False, progress=None):\n        # Validate preset exists via preset index\n        from pipeline.butterchurn.presets import get_preset_index\n        index = get_preset_index()\n        if self.preset_name not in {e.name for e in index.entries}:\n            raise ValueError(f'Unknown Butterchurn preset: {self.preset_name}')\n        # Feed PCM data from project's original.wav\n        pcm_data = load_audio_pcm(self.audio_path)  # Implement helper\n        self._runtime.set_audio_pcm(pcm_data)\n        # Prime: load preset, render t=0\n        self._runtime.load(self.preset_name)\n        self._runtime.render_frame_at(0.0)\n\n    def background_frame(self, t: float) -> np.ndarray:\n        try:\n            frame = self._runtime.render_frame_at(t)\n            return frame  # Expected (H,W,3) uint8 RGB\n        except ButterchurnRuntimeError as e:\n            raise BackgroundFrameError(f'Butterchurn failed at t={t:.2f}, preset={self.preset_name}: {e}') from e\n\n    def close(self):\n        runtime_pool.return_runtime(self._runtime)  # Return to shared pool\n```\n\n**2. `pipeline/background.py` updates:**\n- Add `MODE_BUTTERCHURN = 'butterchurn'`\n- Append to `BACKGROUND_MODES`: `('butterchurn',)`\n- Extend `normalize_background_mode()`: `{'butterchurn': MODE_BUTTERCHURN, 'milkdrop': MODE_BUTTERCHURN, 'butterchurn-presets': MODE_BUTTERCHURN, 'milkdrop visualizer': MODE_BUTTERCHURN}`\n- Extend `create_background_source()`:\n```python\nif mode == MODE_BUTTERCHURN:\n    preset_name = kwargs.pop('butterchurn_preset_name', None)\n    if not preset_name:\n        raise ValueError('butterchurn_preset_name required for MODE_BUTTERCHURN')\n    audio_path = resolve_project_audio_path()  # From analysis\n    return ButterchurnBackground(cache_dir, preset_name=preset_name, audio_path=audio_path, **kwargs)\n```\n\n**3. `app.py` Gradio updates:**\n- Add to background_mode dropdown: `gr.update(choices=[..., ('Butterchurn (MilkDrop) — pick a preset', MODE_BUTTERCHURN)], value=MODE_SDXL)`\n- Add `butterchurn_preset_state = gr.State(None)` (hidden)\n- Map dropdown selection → orchestrator with `butterchurn_preset_name=butterchurn_preset_state.value`\n\n**4. `OrchestratorInputs`:**\n```python\nclass OrchestratorInputs(BaseModel):\n    # ...\n    butterchurn_preset_name: Optional[str] = None\n```\nThread through to `create_background_source(butterchurn_preset_name=inputs.butterchurn_preset_name)`\n\n**5. Docs:**\n- Create `docs/technical/background-butterchurn.md` mirroring `background-stills.md`\n- Add bullet to `docs/index.md`: \"Butterchurn (Milkdrop) integration\"\n- Add row to `ai-context.md`: \"Butterchurn | Milkdrop visualizer | WebGL via Playwright\"\n\n**Runtime Pooling:** Implement shared `ButterchurnRuntime` pool in `butterchurn_runtime.py` to avoid Chromium overhead per instance.",
+        "testStrategy": "**File: `tests/test_background_butterchurn.py`**\n\n**Factory Integration:**\n- `create_background_source(MODE_BUTTERCHURN, butterchurn_preset_name='test-preset')` returns `ButterchurnBackground`\n- `normalize_background_mode('milkdrop') == MODE_BUTTERCHURN`\n- Missing `butterchurn_preset_name` raises `ValueError`\n\n**Lifecycle:**\n- `bg = ButterchurnBackground(..., preset_name='invalid')`; `bg.ensure()` raises `ValueError`\n- Mock `ButterchurnRuntime`: `bg.ensure()` calls `runtime.load()` + `runtime.render_frame_at(0)`\n- `bg.background_frame(1.23)` → mock `runtime.render_frame_at(1.23)` returns `(1080,1920,3) uint8`, verifies shape/dtype\n- Runtime error → wrapped `BackgroundFrameError` with correct `t`/`preset_name`\n- `bg.close()` calls `runtime_pool.return_runtime(runtime)`\n\n**Gradio:**\n- Dropdown contains 'Butterchurn (MilkDrop) — pick a preset', default remains SDXL\n- `OrchestratorInputs(butterchurn_preset_name='test')` threads to factory correctly\n\n**Docs:** Verify `docs/technical/background-butterchurn.md` exists + bullets in `index.md`/`ai-context.md`.",
+        "status": "pending",
+        "dependencies": [
+          58,
+          59,
+          60,
+          13
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 62,
+        "title": "Pre-render Static PNG Thumbnails for Butterchurn Presets",
+        "description": "Create a dev script to generate static PNG thumbnails for all Butterchurn presets using ButterchurnRuntime, save them in vendor/butterchurn/thumbnails/, add thumbnail path helpers, and update repo/gitattributes for instant gallery loading.",
+        "details": "**Core Implementation:**\n\n**1. Thumbnail Generation Script (`scripts/build_butterchurn_thumbnails.py`):**\n- One-shot dev script that iterates `get_preset_index()` from `pipeline/butterchurn/presets.py`.\n- For each `PresetEntry`:\n  - Instantiate `ButterchurnRuntime(width=512, height=288)`.\n  - `runtime.load(preset_entry.name)`.\n  - Generate default fixture audio: loop short white-noise + low-pass kick sample (4s total, sample_rate=44100) to wake visualizer.\n  - `for t in [0.0, 0.5, 1.0, 2.0, 3.0, 4.0]: runtime.advance_frame(audio_segment_at(t))` (past boot transient).\n  - Capture `rgb_frame = runtime.get_rgb_frame()` at `t=4.0`.\n  - Convert to PNG-8 quantized palette (PIL `Image.quantize(colors=256)` + `pngsave(optimize=True)`), target 50-80KB.\n  - Save as `vendor/butterchurn/thumbnails/{preset_entry.name_stem}.png` (sanitize filename: replace ' /\\:' → '_').\n- Skip if file exists unless `--force`.\n- Progress logging: `[123/760] Geiss - Thumb Drum.png`.\n- Idempotent: safe to kill/restart, uses `if not exists or force`.\n\n**2. Git Integration:**\n- Commit all generated `vendor/butterchurn/thumbnails/*.png` (~50MB total, ~760 files).\n- Add to `.gitattributes`: `vendor/butterchurn/thumbnails/*.png binary` (suppress diffs).\n\n**3. Runtime Helper (`pipeline/butterchurn/thumbnails.py`):**\n```python\nfrom pathlib import Path\nfrom typing import Optional\n\nfrom .presets import PresetEntry\n\ndef thumbnail_path(entry: PresetEntry, vendor_root: Path) -> Path:\n    stem = entry.name.replace(' ', '_').replace('/', '_')\n    return vendor_root / 'thumbnails' / f'{stem}.png'\n\ndef thumbnail_for(entry: PresetEntry, vendor_root: Path, *, fallback_to_placeholder: bool = True) -> Path:\n    path = thumbnail_path(entry, vendor_root)\n    if path.exists():\n        return path\n    if fallback_to_placeholder:\n        return vendor_root / 'thumbnails' / 'placeholder.png'  # Bake-in generic Butterchurn frame\n    raise FileNotFoundError(f'Missing thumbnail: {entry.name}')\n```\n- Pure path ops, no runtime rendering.\n\n**4. README Update:**\n- Add 'Vendoring' section: explain thumbnail generation, repo size impact, regeneration process.",
+        "testStrategy": "**Script Tests (`tests/test_build_thumbnails.py`):**\n- `python scripts/build_butterchurn_thumbnails.py --dry-run`: logs all presets without writing.\n- Run on 3 test presets → verify 3 PNGs created, sizes <100KB, 512×288, valid PNG (PIL opens).\n- `--force` overwrites existing.\n- Kill mid-run, restart → resumes without dupes.\n\n**Runtime Tests (`tests/test_butterchurn_thumbnails.py`):**\n- `thumbnail_path(entry, vendor_root)` returns correct sanitized Path.\n- `thumbnail_for(existing_entry)` → existing PNG path.\n- `thumbnail_for(missing_entry)` → placeholder.png path (fallback=True).\n- `thumbnail_for(missing_entry, fallback_to_placeholder=False)` → FileNotFoundError.\n\n**Integration:**\n- `len(list(vendor_root.glob('vendor/butterchurn/thumbnails/*.png'))) ≈ 760`.\n- `git check-attr binary vendor/butterchurn/thumbnails/test.png` → 'binary'.\n- Gallery picker loads <100ms (manual timing).",
+        "status": "pending",
+        "dependencies": [
+          58,
+          59,
+          60
+        ],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": 63,
+        "title": "Butterchurn Animated WebP Preview Generator",
+        "description": "Implement on-demand animated WebP preview generation for Butterchurn presets using ButterchurnRuntime, with caching, LRU eviction, and async wrapper for Gradio integration.",
+        "details": "**Core Implementation (`pipeline/butterchurn/preview.py`):**\n\n**1. Cache Management:**\n```python\nfrom pathlib import Path\nimport hashlib\n\ndef preview_cache_dir(cache_root: Path) -> Path:\n    return cache_root / '_butterchurn_previews'\n\ndef compute_cache_key(preset_name: str, audio_sha8: str, width: int, height: int, \n                     duration_s: float, fps: int, t_offset: float) -> str:\n    key_str = f'{preset_name}|{audio_sha8}|{width}x{height}|{duration_s}s|{fps}fps|{t_offset:.2f}'\n    return hashlib.sha256(key_str.encode()).hexdigest()[:16]\n```\n\n**2. Main Render Function:**\n```python\ndef render_animated_preview(preset_name: str, *, audio_path: Path | None = None, \n                          width: int = 480, height: int = 270, duration_s: float = 4.0, \n                          fps: int = 24, t_offset: float = 0.0, output_dir: Path) -> Path:\n    # Compute cache key (audio_sha8 from audio_path or 'fixture')\n    audio_sha8 = audio_hash(audio_path) if audio_path else 'fixture'\n    key = compute_cache_key(preset_name, audio_sha8, width, height, duration_s, fps, t_offset)\n    webp_path = output_dir / f'{key}.webp'\n    \n    if webp_path.exists():\n        return webp_path\n    \n    # Borrow runtime from pool (implement RuntimePool(width, height))\n    with RuntimePool.get_runtime(width, height) as runtime:\n        runtime.load(preset_name)\n        \n        # Load PCM data (audio_path or fixture)\n        pcm_data = load_pcm_fixture() if audio_path is None else load_pcm(audio_path)\n        \n        frames = []\n        for i in range(int(duration_s * fps)):\n            t = t_offset + i / fps\n            audio_slice = pcm_data.slice(int(t * pcm_data.sample_rate), \n                                       int((t + 1/fps) * pcm_data.sample_rate))\n            runtime.advance_frame({'pcm': audio_slice})\n            frame = runtime.get_rgb_frame()  # np.ndarray (H,W,3) BGR\n            frames.append(Image.fromarray(frame[:,:,[2,1,0]]))  # RGB\n        \n        # Animated WebP encoding (Pillow)\n        temp_path = webp_path.with_suffix('.tmp.webp')\n        frames[0].save(temp_path, save_all=True, append_images=frames[1:], \n                      duration=int(1000/fps), loop=0, quality=70, lossless=False)\n        \n        # Atomic write\n        temp_path.rename(webp_path)\n    \n    evict_old_previews(output_dir)\n    return webp_path\n```\n\n**3. LRU Eviction:**\n```python\ndef evict_old_previews(cache_dir: Path, max_total_mb: int = 500) -> int:\n    total_mb = sum(f.stat().st_size for f in cache_dir.glob('*.webp')) / (1024**2)\n    if total_mb < max_total_mb:\n        return 0\n    \n    files = sorted(cache_dir.glob('*.webp'), key=lambda f: f.stat().st_atime)\n    removed = 0\n    for f in files:\n        total_mb -= f.stat().st_size / (1024**2)\n        f.unlink()\n        removed += 1\n        if total_mb < max_total_mb * 0.9:\n            break\n    return removed\n```\n\n**4. Async Wrapper:**\n```python\nimport asyncio\nasync def render_animated_preview_async(**kwargs) -> Path:\n    loop = asyncio.get_running_loop()\n    return await loop.run_in_executor(None, render_animated_preview, **kwargs)\n```\n\n**5. RuntimePool:** Simple context manager pooling 2-4 runtimes per (width,height) to avoid Chromium startup cost.\n\n**6. Fixture Audio:** Reuse thumbnail fixture (short EDM loop) when no `audio_path` provided.\n\n**Docs:** Create `docs/technical/butterchurn-preview.md` (cache layout, quality=70 ~50-200KB, eviction), add bullet to `docs/index.md`.",
+        "testStrategy": "**File: `tests/test_butterchurn_preview.py`**\n\n**1. Cache Hit:**\n- Mock `RuntimePool.get_runtime()` to return dummy runtime\n- Pre-create `output_dir/<expected_key>.webp`\n- Verify `render_animated_preview(...)` returns path immediately (no Pillow call)\n\n**2. Cache Miss (Full Render):**\n- Mock runtime: `load(preset)`, `advance_frame()` nop, `get_rgb_frame()` → solid color frame\n- Call `render_animated_preview(preset_name='test', audio_path=None)`\n- Verify: WebP exists, `Image.open(webp).n_frames == 96` (4s×24fps), `duration` metadata correct\n\n**3. Eviction:**\n- Create 10 fake `.webp` files with mocked `st_atime`\n- `evict_old_previews()` removes exactly 6 oldest until <500MB\n- Verify remaining files by `st_atime`, total size <500MB\n\n**4. Audio Path vs Fixture:**\n- `audio_path=None`: cache key contains `'fixture'`\n- `audio_path=fixture.wav`: cache key contains `sha8(fixture.wav)`\n\n**5. Async:**\n- `await render_animated_preview_async(...)` → same path as sync version\n\n**6. Edge Cases:**\n- `duration_s=0.0` → 1 frame\n- Invalid preset → runtime raises, preview fails gracefully\n- `output_dir` not exist → auto-create",
+        "status": "pending",
+        "dependencies": [
+          59,
+          61,
+          60
+        ],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": 64,
+        "title": "Gradio Butterchurn Background Browser Tab",
+        "description": "Add a new Gradio 'Background browser' tab with preset gallery, filtering controls (sort/search/authors/favourites), animated previews, and preset selection that integrates with Butterchurn background mode.",
+        "details": "**UI Implementation in `app.py`:**\n\n- Add `gr.Tab('Background browser')` next to 'Effects timeline' tab in existing Gradio Blocks layout.\n- **Top row controls:**\n  ```python\ngr.Row([\n  gr.Dropdown(choices=list(SortMode), value='curated', label='Sort'),\n  gr.Textbox(placeholder='Search by name or author...', label='Search'),\n  gr.CheckboxGroup(choices=[], label='Authors', elem_classes='chips'),\n  gr.Checkbox('Favourites only', label='Favourites')\n])\n  ```\n- **Gallery:** `gr.Gallery(height=720, columns=6, object_fit='cover', show_label=False)` populated by `thumbnail_for(entry, vendor_root)` paths.\n- **Selection panel (visible on gallery selection):** `gr.Row([gr.Markdown(selected_name), gr.Button('Preview animated'), gr.Button('Use this preset'), gr.Button('★ Favourite')])` + `gr.Image(format='webp', interactive=False, label='Preview')`.\n- **Status line:** `gr.Markdown('Showing X of Y presets · Sorted by Z')`.\n\n**New module `pipeline/butterchurn/gallery.py`:**\n```python\n# Handlers\ndef build_gallery_state():\n    return get_preset_index().entries  # from task 60\n\ndef apply_filters(entries, sort_mode, search, authors, favourites_only):\n    # Filter + sort logic using preset index primitives (task 60)\n    # Return filtered/sorted list of thumbnail paths\n    pass\n\ndef toggle_favourite(preset_name: str) -> bool:\n    # Read/write ~/.glitchframe/butterchurn_favourites.json atomically\n    # Return new favourite state\n    pass\n\ndef trigger_preview(preset_name: str, audio_path: str) -> str:\n    # Async call render_animated_preview_async(preset_name, audio_path) (task 63)\n    # Return WebP path or None\n    pass\n```\n\n**State management:**\n- `gr.State({})` for gallery selection (preset stem → entry).\n- `butterchurn_preset_name: gr.State(None)` (hidden, populated by 'Use this preset').\n\n**Auto-mode switching:** On 'Use this preset', if current `background_mode` in `NON_AI_MODES` (not SDXL/AnimateDiff), set to `MODE_BUTTERCHURN`.\n\n**Lazy loading:** Rely on `gr.Gallery` native lazy rendering; `apply_filters` returns ~760 thumbnail paths max, no preloading.\n\n**Authors population:** On load, call `list_authors(index)` → top-20 by preset count for CheckboxGroup.",
+        "testStrategy": "**File: `tests/test_butterchurn_gallery.py`**\n\n**1. Pure Python handlers:**\n- `apply_filters(full_index, 'curated', '', [], False)` → 760 entries in curated order.\n- `apply_filters(..., 'name', 'geiss', ['Geiss'], True)` → filtered subset correct.\n- `toggle_favourite('test-preset')` roundtrip: add → list contains → toggle → list empty.\n- `build_gallery_state()` → list of dicts with `path`, `name`, `author`.\n\n**2. Integration:**\n- `render_animated_preview_async('Flexi...', audio_path)` → valid WebP path <10s.\n\n**3. UI smoke test:**\n```python\n# In test_gradio_smoke.py\nwith gr.Blocks() as demo:\n    # Mock handlers, verify no AttributeError on construct/launch\n    gallery.change(apply_filters, [...], [gallery, status]).then(...)\n```\n- Launch → tab visible, gallery loads thumbnails, controls update gallery, no JS errors in browser console.",
+        "status": "pending",
+        "dependencies": [
+          2,
+          60,
+          61,
+          63
+        ],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": 65,
+        "title": "Final Butterchurn + GLSL Background Tests, Docs, and Integration Polish",
+        "description": "Implement comprehensive smoke tests for all background modes, end-to-end Butterchurn integration tests, complete documentation cross-linking, ai-context.md updates, and README enhancements to finalize both new background modes.",
+        "details": "Non-goals: no new code or features — purely tests + docs/wiring polish.\n\n**1. Tests:**\n- Create `tests/test_background_modes_smoke.py`: For each mode (`MODE_SDXL_STILLS`, `MODE_STATIC_KENBURNS`, `MODE_ANIMATEDIFF`, `MODE_GLSL_BACKGROUND`, `MODE_BUTTERCHURN`), assert `create_background_source(...)` returns `BackgroundSource` protocol-compliant object with `size=(W,H)`, `ensure()`, `background_frame(t)`, `close()`. Mock heavy backends (no real GPU/Playwright in CI).\n- Create `tests/test_background_butterchurn_e2e.py`: Env-gated integration (`BUTTERCHURN_INTEGRATION=1`) — run real `ButterchurnRuntime` preview render to WebP, verify output; run 1s compositor pass with `MODE_BUTTERCHURN` + fake audio, assert ffmpeg output exists.\n\n**2. Docs Cross-Linking:**\n- Verify/create these docs with sibling links + bullet in `docs/index.md`:\n  - `docs/technical/background-glsl-mode.md`\n  - `docs/technical/background-butterchurn.md`\n  - `docs/technical/butterchurn-vendor.md`\n  - `docs/technical/butterchurn-runtime.md`\n  - `docs/technical/butterchurn-presets.md`\n  - `docs/technical/butterchurn-preview.md`\n  - `docs/technical/butterchurn-gallery.md`\n- Update `docs/technical/background-modes.md`: Enumerate all 5 modes (previously 3), link to new docs.\n\n**3. ai-context.md Updates:**\n- Add 'Where Things Live' rows: `pipeline/background_glsl.py`, `pipeline/background_butterchurn.py`, `pipeline/butterchurn/*`, `vendor/butterchurn/`, `scripts/build_butterchurn_thumbnails.py`.\n- Add 'Playwright + Chromium' to Tech Stack.\n\n**4. README Updates:**\n- Add **Backgrounds** section with comparison table:\n\n| Mode | Type | Speed | GPU | AI |\n|------|------|-------|-----|----|\n| SDXL Stills | AI stills | Slow | Heavy | Yes |\n| AnimateDiff | AI animated | Slowest | Heavy | Yes |\n| Ken Burns | Upload image | Fast | None | No |\n| GLSL | Realtime shader | Realtime | Light | No |\n| Butterchurn | MilkDrop presets | Realtime | Light | No |\n\n- Document `playwright install chromium` as one-time Butterchurn prereq.",
+        "testStrategy": "**Core Tests:**\n- `uv run pytest tests/test_background_modes_smoke.py` → green (all 5 modes create valid `BackgroundSource`)\n- Local: `BUTTERCHURN_INTEGRATION=1 uv run pytest tests/test_background_butterchurn_e2e.py` → green (WebP generated + 1s compositor ffmpeg output exists)\n\n**Docs Verification:**\n- All 8 docs exist, each links to siblings, `docs/index.md` bullets them\n- `docs/technical/background-modes.md` lists 5 modes with links\n- `ai-context.md` has 5 new 'Where Things Live' rows + Playwright in Tech Stack\n- README has **Backgrounds** section w/ table + `playwright install chromium` prereq\n\n**One-Click Reproducibility:**\n- `playwright install chromium && uv run python app.py` → Gradio launches, Butterchurn browser tab works\n- Contributors find `pipeline/background_butterchurn.py` via `ai-context.md` → one-click re-render succeeds",
+        "status": "pending",
+        "dependencies": [
+          15,
+          57,
+          61,
+          "62",
+          "63",
+          "64"
+        ],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": 66,
+        "title": "Hybrid SDXL Anchor + Butterchurn Background Mode",
+        "description": "Implement a hybrid background mode that uses SDXL stills as anchor points at structural song moments with Butterchurn filling between them, crossfading at bar boundaries to combine cinematic scenes with audio-reactive energy.",
+        "details": "**Core Implementation (`pipeline/background_hybrid.py`):**\n\nCreate `HybridAnchorBackground` class implementing `BackgroundSource`:\n\n```python\nclass HybridAnchorBackground(BackgroundSource):\n    def __init__(self, cache_dir, *, preset_prompt: str, butterchurn_preset_name: str, \n                 analysis_path: Path, audio_path: Path, width: int = 1920, height: int = 1080):\n        super().__init__(cache_dir)\n        self.stills_bg = BackgroundStills(cache_dir, preset_prompt=preset_prompt, ...)\n        self.butterchurn_bg = ButterchurnBackground(cache_dir, preset_name=butterchurn_preset_name, \n                                                   audio_path=audio_path, width=width, height=height)\n        self.analysis = json.load(analysis_path)\n        self.anchor_times = self._select_anchors(self.analysis)  # 4-6 times from segments + events\n        self.anchor_duration = 10.0  # default 8-12s hold\n        self.transition_bars = 1.5  # 1-2 bar crossfade\n\n    def _select_anchors(self, analysis: dict) -> List[float]:\n        # Pick from segments + musical_events.events (drops, builds, chorus)\n        candidates = [...]\n        return sorted(candidates[:6])  # 4-6 anchors\n\n    def background_frame(self, t: float) -> np.ndarray:\n        for i, anchor_t in enumerate(self.anchor_times):\n            end_t = anchor_t + self.anchor_duration\n            if anchor_t <= t < end_t:\n                # Inside anchor: SDXL with crossfade\n                alpha = self._anchor_alpha(t, anchor_t, end_t)\n                return alpha * self.stills_bg.background_frame(t) + (1-alpha) * self.butterchurn_bg.background_frame(t)\n            elif self._in_transition(t, anchor_t, end_t):\n                # Transition window: alpha-blend using bar_phase_at\n                bar_phase = bar_phase_at(t, self.analysis)\n                alpha = self._transition_alpha(bar_phase)\n                return alpha * self.stills_bg.background_frame(t) + (1-alpha) * self.butterchurn_bg.background_frame(t)\n        # Outside anchors: full Butterchurn\n        return self.butterchurn_bg.background_frame(t)\n```\n\n**Factory + UI (`pipeline/background.py`):**\n- `MODE_HYBRID_ANCHOR = 'sdxl-butterchurn-anchor'`\n- Aliases: `['hybrid', 'scene-and-energy', 'ai-anchored', 'sdxl-anchor']`\n- Append to `BACKGROUND_MODES`\n- `create_background_source()` branch: `if mode == MODE_HYBRID_ANCHOR: return HybridAnchorBackground(..., preset_prompt, butterchurn_preset_name)`\n\n**Gradio (`app.py`):** Add dropdown option: `'SDXL anchors + Butterchurn fill'` → `MODE_HYBRID_ANCHOR`\n\n**Reactive overlay contract:** `HybridAnchorBackground.reactive_intensity(t)` → 0.0 (anchors), 1.0 (Butterchurn), linear ramp in transitions.\n\n**Open follow-ups (docs only):**\n- SDXL-Turbo (1-step) for anchors\n- taesd Tiny VAE decoding\n- Lyric-tied anchors (v2 stretch)\n\n**Non-goals:** No default change, no SDXL/Butterchurn deprecation, no cost-reduction impl.\n\n**Docs:** `docs/technical/background-hybrid.md` → cross-link stills/butterchurn; bullet `docs/index.md`; `ai-context.md` Where Things Live.",
+        "testStrategy": "**File: `tests/test_background_hybrid.py`**\n\n1. **Factory:** `create_background_source('hybrid', preset_prompt='test', butterchurn_preset_name='test')` → `HybridAnchorBackground`\n2. **Aliases:** `normalize_background_mode('scene-and-energy') == MODE_HYBRID_ANCHOR`\n3. **Anchor selection:** Mock `analysis.json` → `len(bg.anchor_times) == 5`, times match segments+events\n4. **Frame logic (mock children):** \n   - `t=anchor_center` → returns SDXL frame (alpha=1.0)\n   - `t=anchor_end+1s` → returns Butterchurn frame (alpha=0.0)\n   - `t=transition_mid` → blended frame (alpha=0.5)\n5. **Crossfade math:** `bg._transition_alpha(bar_phase=0.5) == 0.5`\n6. **Intensity envelope:** `bg.reactive_intensity(anchor_t) == 0.0`, `bg.reactive_intensity(non_anchor) == 1.0`\n7. **Gradio:** Dropdown contains 'SDXL anchors + Butterchurn fill', selects correct mode.",
+        "status": "pending",
+        "dependencies": [
+          14,
+          61
+        ],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": 67,
+        "title": "Track A2: torch 2.7+cu128, WhisperX 3.3.6+, ctranslate2 4.5+ (RTX 50 / Pinokio)",
+        "description": "Migrate Windows GPU stack from Track A (torch 2.2.2+cu121, WhisperX 3.3.0, ctranslate2 4.4.0, cuDNN 8) to a cu128-era chain so RTX 50 (Blackwell) works and Pinokio matches the proven whisper-webui / jhj0517 setup.",
+        "details": "Scope:\n- pyproject.toml, requirements.txt, install.js: pin torch / torchvision / torchaudio to 2.7.x + cu128 index; bump whisperx to a version compatible with torch>=2.5 (e.g. >=3.3.6 per metadata); bump ctranslate2 to >=4.5,<5; align faster-whisper with WhisperX pins.\n- Pinokio install.js: consider conditional branch for RTX 50 (Pinokio when: gpu_model matches 50 series) vs default all NVIDIA Windows to cu128; keep requires.bundle ai; do not add nvidia-cudnn-cu12 pip wheel without full retest (history of DLL clashes).\n- Re-validate Align lyrics (GPU + existing CPU retry), Demucs, SDXL, AnimateDiff on Windows; adjust or retire scripts/windows_provision_cudnn_next_to_ctranslate2.py if redundant under cuDNN 9.\n- Docs: extend pinokio-lyrics-align-windows-handover.md and current-handover-prompt with Track A2 notes.\n- Reference: pinokiofactory whisper-webui (torch.js, install.js) and Pinokio beta app github-com-pinokiofactory-whisper-webui.\n\nDefer compat shim removal to task 68.",
+        "testStrategy": "Clean .venv and Pinokio reinstall; python -m unittest discover; manual: Analyze + Align lyrics + short preview render on Windows; RTX 50 smoke with Pinokio admin or external tester if available.",
+        "priority": "high",
+        "dependencies": [
+          56
+        ],
+        "status": "pending",
+        "subtasks": [],
+        "updatedAt": "2026-04-28T21:00:00.000Z"
+      },
+      {
+        "id": 68,
+        "title": "Track A2 follow-up: remove obsolete torch compat shims and cudnn copy hacks",
+        "description": "After Track A2 validates on Windows and Pinokio, delete or narrow code that existed only for torch 2.2.2 + older library import probes and cuDNN 8 layout.",
+        "details": "Candidates once task 67 is done:\n- pipeline/_torch_xpu_compat.py: remove patch_all from app.py and pipeline/background_animatediff.py if unneeded on torch 2.7.\n- scripts/windows_provision_cudnn_next_to_ctranslate2.py: delete or no-op if LoadLibrary resolves without copying next to ctranslate2.\n- Re-audit pipeline/_speechbrain_compat and lyrics_aligner GPU or CPU retry logic; keep only what still triggers.\n- Grep for stale Track A-only comments; run full unittest suite.",
+        "testStrategy": "unittest discover; smoke Align lyrics + AnimateDiff SDXL import on Windows Pinokio; no new import or DLL regressions.",
+        "priority": "medium",
+        "dependencies": [
+          67
+        ],
+        "status": "pending",
+        "subtasks": [],
+        "updatedAt": "2026-04-28T21:00:00.000Z"
+      },
+      {
+        "id": 69,
+        "title": "Pinokio Discover + RTX 50 verification coordination",
+        "description": "Confirm the published Glitchframe Pinokio entry picks up post-Track-A2 scripts; coordinate RTX 50 verification with Pinokio support; document ffmpeg NVENC vs libx264 expectations.",
+        "details": "After task 67 (and ideally 68):\n- Verify Discover / git remote install uses the same install.js and start.js as main (requires.bundle ai, torch pins).\n- Share short repro with Pinokio contact: upload audio, Analyze, Align lyrics, optional full render.\n- Docs: pinokio-package.md or handover note that Pinokio bundled ffmpeg often lacks NVENC; app probes multiple binaries and falls back to libx264; system ffmpeg with NVENC remains optional speedup.\n- If Blackwell issues persist, record pip freeze, torch.version.cuda, and traceback in handover doc.",
+        "testStrategy": "At least one external RTX 50 confirmation or equivalent; documentation updated with outcome.",
+        "priority": "medium",
+        "dependencies": [
+          67
+        ],
+        "status": "pending",
+        "subtasks": [],
+        "updatedAt": "2026-04-28T21:00:00.000Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T17:15:00.000Z",
-      "taskCount": 56,
+      "lastModified": "2026-04-28T21:00:00.000Z",
+      "taskCount": 69,
       "completedCount": 50,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-28T18:21:15.340Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-28T18:56:53.396Z"
     }
   }
 }

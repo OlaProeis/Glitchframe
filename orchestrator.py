@@ -44,7 +44,10 @@ class OrchestratorInputs:
     presets: dict[str, Any] = field(default_factory=dict)
     output_settings: dict[str, Any] = field(default_factory=dict)
     # Background compositor source (see ``pipeline.background``); not part of song hash.
-    background_mode: str = "animatediff"
+    # Default kept in sync with the Gradio radio default in ``app.py``. AnimateDiff
+    # is currently broken (FP16 VAE NaN → all-black frames) so SDXL stills is the
+    # canonical default; AnimateDiff stays selectable but is labelled "(broken)".
+    background_mode: str = "sdxl-stills"
     static_background_image: str | Path | None = None
     # Cosmetic render settings (never influence the song cache key).
     preset_id: str | None = None

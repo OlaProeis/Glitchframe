@@ -30,6 +30,13 @@ from .builtin_shaders import BUILTIN_SHADERS
 
 LOGGER = logging.getLogger(__name__)
 
+# One-shot guard so the per-process GL backend identity is logged exactly
+# once even when the orchestrator builds multiple short-lived shader
+# contexts (preview, thumbnail, full render). The first context's info is
+# representative -- standalone moderngl contexts on the same host always
+# resolve to the same ICD.
+_GL_INFO_LOGGED = False
+
 DEFAULT_WIDTH = 1920
 DEFAULT_HEIGHT = 1080
 DEFAULT_NUM_BANDS = 8
@@ -125,6 +132,56 @@ def _build_palette_uniform(
 # ---------------------------------------------------------------------------
 # Shader resolution & CPU composite (for tests / non-GL callers)
 # ---------------------------------------------------------------------------
+
+
+def _log_gl_backend_once(ctx: "moderngl.Context") -> None:
+    """Log ``GL_VENDOR`` / ``GL_RENDERER`` / ``GL_VERSION`` exactly once.
+
+    A 5-10x compositor slowdown on Pinokio (vs a local ``.venv``) is most
+    often caused by ``opengl32.dll`` being shadowed by a software Mesa /
+    llvmpipe build that ships in conda env ``Library\\bin``. Without this
+    log line the regression is invisible from the terminal: the only
+    visible symptom is ~0.3 fps on the same shader that hits 30+ fps under
+    a hardware NVIDIA / AMD ICD. Logging the renderer string at
+    first-context creation makes the cause diagnosable without a Python
+    REPL or extra tooling. ``ctx.info`` returns a dict whose values are
+    the standard ``glGetString(GL_VENDOR/RENDERER/VERSION)`` strings.
+    Software fallbacks identify themselves explicitly: Mesa reports
+    ``"llvmpipe (LLVM ..., 256 bits)"`` and Microsoft's GDI Generic
+    reports ``"GDI Generic"`` -- both unambiguous markers of a
+    CPU-rasterised path.
+    """
+    global _GL_INFO_LOGGED
+    if _GL_INFO_LOGGED:
+        return
+    _GL_INFO_LOGGED = True
+    try:
+        info = ctx.info
+        vendor = str(info.get("GL_VENDOR", "?"))
+        renderer = str(info.get("GL_RENDERER", "?"))
+        version = str(info.get("GL_VERSION", "?"))
+    except Exception as exc:  # noqa: BLE001 - never break render on diagnostics
+        LOGGER.warning("Could not read moderngl context info: %s", exc)
+        return
+    LOGGER.info(
+        "moderngl GL backend: vendor=%r renderer=%r version=%r",
+        vendor,
+        renderer,
+        version,
+    )
+    low_renderer = renderer.lower()
+    if "llvmpipe" in low_renderer or "softpipe" in low_renderer or "gdi generic" in low_renderer or "swiftshader" in low_renderer:
+        LOGGER.warning(
+            "moderngl is using a SOFTWARE OpenGL renderer (%r). The reactive "
+            "shader will rasterise on the CPU and the compositor will run "
+            "5-20x slower than on a hardware ICD. On Windows this usually "
+            "means a Mesa / llvmpipe ``opengl32.dll`` from a conda env's "
+            "``Library\\bin`` was loaded before the system NVIDIA driver. "
+            "Workaround: ensure ``%%SYSTEMROOT%%\\System32`` is earlier on "
+            "PATH than any conda ``Library\\bin``, or remove the shadowing "
+            "DLL from the env.",
+            renderer,
+        )
 
 
 def resolve_builtin_shader_stem(
@@ -706,6 +763,11 @@ class ReactiveShader:
                 "Failed to create standalone moderngl context "
                 "(OpenGL 3.3+ required)"
             ) from exc
+
+        # First-context-only log of GL_VENDOR/RENDERER/VERSION + warn on
+        # software fallbacks. Diagnoses ~5-10x Pinokio compositor regressions
+        # caused by conda's Mesa ``opengl32.dll`` shadowing the NVIDIA driver.
+        _log_gl_backend_once(self._ctx)
 
         try:
             frag_src = frag_path.read_text(encoding="utf-8")

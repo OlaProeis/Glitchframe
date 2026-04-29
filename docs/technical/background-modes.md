@@ -6,13 +6,21 @@ Feature: selectable full-frame backgrounds for the compositor via a shared
 See also `docs/technical/background-stills.md` for the SDXL keyframe cache and
 interpolation details.
 
+> **Status — AnimateDiff is currently broken.** The SDXL + MotionAdapter +
+> FP16 VAE combination silently produces **all-black** decoded frames (the
+> well-known FP16 VAE NaN failure). SDXL stills is the new default; AnimateDiff
+> remains in the dropdown labelled `(broken)` for parity, but selecting it
+> wastes 1-2h of GPU time per song with zero visible output. Slated for
+> removal once a stable replacement (Butterchurn / GLSL background) lands —
+> see Tasks 57–66 in the backlog.
+
 ## Modes
 
 | Canonical ID | Module / class | Notes |
 |--------------|----------------|-------|
-| `sdxl-stills` | `pipeline.background_stills.BackgroundStills` | Default; `manifest.json` + `keyframe_*.png`. |
+| `sdxl-stills` | `pipeline.background_stills.BackgroundStills` | **Default.** `manifest.json` + `keyframe_*.png`. |
 | `static-kenburns` | `pipeline.background_kenburns.StaticKenBurnsBackground` | `manifest_static_kenburns.json`, `source.<ext>`; RMS from `analysis.json` drives zoom/pan/tilt. |
-| `animatediff` | `pipeline.background_animatediff.AnimateDiffBackground` | `manifest_animatediff.json` (schema v2), `anim_{seg}_{f}.png`; requires CUDA + diffusers with `AnimateDiffSDXLPipeline`. |
+| `animatediff` | `pipeline.background_animatediff.AnimateDiffBackground` | **Broken (FP16 VAE NaN → black frames).** `manifest_animatediff.json` (schema v2), `anim_{seg}_{f}.png`; requires CUDA + diffusers with `AnimateDiffSDXLPipeline`. Kept selectable but do not use. |
 
 ## Factory and orchestration
 
