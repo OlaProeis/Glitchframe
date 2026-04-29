@@ -216,6 +216,18 @@ def composite_premultiplied_rgba_over_rgb(
     """
     Alpha-blend premultiplied ``(H, W, 4)`` ``uint8`` RGBA over ``(H, W, 3)``
     ``uint8`` RGB. Returns ``(H, W, 3)`` ``uint8``.
+
+    Performance: the previous implementation allocated five full-frame
+    ``float32`` intermediates (~190 MB per call at 1080p) which dominated the
+    CPU producer cost on slow Pinokio renders -- this function is invoked 2-3x
+    per frame (typo, title, optional voidcat). The current form computes the
+    same float32 expression with the same ``np.round`` / ``np.clip`` rounding
+    semantics but fuses the multiply / add / scale-back-to-255 chain into the
+    ``dst`` buffer via ``out=`` arguments, dropping the per-call working set
+    to ~64 MB. Output bytes are bit-identical to the legacy path because the
+    sequence of float32 ops, their order, and their broadcasting shapes are
+    preserved -- IEEE 754 guarantees identical results for the same operands
+    in the same operations.
     """
     a = np.asarray(rgba, dtype=np.uint8)
     b = np.asarray(rgb, dtype=np.uint8)
@@ -226,11 +238,27 @@ def composite_premultiplied_rgba_over_rgb(
     if a.shape[:2] != b.shape[:2]:
         raise ValueError(f"shape mismatch: {a.shape[:2]} vs {b.shape[:2]}")
 
-    src = a.astype(np.float32) / 255.0
-    dst = b.astype(np.float32) / 255.0
-    sa = src[..., 3:4]
-    out = src[..., :3] + dst * (1.0 - sa)
-    return np.clip(np.round(out * 255.0), 0, 255).astype(np.uint8)
+    # Split the RGBA upload into rgb + alpha float32 buffers without ever
+    # materialising the full (H, W, 4) float32 array (saves ~8 MB/call at
+    # 1080p compared to the legacy ``a.astype(...) / 255.0`` path).
+    src_rgb = a[..., :3].astype(np.float32)
+    src_rgb /= 255.0
+    sa = a[..., 3:4].astype(np.float32)
+    sa /= 255.0
+    # ``dst`` is the rolling accumulator; we reuse it for every subsequent
+    # in-place op so the only large allocations are ``src_rgb`` and ``dst``.
+    dst = b.astype(np.float32)
+    dst /= 255.0
+    # out = src_rgb + dst * (1 - sa)
+    inv_a = np.subtract(1.0, sa)  # tiny (H, W, 1) intermediate
+    np.multiply(dst, inv_a, out=dst)
+    np.add(dst, src_rgb, out=dst)
+    # Match the legacy quantisation precisely: scale up, banker's-round,
+    # clip to byte range, cast to uint8. Done in-place on ``dst``.
+    np.multiply(dst, 255.0, out=dst)
+    np.round(dst, out=dst)
+    np.clip(dst, 0.0, 255.0, out=dst)
+    return dst.astype(np.uint8)
 
 
 # ---------------------------------------------------------------------------

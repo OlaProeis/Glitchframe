@@ -1073,6 +1073,7 @@ def _render_compositor_frame(
     resolved_rim_config: RimLightConfig | None = None,
     beam_ctx: _BeamRenderContext | None = None,
     frame_effects: _FrameEffectsContext | None = None,
+    stage_timings: dict[str, float] | None = None,
 ) -> np.ndarray:
     """One RGB frame: background → reactive → [ascii] → typography → title →
     [rim beams] → logo → FX.
@@ -1092,12 +1093,24 @@ def _render_compositor_frame(
     skipped entirely when no clip of any frame-effect kind is active at
     ``t``.
     """
+    # Per-stage timing capture: when ``stage_timings`` is provided we record
+    # ``time.perf_counter()`` deltas around each major stage. The producer
+    # passes a dict only for one warmup frame so the regular render path
+    # pays zero cost (no perf_counter() calls, no dict ops). Diagnoses
+    # which stage owns the per-frame budget on slow Pinokio renders. See
+    # the call site in :func:`render_full_video`.
+    if stage_timings is not None:
+        _t0 = time.perf_counter()
     bg_rgb = _validate_background_frame(
         background.background_frame(t),
         cfg.width,
         cfg.height,
         t,
     )
+    if stage_timings is not None:
+        _t1 = time.perf_counter()
+        stage_timings["bg"] = _t1 - _t0
+        _t0 = _t1
     uniforms = uniforms_at_time(
         analysis,
         float(t),
@@ -1130,7 +1143,15 @@ def _render_compositor_frame(
         uniforms["drop_hold"] = float(drop_hold_fn(float(t)))
     else:
         uniforms["drop_hold"] = 0.0
+    if stage_timings is not None:
+        _t1 = time.perf_counter()
+        stage_timings["uniforms"] = _t1 - _t0
+        _t0 = _t1
     composited = reactive.render_frame_composited_rgb(uniforms, bg_rgb)
+    if stage_timings is not None:
+        _t1 = time.perf_counter()
+        stage_timings["shader"] = _t1 - _t0
+        _t0 = _t1
     if cfg.voidcat_ascii_ctx is not None:
         vox = render_voidcat_ascii_rgba(
             cfg.width,
@@ -1141,11 +1162,27 @@ def _render_compositor_frame(
             omit_cat=bool(cfg.voidcat_ascii_sharp_cat),
         )
         composited = composite_premultiplied_rgba_over_rgb(vox, composited)
+        if stage_timings is not None:
+            _t1 = time.perf_counter()
+            stage_timings["voidcat"] = _t1 - _t0
+            _t0 = _t1
     if typo_layer is not None:
         typo_rgba = typo_layer.render_frame(float(t), uniforms)
+        if stage_timings is not None:
+            _t1 = time.perf_counter()
+            stage_timings["typo_render"] = _t1 - _t0
+            _t0 = _t1
         composited = composite_premultiplied_rgba_over_rgb(typo_rgba, composited)
+        if stage_timings is not None:
+            _t1 = time.perf_counter()
+            stage_timings["typo_composite"] = _t1 - _t0
+            _t0 = _t1
     if title_rgba is not None:
         composited = composite_premultiplied_rgba_over_rgb(title_rgba, composited)
+        if stage_timings is not None:
+            _t1 = time.perf_counter()
+            stage_timings["title_composite"] = _t1 - _t0
+            _t0 = _t1
     if logo_rgba_prepared is not None and logo_position_norm is not None:
         logo_scale = 1.0
         logo_opacity_pct = float(cfg.logo_opacity_pct)
@@ -1269,6 +1306,10 @@ def _render_compositor_frame(
                 position=logo_position_norm,
                 logo_scale=float(logo_scale),
             )
+            if stage_timings is not None:
+                _t1 = time.perf_counter()
+                stage_timings["beams"] = _t1 - _t0
+                _t0 = _t1
         composited = composite_logo_onto_frame(
             composited,
             logo_rgba_prepared,
@@ -1287,8 +1328,16 @@ def _render_compositor_frame(
             rim_audio_mod=rim_audio_mod,
             logo_glow_mode=cfg.logo_glow_mode,
         )
+        if stage_timings is not None:
+            _t1 = time.perf_counter()
+            stage_timings["logo"] = _t1 - _t0
+            _t0 = _t1
     if frame_effects is not None:
         composited = _apply_frame_effects(composited, float(t), frame_effects)
+        if stage_timings is not None:
+            _t1 = time.perf_counter()
+            stage_timings["effects"] = _t1 - _t0
+            _t0 = _t1
     if (
         cfg.voidcat_ascii_sharp_cat
         and cfg.voidcat_ascii_ctx is not None
@@ -1950,6 +1999,21 @@ def render_full_video(
                     # rate, not (renderer + warmup) rate.
                     stats.started_at = render_started
                     stats.phase = "warming up"
+                    # Per-stage breakdown samples on a few post-warmup
+                    # frames. Used to pinpoint whether the per-frame
+                    # budget is owned by the GPU shader, kinetic
+                    # typography, the numpy compositing path, or the
+                    # beam patch on slow renders. Three samples are
+                    # plenty: frame 8 covers the warmed-up steady
+                    # state, frame 90 (~3 s in) usually has lyrics
+                    # active, and frame 600 (~20 s in) typically
+                    # catches an early drop / beam-active frame on
+                    # most timelines. Each sample pays a few perf_
+                    # counter() calls and one INFO line; the regular
+                    # render path (i.e. >99% of frames) short-circuits
+                    # with zero overhead via ``stage_timings is None``.
+                    _PROFILE_FRAME_INDICES = frozenset({8, 90, 600})
+                    profiled_frames: set[int] = set()
                     for i in range(frame_count):
                         if stop_event.is_set():
                             return
@@ -1960,6 +2024,20 @@ def render_full_video(
                         # / typography all sample the same absolute timeline
                         # as the trimmed audio.
                         t = float(start_sec) + (i + 0.5) / float(cfg.fps)
+
+                        # Allocate a timings dict on the profile frames
+                        # so ``_render_compositor_frame`` populates them;
+                        # pass ``None`` on every other frame so the
+                        # timing path short-circuits with zero overhead.
+                        stage_timings: dict[str, float] | None = (
+                            {} if (i in _PROFILE_FRAME_INDICES
+                                   and i not in profiled_frames
+                                   and i < frame_count) else None
+                        )
+                        _frame_t0 = (
+                            time.perf_counter()
+                            if stage_timings is not None else 0.0
+                        )
 
                         composited = _render_compositor_frame(
                             t,
@@ -1985,10 +2063,35 @@ def render_full_video(
                             resolved_rim_config=resolved_rim_config,
                             beam_ctx=beam_ctx,
                             frame_effects=frame_effects,
+                            stage_timings=stage_timings,
                         )
 
+                        if stage_timings is not None:
+                            _bgr_t0 = time.perf_counter()
                         bgr = np.ascontiguousarray(composited[:, :, ::-1])
+                        if stage_timings is not None:
+                            _bgr_t1 = time.perf_counter()
+                            stage_timings["bgr_convert"] = _bgr_t1 - _bgr_t0
+                            _q_t0 = _bgr_t1
                         frame_q.put(bgr.tobytes())
+                        if stage_timings is not None:
+                            _q_t1 = time.perf_counter()
+                            stage_timings["bgr_tobytes_and_qput"] = (
+                                _q_t1 - _q_t0
+                            )
+                            total_ms = (_q_t1 - _frame_t0) * 1000.0
+                            parts = [
+                                f"{k}={v * 1000.0:.1f}ms"
+                                for k, v in stage_timings.items()
+                            ]
+                            LOGGER.info(
+                                "Compositor stage breakdown (frame %d, "
+                                "wall=%.1fms): %s",
+                                i,
+                                total_ms,
+                                " ".join(parts),
+                            )
+                            profiled_frames.add(i)
 
                         done = i + 1
                         # Producer-side counter for the throttled INFO log
