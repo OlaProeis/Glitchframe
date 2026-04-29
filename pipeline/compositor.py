@@ -2009,21 +2009,34 @@ def render_full_video(
                     stats.started_at = render_started
                     stats.phase = "warming up"
                     # Per-stage breakdown samples. Goal: catch the
-                    # progressive Pinokio slowdown (drops from ~5 fps
-                    # to <1 fps over ~100 frames even though per-stage
-                    # cost is constant). A constant per-stage sum
-                    # combined with a falling overall fps means the
-                    # producer is blocking on something *outside* the
-                    # render call -- typically ``frame_q.put`` when the
-                    # encoder back-pressures. We profile every 30
-                    # frames (~1 s of song time) so the time series
-                    # densely covers the cliff and the user only has
-                    # to run a short render to see it. Cost: one INFO
-                    # log + ~12 ``perf_counter()`` calls every 30
-                    # frames; negligible against the ~200 ms/frame
-                    # baseline.
-                    _PROFILE_EVERY = 30
+                    # Pinokio cliff where the producer goes from 4 fps
+                    # (~225 ms/frame) to 0.2 fps (~5 s/frame) within a
+                    # 2-frame window even though per-stage cost is
+                    # constant in *all* observed samples. Profiling
+                    # every Nth frame creates blind spots straddling
+                    # the cliff, so after warmup we profile **every
+                    # frame** -- the cost of the ~12 ``perf_counter()``
+                    # calls is sub-microsecond per frame, far below
+                    # the 200 ms baseline. Logging is throttled: we
+                    # always emit on slow frames (so the cliff is
+                    # immediately visible) and otherwise only every
+                    # ``_LOG_EVERY`` frames so the terminal stays
+                    # readable.
                     _PROFILE_OFFSET = 8  # warmup margin
+                    _LOG_EVERY = 30
+                    _LOG_SLOW_MS = 500.0
+                    # Optional RSS readout via psutil. Used to spot the
+                    # "memory grows then everything stalls" pattern --
+                    # if process RSS climbs steadily into the multi-GB
+                    # range as the producer slows, the OS is paging
+                    # frame buffers to disk. Best-effort: skipped when
+                    # psutil isn't installed or the host blocks the
+                    # query.
+                    try:
+                        import psutil  # type: ignore
+                        _proc = psutil.Process()
+                    except Exception:  # noqa: BLE001 - diagnostics only
+                        _proc = None
                     for i in range(frame_count):
                         if stop_event.is_set():
                             return
@@ -2035,15 +2048,13 @@ def render_full_video(
                         # as the trimmed audio.
                         t = float(start_sec) + (i + 0.5) / float(cfg.fps)
 
-                        # Allocate a timings dict on profile frames so
-                        # ``_render_compositor_frame`` populates them;
-                        # pass ``None`` on every other frame so the
-                        # timing path short-circuits with zero overhead.
+                        # Allocate a timings dict for every post-warmup
+                        # frame. ``_render_compositor_frame`` populates
+                        # it; ``perf_counter()`` is sub-microsecond so
+                        # this costs ~10 us against the 200 ms+ frame
+                        # baseline (i.e. <0.01% overhead).
                         stage_timings: dict[str, float] | None = (
-                            {}
-                            if (i >= _PROFILE_OFFSET
-                                and (i - _PROFILE_OFFSET) % _PROFILE_EVERY == 0)
-                            else None
+                            {} if i >= _PROFILE_OFFSET else None
                         )
                         _frame_t0 = (
                             time.perf_counter()
@@ -2101,19 +2112,45 @@ def render_full_video(
                             _q_t1 = time.perf_counter()
                             stage_timings["qput"] = _q_t1 - _q_t0
                             total_ms = (_q_t1 - _frame_t0) * 1000.0
-                            parts = [
-                                f"{k}={v * 1000.0:.1f}ms"
-                                for k, v in stage_timings.items()
-                            ]
-                            LOGGER.info(
-                                "Compositor stage breakdown (frame %d, "
-                                "wall=%.1fms, qsize=%d/%d): %s",
-                                i,
-                                total_ms,
-                                frame_q.qsize(),
-                                cfg.queue_size,
-                                " ".join(parts),
+                            # Log on every slow frame so a sudden
+                            # cliff (e.g. wall jumping from 225 ms to
+                            # 5 s) is immediately attributable to a
+                            # stage. Otherwise emit only every
+                            # ``_LOG_EVERY`` frames -- enough to
+                            # confirm steady state without spamming.
+                            offset_i = i - _PROFILE_OFFSET
+                            should_log = (
+                                total_ms >= _LOG_SLOW_MS
+                                or offset_i == 0
+                                or (offset_i > 0
+                                    and offset_i % _LOG_EVERY == 0)
                             )
+                            if should_log:
+                                parts = [
+                                    f"{k}={v * 1000.0:.1f}ms"
+                                    for k, v in stage_timings.items()
+                                ]
+                                rss_str = ""
+                                if _proc is not None:
+                                    try:
+                                        rss_mb = (
+                                            _proc.memory_info().rss
+                                            / (1024.0 * 1024.0)
+                                        )
+                                        rss_str = f" rss={rss_mb:.0f}MB"
+                                    except Exception:  # noqa: BLE001
+                                        rss_str = ""
+                                LOGGER.info(
+                                    "Compositor stage breakdown "
+                                    "(frame %d, wall=%.1fms, "
+                                    "qsize=%d/%d%s): %s",
+                                    i,
+                                    total_ms,
+                                    frame_q.qsize(),
+                                    cfg.queue_size,
+                                    rss_str,
+                                    " ".join(parts),
+                                )
 
                         done = i + 1
                         # Producer-side counter for the throttled INFO log
