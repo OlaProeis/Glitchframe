@@ -1291,6 +1291,12 @@ def build_ui() -> gr.Blocks:
                     type="filepath",
                     interactive=True,
                 )
+                gr.Markdown(
+                    "After upload, run **Analyze** to write `analysis.json`, optional stems, and **BPM** (Metadata tab). "
+                    "**Preview 10 s** and **Render full video** run analysis automatically if it is still missing; "
+                    "use **Analyze** here first when you want **Preview reactive frame** (Visual style) without rendering."
+                )
+                btn_analyze = gr.Button("Analyze", variant="primary")
 
             with gr.Tab("Metadata"):
                 meta_artist = gr.Textbox(label="Artist")
@@ -1823,7 +1829,6 @@ See `docs/technical/visual-style-presets.md` for the full schema and
                     "`outputs/<run_id>/output.mp4`, `thumbnail.png`, and `metadata.txt`, then runs an ffprobe A/V sync check."
                 )
                 with gr.Row():
-                    btn_analyze = gr.Button("Analyze", variant="primary")
                     btn_preview = gr.Button("Preview 10 s")
                     btn_render = gr.Button("Render full video", variant="stop")
 
