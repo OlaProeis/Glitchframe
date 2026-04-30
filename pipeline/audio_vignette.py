@@ -26,19 +26,25 @@ import numpy as np
 
 
 # Baseline edge darkening even with silent uniforms. Keeps the picture framed
-# without making the corners noticeably blacker than the centre. 0.0 disables
-# the static component (only the audio pulse survives, which is barely visible).
-_BASE_EDGE_DARKEN = 0.18
+# and gives every preset a baseline of contrast against the SDXL/AnimateDiff
+# still — corners read as a clearly darker band even before the audio pulse
+# adds breath. 0.0 disables the static component (only the audio pulse
+# survives, which is barely visible).
+_BASE_EDGE_DARKEN = 0.32
 
 # Maximum *additional* edge darkening contributed by the audio pulse on top of
 # ``_BASE_EDGE_DARKEN``. Layered on top of the base via clamp(base + audio, 0,
-# 1) so loud sections darken corners by up to ``base + audio`` total.
-_AUDIO_EDGE_PULSE = 0.12
+# 1) so loud sections darken corners by up to ``base + audio`` total. Bumped
+# alongside ``_BASE_EDGE_DARKEN`` so the pulse stays visible against the
+# darker baseline.
+_AUDIO_EDGE_PULSE = 0.18
 
 # Inner radius (normalised) where vignette begins to ramp in. Below this the
 # frame is untouched. ``1.0`` is the corner of a unit-square (sqrt(2)/sqrt(2)
-# in our half-extents convention below).
-_VIGNETTE_INNER = 0.55
+# in our half-extents convention below). Pulled the inner edge in slightly
+# (0.55 -> 0.48) so the darkening reaches further into the frame and gives
+# the centre composition more "held" feel without clipping the actual subject.
+_VIGNETTE_INNER = 0.48
 _VIGNETTE_OUTER = 1.05
 
 

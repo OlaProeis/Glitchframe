@@ -155,6 +155,14 @@ void main() {
     // at half weight so the drop lands as a compound flash.
     neb += palette_pick(4) * (0.28 * hold + 0.14 * pulse + 0.14 * bass_hit);
 
+    // Saturate bright cloud cores toward white so dense regions of the
+    // nebula read as crisp highlights against any background colour. Faint
+    // cloud edges stay coloured (low ``cloud`` -> low mix), but peaks pump
+    // toward white. Pairs with the alpha boost below so highlights are
+    // visibly opaque on busy SDXL stills.
+    float cloud_peak = pow(clamp(cloud * 0.85, 0.0, 1.0), 2.5);
+    neb = mix(neb, vec3(1.55), cloud_peak * 0.45);
+
     // Stars are near-white highlights on top of the nebula.
     neb = mix(neb, vec3(1.0), clamp(stars * 0.85, 0.0, 1.0));
 

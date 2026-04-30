@@ -259,20 +259,18 @@ void main() {
     vec3 spark = palette_ramp(hue + 0.55 + 0.30 * t_hi);
     vec3 trace_col = palette_ramp(hue + 0.78);
 
-    // Soft base wash heavily reduced (2026-04). Previously a smoothstepped
-    // ``fresh = mix(base*0.55, base*1.05, ...)`` painted a constant
-    // mid-luminance haze over the kaleidoscope, which read as ugly
-    // "clouds" on top of the SDXL/AnimateDiff background. The base now
-    // only lights pixels where the FBM threshold is high so the picture
-    // is dominated by the sharp ridge/fine/trace structures and the
-    // background reads through the empty space.
-    float base_mask = smoothstep(0.45, 0.85, fbm_v);
-    vec3 fresh = base * 0.20 * base_mask;
-    fresh = mix(fresh, hot * 1.45, ridge * (0.65 + 0.45 * env));
-    fresh = mix(fresh, spark, fine * (0.55 + 0.55 * t_hi + 0.30 * pulse));
+    // No more soft base wash (2026-04 round 2). Previously even the trimmed
+    // ``base * 0.20 * base_mask`` painted a faint mid-luminance haze across
+    // the FBM bright field, which read as remaining "fog" on top of busy
+    // SDXL stills. The kaleidoscope is now driven entirely by the sharp
+    // ridge / fine / trace structures, with the background reading through
+    // any pixel that isn't an actual filament or trace line.
+    vec3 fresh = vec3(0.0);
+    fresh = mix(fresh, hot * 1.55, ridge * (0.75 + 0.45 * env));
+    fresh = mix(fresh, spark, fine * (0.65 + 0.55 * t_hi + 0.30 * pulse));
     // Trace lines amplified — this is the signature kaleidoscope element
     // and the user feedback flagged it as the part worth keeping.
-    fresh += trace_col * trace * (0.55 + 1.15 * pulse + 0.65 * t_mid + 0.45 * env);
+    fresh += trace_col * trace * (0.65 + 1.30 * pulse + 0.75 * t_mid + 0.55 * env);
 
     // Drop afterglow — palette[4] bloom riding the bright FBM tips only.
     fresh += palette_pick(4) * (0.40 * hold) * smoothstep(0.30, 0.85, fbm_v);
@@ -283,13 +281,16 @@ void main() {
     float luma = dot(fresh, vec3(0.2126, 0.7152, 0.0722));
     fresh = mix(fresh, vec3(luma), 0.30 * tension);
 
-    // Audio-gated ambient wash trimmed (2026-04). The previous
-    // ``0.10 * rms_soft + 0.06 * spec_sum`` was small individually but
-    // stacked with the now-trimmed ``fresh`` base it lifted the entire
-    // frame off the background during loud sections. Keep just enough so
-    // post-drop rises still tint the empty space gently.
-    float wash_amp = 0.04 * rms_soft + 0.02 * spec_sum;
-    fresh += mix(palette_pick(2), palette_pick(1), 0.5) * wash_amp;
+    // Saturate ridges + trace cores toward white at peaks so the
+    // kaleidoscope geometry reads against any background colour. Bright
+    // filaments / waveform crests pump near-white, which is the contrast
+    // that was missing on busy orange / amber SDXL stills.
+    float crest = clamp(ridge * 0.85 + trace * 0.95 + fine * 0.65, 0.0, 1.0);
+    fresh = mix(fresh, vec3(1.6), pow(crest, 2.0) * 0.55);
+
+    // Audio-gated ambient wash retired (2026-04 round 2). It was the last
+    // remaining "fog" contributor — even at 0.04 rms_soft + 0.02 spec_sum
+    // it lifted the entire frame off the background during loud sections.
 
     // Continuous-UV hash grain (no chunky pixel blocks in encodes).
     vec2 g_uv = v_uv * vec2(1447.0, 1021.0) + vec2(time * 13.7, -time * 9.2);
@@ -314,15 +315,19 @@ void main() {
     acc = acc / (1.0 + acc * 0.085);
 
     // Peak whites on hits — push small bright cores so drops feel snappy.
+    // ``ridge`` and ``trace`` weights bumped (2026-04 round 2) so the
+    // kaleidoscope filaments contribute more to the peak channel even
+    // outside of audio attacks; this keeps the structure visible against
+    // SDXL stills with high mean luminance (orange flames, lit interiors).
     float peak = clamp(
           pulse * 0.85
         + bass_hit * 0.70
         + hold * 0.40
         + t_hi * 0.30
-        + ridge * 0.25
-        + trace * 0.55,
+        + ridge * 0.55
+        + trace * 0.85,
         0.0, 1.0);
-    acc = mix(acc, vec3(1.0), peak * peak * 0.55);
+    acc = mix(acc, vec3(1.0), peak * peak * 0.70);
 
     // Edge-soft vignette so the corners don't out-shine the centre.
     float vign = 1.0 - smoothstep(0.45, 1.10, length(v_uv - 0.5) * 1.8);

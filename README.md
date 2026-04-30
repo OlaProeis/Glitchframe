@@ -1,6 +1,6 @@
 # Glitchframe
 
-Local, GPU-accelerated **music video** generator: upload a track, analyze it, align lyrics, generate stylized backgrounds, composite reactive shaders and kinetic type, and encode with **ffmpeg** (NVENC on NVIDIA GPUs by default).
+Local, GPU-accelerated **music video** generator: upload a track, analyze it, align lyrics, generate stylized backgrounds (**SDXL** keyframe stills by default — you steer the look with preset **prompt**s or your own **Custom prompt**), composite reactive shaders and kinetic type, and encode with **ffmpeg** (NVENC on NVIDIA GPUs by default).
 
 **Examples (progress log, newest = current state):** [voidcat on YouTube](https://www.youtube.com/@voidcatalog)
 
@@ -14,8 +14,8 @@ Local, GPU-accelerated **music video** generator: upload a track, analyze it, al
 ## Features (overview)
 
 - **Ingest and analysis:** Per-song cache, waveform preview, beat/onset/spectrum features, optional **Demucs** vocal stem, segment/chapter hints.
-- **Lyrics:** **WhisperX** word timings plus alignment to pasted lyrics; visual per-word **timeline editor** for fixes (saved to cache so re-runs do not clobber your edits).
-- **Backgrounds:** **SDXL** keyframe stills, **Ken Burns** on stills, optional **AnimateDiff** motion (VRAM-heavy; see *Known limitations*).
+- **Lyrics:** **WhisperX** word timings plus alignment to pasted lyrics; visual per-word **timeline editor** for fixes (saved to cache so re-runs do not clobber your edits); optional **Export .srt** aligned to the same per-word timings.
+- **Backgrounds:** **SDXL** keyframe stills are the **default** background mode. Each preset supplies a scene **prompt**, or enter **Custom prompt** in the Visual style tab — when non-empty it **overrides** the preset for SDXL/AnimateDiff so you describe the visuals yourself (Ken Burns ignores prompt and uses your uploaded image instead). Alternatives: **Ken Burns** on a static image (**RMS**-driven motion), optional **AnimateDiff** loops (**broken** today; see *Known limitations*).
 - **Look and motion:** GLSL **reactive shaders** (audio-reactive passes), **Skia** kinetic typography, title/thumbnail text, optional **logo** placement with rim glow, beams, and branding-driven effects.
 - **Effects timeline:** Per-clip post effects (e.g. screen shake, chromatic aberration, colour invert, zoom punch, scanline tear) with an in-UI editor and baked JSON under the song cache.
 - **Output:** Full-length render and **10 s preview** (loudest window), `output.mp4` + `thumbnail.png` + YouTube-oriented **`metadata.txt`**, with NVENC by default when available.
@@ -34,7 +34,7 @@ Local, GPU-accelerated **music video** generator: upload a track, analyze it, al
 
 - **Vocal / lyrics matching** can be **unreliable** in places. Treat alignment as a draft: use the lyrics timeline and listen back **before** you commit time to a full render. Improving this area is a priority; do not assume perfect lip-sync or line timing yet.
 - **Rendering is effectively single-threaded** for the heavy pipeline. Full videos often take **on the order of 1–2+ hours** (sometimes more), depending on preset, length, resolution, and GPU. Plan batch work accordingly.
-- **AnimateDiff “loops” (default in relevant presets)** is **very VRAM-hungry**: plan for **about 20 GB VRAM** on the GPU. With less memory, expect **extreme slowness, swapping, or failed runs**. Prefer SDXL stills or Ken Burns if you are VRAM-limited.
+- **AnimateDiff loops** (optional; also **broken** until the FP16/VAE issue is fixed) are **very VRAM-hungry**: plan for **about 20 GB VRAM** on the GPU. With less memory, expect **extreme slowness, swapping, or failed runs**. **SDXL stills** (default) or **Ken Burns** are the practical choices if you are VRAM-limited or want a reliable pipeline.
 - The app is under active development; UI labels and edge cases are still being hardened.
 
 ## Future (from project backlog)

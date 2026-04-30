@@ -165,15 +165,15 @@ void main() {
 
     // Radial falloff: rim a bit dimmer, center glows; edge vignette for speed
     float edge_vig = smoothstep(1.35, 0.28, r) * (0.4 + 0.6 * smoothstep(0.0, 0.45, r));
-    // Dark "void" body — mostly transparent so background shows in composited mode
-    float base_dark = 0.08 + 0.06 * rms + 0.1 * (1.0 - depth_01) * (1.0 - tension);
-    // Audio multiplier rebuilt with a cleaner floor + steeper bass slope so
-    // the lattice pumps harder on every kick instead of sitting at a flat
-    // ~0.55 baseline that SDXL detail otherwise wins out over.
+    // Audio multiplier with a cleaner floor + steeper bass slope so the
+    // lattice pumps harder on every kick instead of sitting at a flat
+    // ~0.55 baseline that SDXL detail otherwise wins out over. The legacy
+    // ``base_dark`` term that contributed a flat dark wash everywhere on
+    // the frame has been removed — it was the "fog" that softened the
+    // tunnel against busy backdrops without adding any visible structure.
     float audio_gain = 0.62 + 0.30 * (band_energies[0] + band_energies[1])
                      + 0.42 * bass_hit + 0.18 * t_lo;
-    float alpha_geo = (bright * 1.05 * edge_vig + spk * 0.35 + base_dark * 0.22)
-                    * audio_gain;
+    float alpha_geo = (bright * 1.05 * edge_vig + spk * 0.35) * audio_gain;
 
     // Occasional "thruster" flash from the deep tunnel on bass
     float tunnel_flash = (1.0 - smoothstep(0.0, 0.12, r))
@@ -181,8 +181,29 @@ void main() {
     vec3 emissive = line_col * bright * (0.85 + 0.40 * e_hi) + hot * tunnel_flash
                   + accent * (0.20 * node * (1.0 + 2.0 * hold) + 0.16 * t_mid);
 
+    // Saturate line cores toward white on peaks. Without this, thin coloured
+    // lines disappear against busy SDXL stills (e.g. orange flames behind a
+    // teal/violet tunnel). The pow gate keeps faint mids coloured but pushes
+    // bright structural pixels toward an almost-white rim that reads on any
+    // background.
+    float core_peak = pow(clamp(bright * 0.65, 0.0, 1.0), 3.0);
+    emissive = mix(emissive, vec3(1.55), core_peak * 0.60);
+
+    // The structural mask (lines + nodes) gets its own dedicated alpha
+    // channel so the lattice geometry punches through any background,
+    // independent of the soft emit / glow envelope. ``struct_mask`` is
+    // already a sharp 0..1 line-or-node indicator, so this only lifts
+    // alpha where there *is* line — empty void pixels stay fully
+    // transparent and the background reads through them cleanly.
+    float struct_alpha = clamp(
+        struct_mask * (0.85 + 0.40 * bass_hit + 0.25 * t_lo) * edge_vig,
+        0.0, 1.0
+    );
+
     float alpha = clamp(
-        (length(emissive) * 0.26 + alpha_geo * 1.05 + tunnel_flash * 0.6) * intensity,
+        max(struct_alpha,
+            length(emissive) * 0.26 + alpha_geo * 1.05 + tunnel_flash * 0.6
+        ) * intensity,
         0.0,
         1.0
     );
