@@ -39,9 +39,18 @@ app.
    * **Click the waveform background** (no drag) → seeks audio.
    * **Space** → play / pause (uses the `<audio>` element in the same
      tab). **+** / **−** → zoom in / out. **Fit** → zoom to fit.
-     **Esc** → clear the selection. **Ctrl/⌘+A** → select all words.
+     **Esc** → close the word-text overlay if open, then clear the selection.
+     **Ctrl/⌘+A** → select all words.
      **Del** / **Backspace** → remove selected word bar(s) from the timeline
      (save to persist); ignored when focus is in an `input`, `textarea`, or `select`.
+   * **Double-click empty word lane** (not on a bar) → insert a short word
+     (~0.22 s) centred on that time and open an inline text box; `line_idx`
+     follows the nearest words on the same visual stripe when possible.
+   * **Double-click a word bar** (not on a resize handle) → inline editor for
+     that word's spelling.
+   * **+ word at playhead** (toolbar) → same insert at the audio playhead; if
+     exactly one word is selected, the new word inherits its `line_idx`,
+     otherwise defaults to logical stripe 0.
 
 **Browser text selection** — The scroll area, stage, word track, and each
 word bar set CSS `user-select: none` (with `-webkit-user-select` where

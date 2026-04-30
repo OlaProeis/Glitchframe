@@ -403,6 +403,54 @@ _EDITOR_CSS = """
     font-weight: 500;
     font-family: ui-sans-serif, system-ui, sans-serif;
   }
+  .mv-editor .mv-word-edit-pop {
+    position: absolute;
+    z-index: 25;
+    background: #1e293b;
+    border: 1px solid #f59e0b;
+    border-radius: 6px;
+    padding: 8px 10px;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
+    min-width: 160px;
+    max-width: min(320px, 90vw);
+  }
+  .mv-editor .mv-word-edit-pop label {
+    display: block;
+    font-size: 11px;
+    color: #cbd5e1;
+    margin-bottom: 2px;
+  }
+  .mv-editor .mv-word-edit-pop input[type="text"] {
+    width: 100%;
+    box-sizing: border-box;
+    margin-bottom: 8px;
+    padding: 5px 8px;
+    border-radius: 4px;
+    border: 1px solid #475569;
+    background: #0f172a;
+    color: #f8fafc;
+    font-size: 13px;
+  }
+  .mv-editor .mv-word-edit-pop .mv-word-edit-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+  }
+  .mv-editor .mv-word-edit-pop .mv-word-edit-actions button {
+    background: #334155;
+    color: #f1f5f9;
+    border: 1px solid #475569;
+    border-radius: 4px;
+    padding: 4px 12px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .mv-editor .mv-word-edit-pop .mv-word-edit-actions button.mv-word-edit-primary {
+    background: #f59e0b;
+    color: #0f172a;
+    border-color: #d97706;
+    font-weight: 600;
+  }
 </style>
 """.strip()
 
@@ -538,6 +586,8 @@ def build_editor_html(
         f"    <button type=\"button\" data-mv-action=\"zoom-in\">+</button>"
         f"    <button type=\"button\" data-mv-action=\"zoom-out\">−</button>"
         f"    <button type=\"button\" data-mv-action=\"zoom-fit\">Fit</button>"
+        f"    <button type=\"button\" data-mv-action=\"add-word-at-playhead\">"
+        f"+ word at playhead</button>"
         f"    <span class=\"mv-info\">{info_html}</span>"
         f"  </div>"
         f"  <div class=\"mv-scroller\" data-mv-scroller>"
@@ -564,6 +614,9 @@ def build_editor_html(
         f"words selected, dragging any of them moves them all together. "
         f"<kbd>Esc</kbd> deselect, <kbd>Ctrl</kbd>+<kbd>A</kbd> select all. "
         f"<kbd>Del</kbd>/<kbd>Backspace</kbd> remove selected word(s). "
+        f"<strong>Double-click</strong> empty word lane to insert a word at that time; "
+        f"<strong>double-click</strong> a bar to edit its text (or use "
+        f"<b>+ word at playhead</b>). "
         f"<kbd>Space</kbd> play/pause. <kbd>+</kbd>/<kbd>−</kbd> zoom. "
         f"Colour: green = confident, yellow = low confidence, red = very low, grey = no score."
         f"  </div>"
@@ -650,6 +703,125 @@ _EDITOR_JS = r"""
   function secondsToPx(t) { return t * pxPerSec; }
   function pxToSeconds(x) { return x / pxPerSec; }
 
+  // Bars coloured like score=null on the server (:func:`_confidence_color_for_score`).
+  const MANUAL_WORD_COLOR = "#94a3b8";
+
+  function sortWordsByStart() {
+    state.words.sort((a, b) => {
+      const ds = a.t_start - b.t_start;
+      if (Math.abs(ds) > 1e-6) return ds;
+      return (a.line_idx || 0) - (b.line_idx || 0);
+    });
+  }
+
+  function defaultLineIdxForStripe(stripe, t) {
+    let best = null;
+    let bestD = Infinity;
+    state.words.forEach((w) => {
+      if (((w.line_idx || 0) % 3) !== stripe) return;
+      const mid = (w.t_start + w.t_end) / 2;
+      const d = Math.abs(mid - t);
+      if (d < bestD) { bestD = d; best = w.line_idx; }
+    });
+    return best != null ? best : stripe;
+  }
+
+  function insertWordAt(tClick, lineIdx) {
+    const dur = Math.max(0, state.duration);
+    const span = 0.22;
+    let t0 = tClick - span / 2;
+    if (t0 < 0) t0 = 0;
+    let t1 = t0 + span;
+    if (t1 > dur) {
+      t1 = dur;
+      t0 = Math.max(0, t1 - span);
+    }
+    if (t1 - t0 < 0.02) t0 = Math.max(0, t1 - 0.02);
+    const w = {
+      word: "",
+      line_idx: lineIdx,
+      t_start: t0,
+      t_end: t1,
+      score: null,
+      color: MANUAL_WORD_COLOR,
+    };
+    state.words.push(w);
+    sortWordsByStart();
+    renderWords();
+    const newIdx = state.words.indexOf(w);
+    selected.clear();
+    selected.add(newIdx);
+    updateSelectionStyling();
+    const node = words.querySelector(".mv-word[data-index=\"" + newIdx + "\"]");
+    if (node) openWordTextEditor(newIdx, node);
+  }
+
+  let wordEditPop = null;
+  function closeWordEditPop() {
+    if (!wordEditPop) return;
+    wordEditPop.remove();
+    wordEditPop = null;
+    document.removeEventListener("pointerdown", onDocPointerWordEdit, true);
+  }
+  function onDocPointerWordEdit(ev) {
+    if (wordEditPop && !wordEditPop.contains(ev.target)) closeWordEditPop();
+  }
+  function openWordTextEditor(idx, anchorEl) {
+    closeWordEditPop();
+    const w = state.words[idx];
+    if (!w || !anchorEl) return;
+    wordEditPop = document.createElement("div");
+    wordEditPop.className = "mv-word-edit-pop";
+    const lab = document.createElement("label");
+    lab.textContent = "Word text";
+    const inp = document.createElement("input");
+    inp.type = "text";
+    inp.value = w.word || "";
+    inp.autocomplete = "off";
+    const actions = document.createElement("div");
+    actions.className = "mv-word-edit-actions";
+    const btnCancel = document.createElement("button");
+    btnCancel.type = "button";
+    btnCancel.textContent = "Cancel";
+    const btnOk = document.createElement("button");
+    btnOk.type = "button";
+    btnOk.className = "mv-word-edit-primary";
+    btnOk.textContent = "Apply";
+    function applyAndClose() {
+      w.word = inp.value;
+      closeWordEditPop();
+      renderWords();
+      const i = state.words.indexOf(w);
+      selected.clear();
+      if (i >= 0) selected.add(i);
+      updateSelectionStyling();
+    }
+    btnCancel.addEventListener("click", () => { closeWordEditPop(); });
+    btnOk.addEventListener("click", applyAndClose);
+    inp.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        applyAndClose();
+      } else if (ev.key === "Escape") {
+        ev.preventDefault();
+        closeWordEditPop();
+      }
+    });
+    actions.appendChild(btnCancel);
+    actions.appendChild(btnOk);
+    wordEditPop.appendChild(lab);
+    wordEditPop.appendChild(inp);
+    wordEditPop.appendChild(actions);
+    words.appendChild(wordEditPop);
+    wordEditPop.style.left = anchorEl.offsetLeft + "px";
+    wordEditPop.style.top = (anchorEl.offsetTop + anchorEl.offsetHeight + 4) + "px";
+    setTimeout(() => {
+      document.addEventListener("pointerdown", onDocPointerWordEdit, true);
+      inp.focus();
+      inp.select();
+    }, 0);
+  }
+
   // Render "what whisper heard" as faint italic labels overlaid on the
   // waveform. Labels are staggered across three rows by modulo-index so
   // adjacent words don't visually collide at high zoom. No pointer
@@ -733,7 +905,17 @@ _EDITOR_JS = r"""
     const nodes = words.querySelectorAll(".mv-word");
     nodes.forEach(node => {
       node.addEventListener("pointerdown", onWordPointerDown);
+      node.addEventListener("dblclick", onWordDblClick);
     });
+  }
+
+  function onWordDblClick(ev) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (ev.target.classList.contains("mv-handle")) return;
+    const node = ev.currentTarget;
+    const idx = parseInt(node.dataset.index, 10);
+    openWordTextEditor(idx, node);
   }
 
   // ─── Selection model ──────────────────────────────────────────────────
@@ -951,6 +1133,18 @@ _EDITOR_JS = r"""
     return row;
   }
 
+  words.addEventListener("dblclick", (ev) => {
+    if (ev.target.closest(".mv-word")) return;
+    ev.stopPropagation();
+    ev.preventDefault();
+    const rect = stage.getBoundingClientRect();
+    const t = pxToSeconds(ev.clientX - rect.left);
+    const stripeRow = _rowFromPointer(ev);
+    const stripe = stripeRow != null ? stripeRow : 0;
+    const lineIdx = defaultLineIdxForStripe(stripe, t);
+    insertWordAt(t, lineIdx);
+  });
+
   stage.addEventListener("pointerdown", (ev) => {
     // Words and their handles call stopPropagation in onWordPointerDown,
     // so getting here means the click began on empty timeline / waveform.
@@ -1071,6 +1265,18 @@ _EDITOR_JS = r"""
     } else if (action === "zoom-in") { setZoom(pxPerSec * 1.25); }
     else if (action === "zoom-out") { setZoom(pxPerSec / 1.25); }
     else if (action === "zoom-fit") { setZoom(Math.max(20, (scroller.clientWidth - 8) / Math.max(1, state.duration))); }
+    else if (action === "add-word-at-playhead") {
+      const a = audio();
+      const t = (a && isFinite(a.currentTime)) ? a.currentTime : 0;
+      let lineIdx;
+      if (selected.size === 1) {
+        const i = Array.from(selected)[0];
+        lineIdx = state.words[i] ? state.words[i].line_idx : 0;
+      } else {
+        lineIdx = defaultLineIdxForStripe(0, t);
+      }
+      insertWordAt(t, lineIdx);
+    }
   });
 
   function setZoom(v) {
@@ -1088,7 +1294,10 @@ _EDITOR_JS = r"""
       if (a) { a.paused ? a.play() : a.pause(); }
     } else if (ev.key === "+" || ev.key === "=") { setZoom(pxPerSec * 1.25); }
     else if (ev.key === "-" || ev.key === "_") { setZoom(pxPerSec / 1.25); }
-    else if (ev.key === "Escape") { clearSelection(); }
+    else if (ev.key === "Escape") {
+      closeWordEditPop();
+      clearSelection();
+    }
     else if (ev.key === "Delete" || ev.key === "Backspace") {
       if (selected.size > 0) {
         ev.preventDefault();

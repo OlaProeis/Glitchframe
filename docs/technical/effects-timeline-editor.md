@@ -48,6 +48,7 @@ Seven rows are always present, one per `EffectKind`, including `SCANLINE_TEAR`. 
 | Input | Action |
 |-------|--------|
 | Toolbar `+ Beam` / `+ Glitch` / … | Create a clip of that kind at the playhead with defaults |
+| Double-click empty spot in a clip row | Create a clip of that row's kind at that time (same defaults as toolbar **+**) |
 | Click inside a clip | Seek audio to `t_start` |
 | Drag clip body | Move in time (group-move if multi-selected, shared clamped delta) |
 | Drag left / right edge handle | Resize `t_start` / `t_end` |

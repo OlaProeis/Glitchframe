@@ -890,7 +890,9 @@ def build_editor_html(
         f"  <div class=\"mv-fx-help\">"
         f"    Click a toolbar <b>+</b> button to add a clip of that kind at the "
         f"playhead, or while playing use <kbd>1</kbd>–<kbd>7</kbd> (rows top to "
-        f"bottom: Beam … Zoom). Drag a clip to move; drag its edges to resize; "
+        f"bottom: Beam … Zoom). <strong>Double-click</strong> an empty spot in a "
+        f"row to add that effect at that time. Drag a clip to move; drag its edges "
+        f"to resize; "
         f"click its <b>⚙</b> to edit settings. Click an empty row to seek. "
         f"<kbd>Shift</kbd>/<kbd>Ctrl</kbd>-click to multi-select; click-drag "
         f"empty timeline to rubber-band; <kbd>Del</kbd> deletes. "
@@ -1331,6 +1333,19 @@ _EFFECTS_JS = r"""
     if (a) { try { a.currentTime = Math.max(0, t); } catch (_e) {} }
   });
 
+  stage.addEventListener("dblclick", (ev) => {
+    const rowEl = ev.target.closest("[data-mv-fx-row]");
+    if (!rowEl) return;
+    if (ev.target.closest(".mv-fx-clip")) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const kind = rowEl.getAttribute("data-mv-fx-row");
+    if (!kind || !KINDS.includes(kind)) return;
+    const rect = stage.getBoundingClientRect();
+    const t = clamp(pxToSeconds(ev.clientX - rect.left), 0, state.duration);
+    addClipAtPlayhead(kind, t);
+  });
+
   // ── Toolbar: play / zoom / add clip ───────────────────────────────────
   toolbar.addEventListener("click", (ev) => {
     const target = ev.target;
@@ -1347,7 +1362,7 @@ _EFFECTS_JS = r"""
       setZoom(Math.max(20,
         (scroller.clientWidth - 8) / Math.max(1, state.duration)));
     } else if (addKind) {
-      addClipAtPlayhead(addKind);
+      addClipAtPlayhead(addKind, null);
     }
   });
 
@@ -1358,9 +1373,14 @@ _EFFECTS_JS = r"""
     renderClips();
   }
 
-  function addClipAtPlayhead(kind) {
+  function addClipAtPlayhead(kind, atTime) {
     const a = audio();
-    const t0 = (a && isFinite(a.currentTime)) ? a.currentTime : 0;
+    let t0;
+    if (atTime != null && isFinite(atTime)) {
+      t0 = atTime;
+    } else {
+      t0 = (a && isFinite(a.currentTime)) ? a.currentTime : 0;
+    }
     const d = (DEFAULTS[kind] && DEFAULTS[kind].duration_s) || 0.3;
     const settings = Object.assign({}, (DEFAULTS[kind] || {}).settings || {});
     const dur = Math.max(0, state.duration);
@@ -1559,7 +1579,7 @@ _EFFECTS_JS = r"""
         const idx = parseInt(d, 10) - 1;
         if (KINDS[idx]) {
           ev.preventDefault();
-          addClipAtPlayhead(KINDS[idx]);
+          addClipAtPlayhead(KINDS[idx], null);
         }
       }
     }
