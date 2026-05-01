@@ -306,6 +306,15 @@ class CompositorConfig:
     # Preset hex palette fed to ``ReactiveShader`` as the ``u_palette`` uniform.
     # ``None`` uses :data:`pipeline.reactive_shader.DEFAULT_PALETTE`.
     shader_palette: Sequence[str] | None = None
+    # Optional user-controllable peak tint for shaders that declare the
+    # ``u_shader_tint`` / ``u_shader_tint_strength`` uniforms (currently
+    # ``spectral_milkdrop``). ``shader_tint`` is a ``#RRGGBB`` hex string;
+    # ``shader_tint_strength`` is a 0..1 mix weight where 0 keeps the
+    # historical white peak blow-out and 1 fully replaces it with the
+    # chosen colour. Defaults are no-ops on every other shader because
+    # ``ReactiveShader._set_uniform`` silently skips unknown uniforms.
+    shader_tint: str | None = None
+    shader_tint_strength: float = 0.0
     font_path: Path | None = field(default_factory=default_ui_font_path)
     # Heavier face for burned-in title + thumbnail line (lyrics use ``font_path``).
     title_font_path: Path | None = field(default_factory=default_title_font_path)
@@ -1697,6 +1706,8 @@ def render_single_frame(
         height=cfg.height,
         num_bands=cfg.num_bands,
         palette=cfg.shader_palette,
+        shader_tint=cfg.shader_tint,
+        shader_tint_strength=cfg.shader_tint_strength,
     ) as reactive:
         typo_layer: KineticTypographyLayer | None = None
         if has_typography:
@@ -2032,6 +2043,8 @@ def render_full_video(
                 height=cfg.height,
                 num_bands=cfg.num_bands,
                 palette=cfg.shader_palette,
+                shader_tint=cfg.shader_tint,
+                shader_tint_strength=cfg.shader_tint_strength,
             ) as reactive:
                 typo_layer: KineticTypographyLayer | None = None
                 if has_typography:

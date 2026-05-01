@@ -42,6 +42,15 @@ uniform float u_comp_background;
 uniform sampler2D u_prev_frame;
 uniform float u_has_prev;
 
+// User-controllable peak tint. ``u_shader_tint_strength = 0`` reproduces the
+// historical white blow-out (peaks/crests slammed toward ``vec3(1.0)``);
+// ``= 1`` replaces those whites with ``u_shader_tint``. Intended for users
+// who composite the shader over a light SDXL background where white peaks
+// disappear into the backdrop — pick a saturated colour and dial strength
+// up until the peaks re-read against the background.
+uniform vec3 u_shader_tint;
+uniform float u_shader_tint_strength;
+
 const float TAU = 6.28318530717958647692;
 
 vec3 palette_pick(int idx) {
@@ -209,16 +218,26 @@ void main() {
     );
     float fbm_v = fbm(kp * 2.6 + 4.0 * q2);
 
-    // Bright filament ridges (Milkdrop "smoke threads"). Sharper exponents
-    // (2026-04) tighten the ridges into clean threads instead of soft
-    // clouds — the soft base wash below is also reduced so the
-    // kaleidoscope reads as crisp filaments over the SDXL/AnimateDiff
-    // background rather than a haze.
-    float ridge = 1.0 - abs(fbm_v - 0.5) * 2.0;
-    ridge = pow(clamp(ridge, 0.0, 1.0), 8.0);
-    // Secondary fine ridge for crunch on hats / drops.
+    // Bright filament ridges (Milkdrop "smoke threads"). 2026-04 round 3:
+    // the pow(8) / pow(16) ridge fields were still smearing across a wide
+    // band around fbm_v = 0.5, which read as soft fog on top of the SDXL
+    // stills (user feedback: "very foggy/unclear, blurred"). Switched to a
+    // proper iso-contour line at fbm_v = 0.5 with fwidth() anti-aliasing —
+    // gives a single clean thread along the contour instead of a soft halo.
+    // ``ridge_thickness`` is intentionally thinner than the trace ``trace_w``
+    // (see below) so the FBM threads stay subordinate to the waveform
+    // lotus / Lissajous geometry the user flagged as the keeper element.
+    float ridge_aa = max(fwidth(fbm_v), 0.0008);
+    float ridge_thickness = 0.0090;
+    float ridge = 1.0 - smoothstep(ridge_thickness, ridge_thickness + ridge_aa * 1.5,
+                                   abs(fbm_v - 0.5));
+    // Secondary fine ridge for crunch on hats / drops — even thinner spine
+    // so it reads as fine filigree rather than a second cloud layer.
     float fine_v = fbm(kp * 6.5 + 2.0 * q2 + vec2(time * 0.09, -time * 0.07));
-    float fine = pow(clamp(1.0 - abs(fine_v - 0.5) * 2.0, 0.0, 1.0), 16.0);
+    float fine_aa = max(fwidth(fine_v), 0.0008);
+    float fine_thickness = 0.0055;
+    float fine = 1.0 - smoothstep(fine_thickness, fine_thickness + fine_aa * 1.5,
+                                  abs(fine_v - 0.5));
 
     // -----------------------------------------------------------------
     //  WAVEFORM TRACE — glowing horizontal+vertical sinusoids whose
@@ -259,15 +278,25 @@ void main() {
     vec3 spark = palette_ramp(hue + 0.55 + 0.30 * t_hi);
     vec3 trace_col = palette_ramp(hue + 0.78);
 
-    // No more soft base wash (2026-04 round 2). Previously even the trimmed
-    // ``base * 0.20 * base_mask`` painted a faint mid-luminance haze across
-    // the FBM bright field, which read as remaining "fog" on top of busy
-    // SDXL stills. The kaleidoscope is now driven entirely by the sharp
-    // ridge / fine / trace structures, with the background reading through
-    // any pixel that isn't an actual filament or trace line.
+    // No more soft base wash (2026-04 round 2). The kaleidoscope is driven
+    // by the sharp ridge / fine / trace structures, with the background
+    // reading through any pixel that isn't an actual filament or trace line.
+    //
+    // 2026-05: heavy ridge / fine attenuation (``RIDGE_AMP`` / ``FINE_AMP``).
+    // User feedback: the dense radiating FBM mesh was competing with the
+    // trace-line lotus geometry for visual focus and reading as "messy".
+    // The mesh is kept at ~25--30 % of the historical brightness so it
+    // still adds depth and a faint audio-reactive flicker, but the trace
+    // lines are now unambiguously the hero element. Crest / peak / emit
+    // weights below were trimmed in lockstep so the dim ridges don't
+    // sneak the brightness back in via the white blow-out path.
+    //
+    // 2026-05 mesh dial: quieter mesh spine + filigree vs trace lotus lines.
+    const float RIDGE_AMP = 0.15;
+    const float FINE_AMP  = 0.10;
     vec3 fresh = vec3(0.0);
-    fresh = mix(fresh, hot * 1.55, ridge * (0.75 + 0.45 * env));
-    fresh = mix(fresh, spark, fine * (0.65 + 0.55 * t_hi + 0.30 * pulse));
+    fresh = mix(fresh, hot * 1.55, ridge * RIDGE_AMP * (0.75 + 0.45 * env));
+    fresh = mix(fresh, spark, fine * FINE_AMP * (0.65 + 0.55 * t_hi + 0.30 * pulse));
     // Trace lines amplified — this is the signature kaleidoscope element
     // and the user feedback flagged it as the part worth keeping.
     fresh += trace_col * trace * (0.65 + 1.30 * pulse + 0.75 * t_mid + 0.55 * env);
@@ -284,9 +313,20 @@ void main() {
     // Saturate ridges + trace cores toward white at peaks so the
     // kaleidoscope geometry reads against any background colour. Bright
     // filaments / waveform crests pump near-white, which is the contrast
-    // that was missing on busy orange / amber SDXL stills.
-    float crest = clamp(ridge * 0.85 + trace * 0.95 + fine * 0.65, 0.0, 1.0);
-    fresh = mix(fresh, vec3(1.6), pow(crest, 2.0) * 0.55);
+    // that was missing on busy orange / amber SDXL stills. The tint mix
+    // (default strength = 0) lets the user steer the blow-out toward a
+    // chosen colour when white reads poorly on a light background.
+    //
+    // 2026-05: ridge / fine crest weights trimmed to ~30 % of previous
+    // (matching the ``RIDGE_AMP`` / ``FINE_AMP`` attenuation above) so
+    // the dimmed mesh layer does not sneak its brightness back in via
+    // the white blow-out — trace lines remain the primary peak driver.
+    float crest = clamp(ridge * 0.25 + trace * 0.95 + fine * 0.18, 0.0, 1.0);
+    float tint_s = clamp(u_shader_tint_strength, 0.0, 1.0);
+    vec3 crest_target = mix(vec3(1.6), u_shader_tint * 1.6, tint_s);
+    // Per-pixel crest blow-out: slightly tighter + lower cap so geometry
+    // picks up specular without lighting the whole frame.
+    fresh = mix(fresh, crest_target, pow(crest, 2.25) * 0.38);
 
     // Audio-gated ambient wash retired (2026-04 round 2). It was the last
     // remaining "fog" contributor — even at 0.04 rms_soft + 0.02 spec_sum
@@ -302,11 +342,12 @@ void main() {
     // -----------------------------------------------------------------
     // Slightly higher emit baseline + steeper audio terms (2026-04) so the
     // sharper ridges/trace lines pump harder against the SDXL backdrop.
-    // ``ridge`` and ``trace`` contribute more so the kaleidoscope reads
-    // brighter even during sustained loud passages, not just kick attacks.
+    // ``trace`` is the primary structural pump now; ``ridge`` is left at
+    // a residual ~30 % weight so the mesh still breathes with the music
+    // but does not relight itself bright on every frame (2026-05).
     float emit = (0.55 + 0.50 * rms_g + 0.50 * bass_hit + 0.38 * t_lo
                   + 0.24 * env + 0.26 * pulse + 0.30 * hold
-                  + 0.28 * ridge + 0.34 * trace)
+                  + 0.09 * ridge + 0.34 * trace)
                * (1.0 - 0.22 * tension)
                * i_eff;
 
@@ -314,20 +355,27 @@ void main() {
     // Soft Reinhard tone-map with headroom for peak whites.
     acc = acc / (1.0 + acc * 0.085);
 
-    // Peak whites on hits — push small bright cores so drops feel snappy.
-    // ``ridge`` and ``trace`` weights bumped (2026-04 round 2) so the
-    // kaleidoscope filaments contribute more to the peak channel even
-    // outside of audio attacks; this keeps the structure visible against
-    // SDXL stills with high mean luminance (orange flames, lit interiors).
-    float peak = clamp(
-          pulse * 0.85
-        + bass_hit * 0.70
-        + hold * 0.40
-        + t_hi * 0.30
-        + ridge * 0.55
-        + trace * 0.85,
+    // Peak whites — **split** uniform audio vs spatial geometry. The old
+    // single ``peak`` scalar mixed ``pulse + bass_hit + hold + t_hi`` into
+    // every pixel equally, so a strong kick literally washed the *entire*
+    // screen toward white and hid the SDXL background. User feedback:
+    // keep hits snappy on the trace/mesh lines, but stop full-frame flash.
+    float peak_audio = clamp(
+          pulse * 0.82
+        + bass_hit * 0.68
+        + hold * 0.36
+        + t_hi * 0.26,
         0.0, 1.0);
-    acc = mix(acc, vec3(1.0), peak * peak * 0.70);
+    float peak_geom = clamp(ridge * 0.16 + trace * 0.90, 0.0, 1.0);
+    // Global audio: low ceiling (~10--12 % mix at max). Geometry: stronger
+    // local punch on actual bright filaments. Hard cap so we never replace
+    // the whole accumulated frame with flat white.
+    float peak_blend = clamp(
+          pow(peak_audio, 2.2) * 0.12
+        + pow(peak_geom,  2.0) * 0.48,
+        0.0, 0.58);
+    vec3 peak_target = mix(vec3(1.0), u_shader_tint, tint_s);
+    acc = mix(acc, peak_target, peak_blend);
 
     // Edge-soft vignette so the corners don't out-shine the centre.
     float vign = 1.0 - smoothstep(0.45, 1.10, length(v_uv - 0.5) * 1.8);
@@ -351,8 +399,10 @@ void main() {
     // Audio lift bumped (2026-04) so kicks / drops punch harder in the
     // composite — paired with the now-trimmed soft wash so silent
     // sections still let the background dominate.
-    float audio_lift = 0.32 * bass_hit + 0.28 * peak + 0.22 * hold
-                     + 0.14 * env + 0.14 * trace;
+    // ``peak`` removed (was duplicating the uniform audio bundle into
+    // alpha and helped pull the **whole** composite opaque on hits).
+    float audio_lift = 0.32 * bass_hit + 0.14 * pulse + 0.18 * hold
+                     + 0.10 * peak_audio + 0.14 * env + 0.12 * trace;
     float alpha = clamp((content + audio_lift) * i_eff, 0.0, 0.95);
     vec3 premul = acc * alpha;
 

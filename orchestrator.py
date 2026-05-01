@@ -49,11 +49,25 @@ class OrchestratorInputs:
     # canonical default; AnimateDiff stays selectable but is labelled "(broken)".
     background_mode: str = "sdxl-stills"
     static_background_image: str | Path | None = None
+    # When True and background_mode is SDXL stills, apply RMS-driven Ken Burns
+    # zoom/pan/tilt on top of interpolated keyframes (no extra uploads).
+    sdxl_ken_burns: bool = False
+    # Optical-flow morph between consecutive SDXL keyframes (RIFE). SDXL stills only.
+    sdxl_rife_morph: bool = False
+    # RIFE depth: ``2**exp`` uniform steps between each keyframe pair (clamped 2–6).
+    rife_exp: int = 4
     # Cosmetic render settings (never influence the song cache key).
     preset_id: str | None = None
     # When non-empty, replaces the preset YAML ``prompt`` for SDXL / AnimateDiff.
     custom_background_prompt: str | None = None
     reactive_intensity_pct: float = 50.0
+    # Optional user-controllable peak tint for the reactive shader. ``None`` /
+    # ``""`` keeps the historical white peak blow-out (current behaviour);
+    # a ``#RRGGBB`` string + non-zero strength replaces those white peaks
+    # with the chosen colour, useful for compositing over light backgrounds
+    # where pure white doesn't read. See ``CompositorConfig.shader_tint``.
+    shader_tint: str | None = None
+    shader_tint_strength_pct: float = 0.0
     logo_path: str | Path | None = None
     logo_position: str = "center"
     logo_opacity_pct: float = 85.0
@@ -518,6 +532,15 @@ def _render_pipeline(
     # agree on a single readable pair.
     base_color, shadow_color = resolve_text_colors(colors)
     intensity = max(0.0, min(1.0, float(inputs.reactive_intensity_pct) / 100.0))
+    # Normalise the UI 0..100 strength slider to the shader 0..1 mix weight.
+    # An empty / default-white tint with strength = 0 is a no-op on every
+    # shader, so the orchestrator just forwards the raw inputs verbatim
+    # and lets ``ReactiveShader`` validate / parse the hex string.
+    shader_tint_hex_raw = (inputs.shader_tint or "").strip()
+    shader_tint_hex = shader_tint_hex_raw if shader_tint_hex_raw else None
+    shader_tint_strength = max(
+        0.0, min(1.0, float(inputs.shader_tint_strength_pct) / 100.0)
+    )
 
     logo_path_obj: Path | None = None
     if inputs.logo_path is not None and str(inputs.logo_path).strip():
@@ -538,6 +561,8 @@ def _render_pipeline(
         shader_name=shader_name,
         intensity=intensity,
         shader_palette=colors or None,
+        shader_tint=shader_tint_hex,
+        shader_tint_strength=shader_tint_strength,
         typography_motion=typo_motion,
         base_color=base_color,
         shadow_color=shadow_color,
@@ -585,6 +610,9 @@ def _render_pipeline(
         static_image_path=inputs.static_background_image,
         width=cfg.width,
         height=cfg.height,
+        sdxl_ken_burns=bool(inputs.sdxl_ken_burns),
+        sdxl_rife_morph=bool(inputs.sdxl_rife_morph),
+        rife_exp=int(inputs.rife_exp),
     )
     try:
         background.ensure(force=False, progress=bg_cb)

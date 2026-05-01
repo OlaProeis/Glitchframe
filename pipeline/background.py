@@ -13,7 +13,7 @@ import numpy as np
 from config import MODEL_CACHE_DIR
 
 from .background_animatediff import AnimateDiffBackground
-from .background_kenburns import StaticKenBurnsBackground
+from .background_kenburns import DEFAULT_MARGIN, StaticKenBurnsBackground
 from .background_stills import BackgroundStills, DEFAULT_KEYFRAME_INTERVAL
 
 ProgressFn = Callable[[float, str], None]
@@ -94,6 +94,10 @@ def create_background_source(
     height: int = 1080,
     model_cache_dir: Path | None = None,
     keyframe_interval: float = DEFAULT_KEYFRAME_INTERVAL,
+    sdxl_ken_burns: bool = False,
+    ken_burns_margin: float | None = None,
+    sdxl_rife_morph: bool = False,
+    rife_exp: int = 4,
 ) -> BackgroundSource:
     """
     Construct the background implementation for ``mode`` (use
@@ -107,6 +111,8 @@ def create_background_source(
     m = normalize_background_mode(mode)
     mdir = Path(model_cache_dir) if model_cache_dir is not None else MODEL_CACHE_DIR
 
+    kb_margin = float(DEFAULT_MARGIN if ken_burns_margin is None else ken_burns_margin)
+
     if m == MODE_SDXL_STILLS:
         return BackgroundStills(
             cache_dir,
@@ -116,6 +122,10 @@ def create_background_source(
             height=height,
             keyframe_interval=keyframe_interval,
             model_cache_dir=mdir,
+            ken_burns=bool(sdxl_ken_burns),
+            ken_burns_margin=kb_margin,
+            rife_morph=bool(sdxl_rife_morph),
+            rife_exp=int(rife_exp),
         )
     if m == MODE_STATIC_KENBURNS:
         return StaticKenBurnsBackground(
@@ -126,6 +136,24 @@ def create_background_source(
             height=height,
         )
     if m == MODE_ANIMATEDIFF:
+        # AnimateDiff mode runs the user's contract:
+        #   load SDXL -> generate stills -> dump SDXL -> load AnimateDiff ->
+        #   for each segment, seed AnimateDiff from the closest SDXL keyframe.
+        # The lifecycle is orchestrated inside ``AnimateDiffBackground.ensure``
+        # (the stills source is closed there to free SDXL VRAM before the
+        # AnimateDiff pipeline loads). No sample-time blending happens -- the
+        # AnimateDiff frames *are* the output, not an overlay on top of SDXL.
+        init_source = BackgroundStills(
+            cache_dir,
+            preset_id=preset_id,
+            preset_prompt=preset_prompt,
+            width=width,
+            height=height,
+            keyframe_interval=keyframe_interval,
+            model_cache_dir=mdir,
+            ken_burns=False,
+            rife_morph=False,
+        )
         return AnimateDiffBackground(
             cache_dir,
             preset_id=preset_id,
@@ -133,6 +161,7 @@ def create_background_source(
             width=width,
             height=height,
             model_cache_dir=mdir,
+            init_image_source=init_source,
         )
     raise ValueError(f"Unhandled background mode: {m!r}")
 

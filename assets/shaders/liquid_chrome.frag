@@ -145,7 +145,7 @@ void main() {
     col += palette_pick(3) * ripple * ripple_mask * 0.32;
 
     // Hat-driven specular punch on noise tips (where v is bright).
-    col += palette_pick(3) * (0.22 * t_hi) * smoothstep(0.55, 0.95, v);
+    col += palette_pick(3) * (0.13 * t_hi) * smoothstep(0.60, 0.96, v);
 
     // Snare mid-slot highlight — short, layered on top of the ramp.
     col += palette_pick(2) * (0.12 * t_mid);
@@ -156,7 +156,7 @@ void main() {
 
     // Post-drop bloom via palette[4]; weighted by the noise intensity so
     // the bloom sits on the highlights rather than washing the frame.
-    col += palette_pick(4) * (0.32 * hold) * smoothstep(0.25, 0.85, v);
+    col += palette_pick(4) * (0.18 * hold) * smoothstep(0.32, 0.88, v);
 
     // Pre-drop desaturation complements the cold-slot pull above.
     float luma = dot(col, vec3(0.2126, 0.7152, 0.0722));
@@ -170,8 +170,8 @@ void main() {
     // every pixel and hid the background outright.
     // See ``docs/technical/reactive-shader-layer.md``.
     float content = clamp(dot(col, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
-    float audio_lift = 0.18 * hold + 0.14 * bass;
-    float alpha = clamp((max(content, v * 0.85) + audio_lift) * intensity,
+    float audio_lift = 0.11 * hold + 0.10 * bass;
+    float alpha = clamp((max(content, v * 0.68) + audio_lift) * intensity,
                         0.0, 1.0);
     vec3 rgb_pre = col * alpha;
     vec4 ov = vec4(rgb_pre, alpha);

@@ -223,6 +223,46 @@ def _ken_burns_transform(
     return np.asarray(out, dtype=np.uint8).copy()
 
 
+def apply_ken_burns_to_rgb_array(
+    base_rgb: np.ndarray,
+    *,
+    width: int,
+    height: int,
+    margin: float,
+    t: float,
+    duration_sec: float,
+    analysis: Mapping[str, Any],
+) -> np.ndarray:
+    """
+    Apply the same RMS-driven Ken Burns zoom / pan / tilt used for static
+    uploads to a full-frame RGB still (e.g. an interpolated SDXL keyframe).
+    """
+    if base_rgb.ndim != 3 or int(base_rgb.shape[2]) != 3:
+        raise ValueError(f"expected HxWx3 RGB, got {base_rgb.shape}")
+    dur = max(1e-6, float(duration_sec))
+    t_clamped = float(np.clip(t, 0.0, duration_sec))
+    u = _smoothstep(t_clamped / dur)
+    rms_max, _ = _rms_envelope_stats(analysis)
+    rms_block = analysis.get("rms") or {}
+    rms_fps = float(rms_block.get("fps") or analysis.get("fps") or 30.0)
+    raw_rms = _interp_scalar_series(
+        rms_block.get("values"),
+        t_clamped,
+        rms_fps,
+    )
+    rms_n = float(raw_rms) / rms_max if rms_max > 0 else 0.0
+    rms_n = float(np.clip(rms_n, 0.0, 1.0))
+    img = Image.fromarray(base_rgb, mode="RGB")
+    work = _cover_canvas(img, width, height, margin)
+    return _ken_burns_transform(
+        work,
+        width=width,
+        height=height,
+        u=u,
+        rms_n=rms_n,
+    )
+
+
 class StaticKenBurnsBackground:
     """
     RMS-modulated Ken Burns on a user-supplied still.
@@ -438,7 +478,9 @@ class StaticKenBurnsBackground:
 
 
 __all__ = [
+    "DEFAULT_MARGIN",
     "KenBurnsManifest",
     "MANIFEST_FILENAME",
     "StaticKenBurnsBackground",
+    "apply_ken_burns_to_rgb_array",
 ]

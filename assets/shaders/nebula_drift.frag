@@ -82,7 +82,7 @@ void main() {
     // Low-end: prefer shaped kick envelope over raw mel bins (less shimmer).
     float bass = bass_hit * 0.65
                + (band_energies[0] + band_energies[1]) * 0.12;
-    cloud += 0.16 * bass;
+    cloud += 0.08 * bass;
 
     // Sparse stars: threshold on a high-frequency hash, modulated by a
     // per-star twinkle.
@@ -118,7 +118,7 @@ void main() {
     // the SDXL/AnimateDiff background read through. (Previously
     // ``0.50 + 0.55 * cloud`` painted the whole frame at >=50 % opacity.)
     // See ``docs/technical/reactive-shader-layer.md``.
-    float alpha = clamp(cloud * vignette * intensity, 0.0, 1.0);
+    float alpha = clamp(pow(cloud, 1.10) * vignette * intensity, 0.0, 1.0);
     vec3 col = neb * alpha;
     vec4 ov = vec4(col, alpha);
     if (u_comp_background > 0.5) {

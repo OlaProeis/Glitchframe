@@ -98,8 +98,8 @@ void main() {
     float dot_r = 0.18 + 0.22 * hash21(cell + 11.3);
     float d = length((cell_uv - dot_c) * vec2(1.0, grid.x / grid.y));
     float bokeh = smoothstep(dot_r, dot_r * 0.35, d) * step(0.58, seed);
-    base += palette_pick(0) * bokeh * 0.18;
-    base += palette_pick(3) * bokeh * 0.08;
+    base += palette_pick(0) * bokeh * 0.12;
+    base += palette_pick(3) * bokeh * 0.05;
     // Tiny snare lift on the mid-slot through the bokeh.
     base += palette_pick(2) * bokeh * (0.05 * t_mid);
 
@@ -117,7 +117,7 @@ void main() {
 
     // Accent: prefer shaped kicks over every onset, plus a small post-drop
     // warm wash tinted toward palette[4].
-    base += palette_pick(4) * (0.04 * onset_pulse + 0.05 * bass_hit + 0.08 * hold);
+    base += palette_pick(4) * (0.03 * onset_pulse + 0.04 * bass_hit + 0.05 * hold);
 
     // Pre-drop: desaturate slightly so the paper reads "faded".
     float luma = dot(base, vec3(0.2126, 0.7152, 0.0722));
@@ -128,7 +128,7 @@ void main() {
     float r = length(centered);
     float vig_outer = mix(0.95, 0.82, tension);
     float vig = smoothstep(vig_outer, 0.28, r);
-    base *= 0.55 + 0.55 * vig;
+    base *= 0.68 + 0.32 * vig;
 
     // Content-driven alpha: derive opacity from the rendered ``base``
     // luminance so paper-thin regions let the SDXL/AnimateDiff background
@@ -138,7 +138,7 @@ void main() {
     // the wash still pumps without permanently hiding the background.
     // See ``docs/technical/reactive-shader-layer.md`` for the contract.
     float content = clamp(dot(base, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
-    float audio_lift = 0.18 * rms_g + 0.12 * bass_hit + 0.10 * hold;
+    float audio_lift = 0.12 * rms_g + 0.08 * bass_hit + 0.06 * hold;
     float alpha = clamp((content + audio_lift) * intensity, 0.0, 1.0);
     vec3 rgb_pre = base * alpha;
     vec4 ov = vec4(rgb_pre, alpha);

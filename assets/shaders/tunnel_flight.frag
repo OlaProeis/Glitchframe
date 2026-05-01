@@ -143,10 +143,10 @@ void main() {
     float struct_mask = max(line, node * 1.3);
     float core = struct_mask;
     float line_luma = dot(line_col, vec3(0.299, 0.587, 0.114));
-    float halo = (line_glow * 0.48 + node_halo * 0.75) * (0.55 + 0.45 * line_luma);
+    float halo = (line_glow * 0.32 + node_halo * 0.52) * (0.55 + 0.45 * line_luma);
 
     float bright = core * 1.20
-                 + halo * 1.05
+                 + halo * 0.78
                  + 0.32 * (1.0 - beat_phase) * line
                  + 0.26 * onset_pulse * (line + node);
 
@@ -177,7 +177,7 @@ void main() {
 
     // Occasional "thruster" flash from the deep tunnel on bass
     float tunnel_flash = (1.0 - smoothstep(0.0, 0.12, r))
-                       * (0.45 * bass_hit + 0.25 * t_lo) * (1.0 - tension);
+                       * (0.28 * bass_hit + 0.16 * t_lo) * (1.0 - tension);
     vec3 emissive = line_col * bright * (0.85 + 0.40 * e_hi) + hot * tunnel_flash
                   + accent * (0.20 * node * (1.0 + 2.0 * hold) + 0.16 * t_mid);
 
@@ -187,7 +187,7 @@ void main() {
     // bright structural pixels toward an almost-white rim that reads on any
     // background.
     float core_peak = pow(clamp(bright * 0.65, 0.0, 1.0), 3.0);
-    emissive = mix(emissive, vec3(1.55), core_peak * 0.60);
+    emissive = mix(emissive, vec3(1.55), core_peak * 0.40);
 
     // The structural mask (lines + nodes) gets its own dedicated alpha
     // channel so the lattice geometry punches through any background,
@@ -202,7 +202,7 @@ void main() {
 
     float alpha = clamp(
         max(struct_alpha,
-            length(emissive) * 0.26 + alpha_geo * 1.05 + tunnel_flash * 0.6
+            length(emissive) * 0.26 + alpha_geo * 1.05 + tunnel_flash * 0.42
         ) * intensity,
         0.0,
         1.0

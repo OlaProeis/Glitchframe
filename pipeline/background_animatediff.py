@@ -17,16 +17,24 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 import numpy as np
 from PIL import Image
+
+if TYPE_CHECKING:
+    # Imported lazily to avoid the circular dependency
+    # ``pipeline.background`` -> ``pipeline.background_animatediff`` ->
+    # ``pipeline.background``. Only used for type hints below.
+    from pipeline.background import BackgroundSource
 
 from config import MODEL_CACHE_DIR
 from pipeline.audio_analyzer import ANALYSIS_JSON_NAME
 from pipeline.background_stills import (
     BACKGROUND_DIRNAME,
     DEFAULT_NEGATIVE_PROMPT,
+    KEYFRAME_FILENAME_FMT as STILLS_KEYFRAME_FILENAME_FMT,
+    MANIFEST_FILENAME as STILLS_MANIFEST_FILENAME,
     _atomic_write_png,
     _duration_from_analysis,
     _load_analysis,
@@ -49,6 +57,11 @@ MANIFEST_SCHEMA_VERSION = 2
 
 DEFAULT_MODEL_ID = "stabilityai/stable-diffusion-xl-base-1.0"
 DEFAULT_MOTION_ADAPTER_ID = "guoyww/animatediff-motion-adapter-sdxl-beta"
+# SDXL's stock VAE is numerically unstable in fp16: the (16-frame x latent)
+# tensor produced by AnimateDiff overflows fp16 range during decode and
+# silently returns NaN -> all-black PNGs. madebyollin's drop-in is the
+# community-standard fix (Apache-2.0, ~330 MB) and is fully fp16-safe.
+DEFAULT_FP16_VAE_ID = "madebyollin/sdxl-vae-fp16-fix"
 DEFAULT_GEN_WIDTH = 1024
 DEFAULT_GEN_HEIGHT = 1024
 DEFAULT_NUM_FRAMES = 16
@@ -59,6 +72,12 @@ DEFAULT_GUIDANCE_SCALE = 7.5
 DEFAULT_NUM_INFERENCE_STEPS = 35
 SEGMENT_CROSSFADE_HALF = 0.35
 COMPOSITION_FPS = 30.0
+# When conditioning AnimateDiff on an SDXL keyframe we follow Stable Diffusion
+# img2img semantics (matches ``StableDiffusionXLPipeline.get_timesteps``):
+# ``strength`` maps to how deep into the noise schedule we start — higher =
+# more denoising steps / freer motion, lower = closer to the still. Clamped to
+# (0.06, 1] because strength≈0 yields an empty timestep slice.
+DEFAULT_INIT_IMAGE_STRENGTH = 0.38
 
 # Motion-specific additions to the negative prompt. The stills default
 # already covers "low quality / text / watermark / deformed"; here we add
@@ -264,6 +283,109 @@ def _atomic_write_json(data: Mapping[str, Any], dst: Path) -> None:
     tmp.replace(dst)
 
 
+# ---------------------------------------------------------------------------
+# SDXL-stills bridge: read keyframe times + PNGs from disk so AnimateDiff can
+# use them as init latents without holding a reference to the (now closed)
+# BackgroundStills source.
+# ---------------------------------------------------------------------------
+
+
+def _stills_manifest_path(cache_dir: Path) -> Path:
+    """Path to the SDXL-stills manifest under ``cache_dir/background/``."""
+    return cache_dir / BACKGROUND_DIRNAME / STILLS_MANIFEST_FILENAME
+
+
+def _stills_keyframe_path(cache_dir: Path, index: int) -> Path:
+    return cache_dir / BACKGROUND_DIRNAME / STILLS_KEYFRAME_FILENAME_FMT.format(
+        index=index
+    )
+
+
+def _read_stills_keyframe_times(cache_dir: Path) -> tuple[float, ...]:
+    """Read ``keyframe_times`` from the SDXL-stills manifest if it exists.
+
+    Returns an empty tuple when the manifest is missing or malformed -- the
+    caller treats that as "no init images available" and AnimateDiff runs
+    in pure text-to-video mode.
+    """
+    p = _stills_manifest_path(cache_dir)
+    if not p.is_file():
+        return ()
+    try:
+        with p.open("r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        LOGGER.warning("Could not read SDXL stills manifest at %s: %s", p, exc)
+        return ()
+    times = raw.get("keyframe_times")
+    if not isinstance(times, list) or not times:
+        return ()
+    try:
+        return tuple(float(t) for t in times)
+    except (TypeError, ValueError):
+        return ()
+
+
+def _pick_stills_keyframe_index(
+    times: Sequence[float], target_t: float
+) -> int | None:
+    """Return the index of the keyframe whose time is closest to ``target_t``.
+
+    Returns ``None`` when ``times`` is empty.
+    """
+    if not times:
+        return None
+    return int(min(range(len(times)), key=lambda i: abs(times[i] - target_t)))
+
+
+def _load_stills_keyframe_pil(
+    cache_dir: Path,
+    index: int,
+    *,
+    target_size: tuple[int, int],
+) -> "Image.Image | None":
+    """Load the SDXL keyframe PNG at ``index`` and resize to ``target_size``.
+
+    The returned PIL image is in RGB and matches the AnimateDiff generation
+    resolution so its VAE encoding produces the expected latent shape. The
+    function never raises on a missing file (returns ``None``) so the caller
+    can fall back to text-to-video gracefully.
+    """
+    path = _stills_keyframe_path(cache_dir, index)
+    if not path.is_file():
+        return None
+    try:
+        from PIL import Image as _PILImage  # type: ignore
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        img = _PILImage.open(path).convert("RGB")
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("Failed to load SDXL keyframe %s: %s", path, exc)
+        return None
+    if img.size != target_size:
+        img = img.resize(target_size, _PILImage.LANCZOS)
+    return img
+
+
+def _prompt_2_for_index(prompts: Sequence[str], index: int) -> str:
+    """Return the prompt to feed SDXL's *second* text encoder for segment ``index``.
+
+    For all segments except the last, this is the *next* segment's prompt --
+    SDXL's dual-encoder design lets the joint conditioning blend the two,
+    which gently pulls each AnimateDiff loop toward what comes next and
+    softens cross-segment transitions. The last segment has no "next", so
+    its ``prompt_2`` mirrors its own prompt (no morph beyond the song end).
+    """
+    if not prompts:
+        raise ValueError("prompts must be non-empty")
+    if index < 0 or index >= len(prompts):
+        raise IndexError(f"prompt index {index} out of range 0..{len(prompts) - 1}")
+    if index + 1 < len(prompts):
+        return prompts[index + 1]
+    return prompts[index]
+
+
 def _prompt_hash_segments(prompts: Sequence[str], **extras: str) -> str:
     h = hashlib.sha256()
     h.update(b"animatediff-v1")
@@ -290,6 +412,42 @@ def _require_cuda() -> str:
             "index, then restore Gradio pins — see comments in requirements.txt."
         )
     return "cuda:0"
+
+
+def _load_fp16_safe_vae(
+    vae_id: str,
+    *,
+    cache_dir: Path,
+    torch_module: Any,
+) -> Any:
+    """Load the community fp16-safe SDXL VAE; raises with a clear message on failure.
+
+    The default SDXL VAE produces NaN latents in fp16 once the (16-frame x
+    latent) tensor passes through decode, which surfaces as all-black output
+    PNGs -- the exact failure mode the AnimateDiff mode was tagged broken for.
+    Replacing ``pipe.vae`` with ``madebyollin/sdxl-vae-fp16-fix`` resolves it
+    without touching dtype anywhere else.
+    """
+    try:
+        from diffusers import AutoencoderKL  # type: ignore
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "diffusers must be installed to load the fp16-safe SDXL VAE"
+        ) from exc
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        return AutoencoderKL.from_pretrained(
+            vae_id,
+            torch_dtype=torch_module.float16,
+            cache_dir=str(cache_dir),
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            f"Failed to load fp16-safe SDXL VAE {vae_id!r}: {exc}. "
+            "If you're offline, pre-cache it once with internet access; "
+            "the AnimateDiff mode requires it to avoid black-frame output."
+        ) from exc
 
 
 def _import_animatediff_sdxl() -> tuple[Any, Any, Any]:
@@ -336,6 +494,7 @@ def _load_pipe(
     *,
     cache_dir: Path,
     device: str,
+    vae_id: str = DEFAULT_FP16_VAE_ID,
 ) -> Any:
     torch, MotionAdapter, pair = _import_animatediff_sdxl()
     AnimateDiffSDXLPipeline, DDIMScheduler = pair
@@ -403,6 +562,15 @@ def _load_pipe(
                 f"Failed to load AnimateDiffSDXLPipeline for {model_id!r}: {exc2}"
             ) from exc2
 
+    # Swap in the fp16-safe SDXL VAE before moving to GPU so the device /
+    # dtype unification below applies to it uniformly. The stock SDXL VAE
+    # silently NaNs in fp16 during AnimateDiff decode (all-black output);
+    # see ``_load_fp16_safe_vae`` docstring for details.
+    safe_vae = _load_fp16_safe_vae(
+        vae_id, cache_dir=cache_dir, torch_module=torch
+    )
+    pipe.vae = safe_vae
+
     try:
         pipe = pipe.to(device)
     except Exception as exc:  # noqa: BLE001
@@ -414,11 +582,15 @@ def _load_pipe(
     #
     # When the fp16 variant isn't published on the hub and we fall back to
     # loading fp32 weights with ``torch_dtype=torch.float16``, diffusers
-    # occasionally leaves a submodule in fp32 — most commonly the VAE (which
-    # is numerically unstable in fp16 and is sometimes kept in fp32 by
-    # default) or the MotionAdapter cross-attention when ``low_cpu_mem_usage``
-    # is on. At inference time the UNet expects Half but receives Float and
-    # raises "expected scalar type Half but found Float".
+    # occasionally leaves a submodule in fp32 (most commonly MotionAdapter
+    # cross-attention when ``low_cpu_mem_usage`` is on). At inference time
+    # the UNet expects Half but receives Float and raises "expected scalar
+    # type Half but found Float".
+    #
+    # The VAE was historically the worst offender here, but we now load
+    # ``madebyollin/sdxl-vae-fp16-fix`` explicitly above so its dtype is
+    # already fp16 -- this pass is purely defensive for the rest of the
+    # pipeline.
     #
     # ``pipe.to(dtype=...)`` traverses all registered submodules; the per-
     # module fallback covers older diffusers releases whose ``.to()`` signature
@@ -463,6 +635,285 @@ def _load_pipe(
     return pipe
 
 
+def _vae_encode_tiled_keyframe_latents(
+    pipe: Any,
+    init_image: "Image.Image",
+    *,
+    num_frames: int,
+    gen_width: int,
+    gen_height: int,
+    torch_module: Any,
+) -> Any:
+    """Deterministic VAE encode of ``init_image`` → scaled latent tiled over ``num_frames``.
+
+    Shape ``(1, 4, num_frames, H/8, W/8)``. Uses ``latent_dist.mode()`` like SDXL
+    img2img (stable encode vs ``sample()`` RNG jitter).
+    """
+    target_size = (int(gen_width), int(gen_height))
+    if init_image.size != target_size:
+        init_image = init_image.resize(target_size, Image.LANCZOS)
+
+    arr = np.asarray(init_image, dtype=np.float32) / 255.0
+    arr = (arr - 0.5) * 2.0
+    tensor = torch_module.from_numpy(arr).permute(2, 0, 1).unsqueeze(0)
+
+    device = getattr(pipe, "_execution_device", None) or getattr(
+        pipe, "device", "cuda"
+    )
+    vae = pipe.vae
+    vae_dtype = next(vae.parameters()).dtype
+    tensor = tensor.to(device=device, dtype=vae_dtype)
+
+    with torch_module.no_grad():
+        dist = vae.encode(tensor).latent_dist
+        enc_mode = getattr(dist, "mode", None)
+        encoded = enc_mode() if callable(enc_mode) else dist.sample()
+        scaling = float(getattr(vae.config, "scaling_factor", 0.13025))
+        encoded = encoded * scaling
+
+    latents = encoded.unsqueeze(2).repeat(1, 1, int(num_frames), 1, 1)
+    return latents.to(dtype=torch_module.float16)
+
+
+def _animatediff_img2img_generate(
+    pipe: Any,
+    *,
+    prompt: str,
+    prompt_2: str | None,
+    negative_prompt: str,
+    negative_prompt_2: str | None,
+    gen_width: int,
+    gen_height: int,
+    num_frames: int,
+    num_inference_steps: int,
+    guidance_scale: float,
+    generator: Any,
+    init_image: "Image.Image",
+    init_strength: float,
+    torch_module: Any,
+) -> list["Image.Image"]:
+    """Run AnimateDiff SDXL with true img2img init (SDXL-still → temporally denoise).
+
+    Passing ``latents=`` into ``AnimateDiffSDXLPipeline.__call__`` is **not**
+    img2img: ``prepare_latents`` assumes Gaussian noise (× ``init_noise_sigma``,
+    which is ``1.0`` for DDIM) and denoises from timestep *zero* of the full
+    schedule. Feeding clean VAE latents there makes the UNet see wrong statistics,
+    which produces abstract garbage unrelated to the SDXL still.
+
+    This path mirrors ``StableDiffusionXLImg2ImgPipeline``: slice the timestep
+    tensor by ``strength``, ``scheduler.add_noise`` the encoded still at the
+    first kept timestep, divide by ``init_noise_sigma`` so ``prepare_latents``
+    restores ``add_noise`` output, then run the denoise loop on the sliced
+    schedule (copied from ``AnimateDiffSDXLPipeline.__call__``, minus IP-Adapter /
+    FreeInit / callbacks).
+    """
+    from diffusers.pipelines.animatediff.pipeline_animatediff_sdxl import (
+        rescale_noise_cfg,
+    )
+    from diffusers.utils.torch_utils import randn_tensor
+
+    torch = torch_module
+    device = pipe._execution_device
+    height = int(gen_height)
+    width = int(gen_width)
+    num_inference_steps = int(num_inference_steps)
+    eta = 0.0
+    guidance_rescale = 0.0
+    output_type = "pil"
+
+    pipe.check_inputs(
+        prompt,
+        prompt_2,
+        height,
+        width,
+        negative_prompt,
+        negative_prompt_2,
+        prompt_embeds=None,
+        negative_prompt_embeds=None,
+        pooled_prompt_embeds=None,
+        negative_pooled_prompt_embeds=None,
+        callback_on_step_end_tensor_inputs=None,
+    )
+
+    pipe._guidance_scale = float(guidance_scale)
+    pipe._guidance_rescale = guidance_rescale
+    pipe._clip_skip = None
+    pipe._cross_attention_kwargs = None
+    pipe._denoising_end = None
+    pipe._interrupt = False
+
+    batch_size = 1
+    num_videos_per_prompt = 1
+
+    (
+        prompt_embeds,
+        negative_prompt_embeds,
+        pooled_prompt_embeds,
+        negative_pooled_prompt_embeds,
+    ) = pipe.encode_prompt(
+        prompt=prompt,
+        prompt_2=prompt_2,
+        device=device,
+        num_videos_per_prompt=num_videos_per_prompt,
+        do_classifier_free_guidance=pipe.do_classifier_free_guidance,
+        negative_prompt=negative_prompt,
+        negative_prompt_2=negative_prompt_2,
+        prompt_embeds=None,
+        negative_prompt_embeds=None,
+        pooled_prompt_embeds=None,
+        negative_pooled_prompt_embeds=None,
+        lora_scale=None,
+        clip_skip=None,
+    )
+
+    scheduler = pipe.scheduler
+    scheduler.set_timesteps(num_inference_steps, device=device)
+    full_schedule = scheduler.timesteps.clone()
+    order = int(getattr(scheduler, "order", 1))
+
+    strength = float(init_strength)
+    strength = float(np.clip(strength, 0.05, 1.0))
+    init_timestep = min(
+        int(num_inference_steps * strength),
+        num_inference_steps,
+    )
+    init_timestep = max(init_timestep, 1)
+    t_start = max(num_inference_steps - init_timestep, 0)
+    timesteps = full_schedule[t_start * order :].clone()
+    scheduler.timesteps = timesteps
+    scheduler.num_inference_steps = len(timesteps)
+
+    z_clean = _vae_encode_tiled_keyframe_latents(
+        pipe,
+        init_image,
+        num_frames=num_frames,
+        gen_width=gen_width,
+        gen_height=gen_height,
+        torch_module=torch,
+    )
+    noise = randn_tensor(
+        z_clean.shape,
+        generator=generator,
+        device=device,
+        dtype=z_clean.dtype,
+    )
+    first_ts = timesteps[0:1].long().to(device=device)
+    z_noisy = scheduler.add_noise(z_clean, noise, first_ts)
+    sigma = float(getattr(scheduler, "init_noise_sigma", 1.0))
+    latents = z_noisy / sigma
+
+    extra_step_kwargs = pipe.prepare_extra_step_kwargs(generator, eta)
+
+    original_size = (height, width)
+    target_size = (height, width)
+    crops_coords_top_left = (0, 0)
+    add_text_embeds = pooled_prompt_embeds
+    if pipe.text_encoder_2 is None:
+        text_encoder_projection_dim = int(pooled_prompt_embeds.shape[-1])
+    else:
+        text_encoder_projection_dim = int(pipe.text_encoder_2.config.projection_dim)
+
+    add_time_ids = pipe._get_add_time_ids(
+        original_size,
+        crops_coords_top_left,
+        target_size,
+        dtype=prompt_embeds.dtype,
+        text_encoder_projection_dim=text_encoder_projection_dim,
+    )
+    negative_add_time_ids = add_time_ids
+
+    if pipe.do_classifier_free_guidance:
+        prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
+        add_text_embeds = torch.cat(
+            [negative_pooled_prompt_embeds, add_text_embeds], dim=0
+        )
+        add_time_ids = torch.cat([negative_add_time_ids, add_time_ids], dim=0)
+
+    prompt_embeds = prompt_embeds.repeat_interleave(repeats=num_frames, dim=0)
+    prompt_embeds = prompt_embeds.to(device)
+    add_text_embeds = add_text_embeds.to(device)
+    add_time_ids = add_time_ids.to(device).repeat(batch_size * num_videos_per_prompt, 1)
+
+    timestep_cond = None
+    if pipe.unet.config.time_cond_proj_dim is not None:
+        guidance_scale_tensor = torch.tensor(pipe.guidance_scale - 1).repeat(
+            batch_size * num_videos_per_prompt
+        )
+        timestep_cond = pipe.get_guidance_scale_embedding(
+            guidance_scale_tensor,
+            embedding_dim=pipe.unet.config.time_cond_proj_dim,
+        ).to(device=device, dtype=latents.dtype)
+
+    ip_adapter_image = None
+    ip_adapter_image_embeds = None
+
+    with pipe.progress_bar(total=len(timesteps)) as progress_bar:
+        for _i, t in enumerate(timesteps):
+            if pipe.interrupt:
+                continue
+            latent_model_input = (
+                torch.cat([latents] * 2) if pipe.do_classifier_free_guidance else latents
+            )
+            latent_model_input = scheduler.scale_model_input(latent_model_input, t)
+            added_cond_kwargs = {"text_embeds": add_text_embeds, "time_ids": add_time_ids}
+            if ip_adapter_image is not None or ip_adapter_image_embeds is not None:
+                raise RuntimeError("IP-Adapter path not implemented for img2img wrapper")
+
+            noise_pred = pipe.unet(
+                latent_model_input,
+                t,
+                encoder_hidden_states=prompt_embeds,
+                timestep_cond=timestep_cond,
+                cross_attention_kwargs=pipe.cross_attention_kwargs,
+                added_cond_kwargs=added_cond_kwargs,
+                return_dict=False,
+            )[0]
+
+            if pipe.do_classifier_free_guidance:
+                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                noise_pred = noise_pred_uncond + pipe.guidance_scale * (
+                    noise_pred_text - noise_pred_uncond
+                )
+
+            if pipe.do_classifier_free_guidance and pipe.guidance_rescale > 0.0:
+                noise_pred = rescale_noise_cfg(
+                    noise_pred,
+                    noise_pred_text,
+                    guidance_rescale=pipe.guidance_rescale,
+                )
+
+            latents = scheduler.step(
+                noise_pred, t, latents, **extra_step_kwargs, return_dict=False
+            )[0]
+            progress_bar.update()
+
+    needs_upcasting = pipe.vae.dtype == torch.float16 and getattr(
+        pipe.vae.config, "force_upcast", False
+    )
+    if needs_upcasting:
+        pipe.upcast_vae()
+        latents = latents.to(next(iter(pipe.vae.post_quant_conv.parameters())).dtype)
+
+    video_tensor = pipe.decode_latents(latents)
+    video = pipe.video_processor.postprocess_video(
+        video=video_tensor, output_type=output_type
+    )
+    if needs_upcasting:
+        pipe.vae.to(dtype=torch.float16)
+
+    pipe.maybe_free_model_hooks()
+
+    if not isinstance(video, list) or not video:
+        raise RuntimeError("AnimateDiff img2img returned no video batch")
+    first = video[0]
+    if not isinstance(first, list) or len(first) != int(num_frames):
+        raise RuntimeError(
+            f"Expected {num_frames} frames from img2img path, got "
+            f"{len(first) if isinstance(first, list) else type(first)}"
+        )
+    return list(first)
+
+
 def _generate_segment_frames(
     pipe: Any,
     *,
@@ -474,6 +925,10 @@ def _generate_segment_frames(
     num_inference_steps: int,
     guidance_scale: float,
     seed: int | None,
+    prompt_2: str | None = None,
+    negative_prompt_2: str | None = None,
+    init_image: "Image.Image | None" = None,
+    init_image_strength: float = DEFAULT_INIT_IMAGE_STRENGTH,
 ) -> list[Image.Image]:
     try:
         import torch  # type: ignore
@@ -500,18 +955,54 @@ def _generate_segment_frames(
 
         autocast_ctx = nullcontext()
 
+    # SDXL still → proper img2img noise injection + sliced schedule (see
+    # ``_animatediff_img2img_generate``). Passing raw encoded latents into
+    # ``pipe(latents=…)`` does **not** preserve the still (DDIM
+    # ``init_noise_sigma`` is 1.0 — the UNet denoises from the wrong state).
+    if init_image is not None:
+        try:
+            with torch.inference_mode(), autocast_ctx:
+                return _animatediff_img2img_generate(
+                    pipe,
+                    prompt=prompt,
+                    prompt_2=prompt_2,
+                    negative_prompt=negative_prompt,
+                    negative_prompt_2=negative_prompt_2,
+                    gen_width=int(gen_width),
+                    gen_height=int(gen_height),
+                    num_frames=int(num_frames),
+                    num_inference_steps=int(num_inference_steps),
+                    guidance_scale=float(guidance_scale),
+                    generator=generator,
+                    init_image=init_image,
+                    init_strength=float(init_image_strength),
+                    torch_module=torch,
+                )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "AnimateDiff img2img from SDXL still failed (%s); "
+                "falling back to text-to-video for this segment.",
+                exc,
+            )
+
+    pipe_kwargs: dict[str, Any] = {
+        "prompt": prompt,
+        "negative_prompt": negative_prompt,
+        "width": int(gen_width),
+        "height": int(gen_height),
+        "num_frames": int(num_frames),
+        "num_inference_steps": int(num_inference_steps),
+        "guidance_scale": float(guidance_scale),
+        "generator": generator,
+    }
+    if prompt_2 is not None and prompt_2 != prompt:
+        pipe_kwargs["prompt_2"] = prompt_2
+    if negative_prompt_2 is not None and negative_prompt_2 != negative_prompt:
+        pipe_kwargs["negative_prompt_2"] = negative_prompt_2
+
     try:
         with torch.inference_mode(), autocast_ctx:
-            out = pipe(
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                width=int(gen_width),
-                height=int(gen_height),
-                num_frames=int(num_frames),
-                num_inference_steps=int(num_inference_steps),
-                guidance_scale=float(guidance_scale),
-                generator=generator,
-            )
+            out = pipe(**pipe_kwargs)
     except torch.cuda.OutOfMemoryError as exc:  # type: ignore[attr-defined]
         raise RuntimeError(
             "CUDA out of memory during AnimateDiff generation; "
@@ -568,6 +1059,7 @@ class AnimateDiffBackground:
         num_frames: int = DEFAULT_NUM_FRAMES,
         model_id: str = DEFAULT_MODEL_ID,
         motion_adapter_id: str = DEFAULT_MOTION_ADAPTER_ID,
+        vae_id: str = DEFAULT_FP16_VAE_ID,
         num_inference_steps: int = DEFAULT_NUM_INFERENCE_STEPS,
         guidance_scale: float = DEFAULT_GUIDANCE_SCALE,
         negative_prompt: str = ANIMATEDIFF_NEGATIVE_PROMPT,
@@ -575,6 +1067,8 @@ class AnimateDiffBackground:
         model_cache_dir: Path | None = None,
         composition_fps: float = COMPOSITION_FPS,
         crossfade_half: float = SEGMENT_CROSSFADE_HALF,
+        init_image_source: "BackgroundSource | None" = None,
+        init_image_strength: float = DEFAULT_INIT_IMAGE_STRENGTH,
     ) -> None:
         cache = Path(cache_dir)
         if not cache.is_dir():
@@ -589,6 +1083,11 @@ class AnimateDiffBackground:
             raise ValueError(f"num_frames must be >= 2, got {num_frames}")
         if not preset_id.strip():
             raise ValueError("preset_id must be a non-empty string")
+        if not 0.05 <= float(init_image_strength) <= 1.0:
+            raise ValueError(
+                "init_image_strength must be in [0.05, 1] "
+                f"(img2img noise fraction), got {init_image_strength}"
+            )
 
         self._cache_dir = cache
         self._preset_id = preset_id.strip()
@@ -600,6 +1099,7 @@ class AnimateDiffBackground:
         self._num_frames = int(num_frames)
         self._model_id = str(model_id)
         self._motion_adapter_id = str(motion_adapter_id)
+        self._vae_id = str(vae_id)
         self._num_inference_steps = int(num_inference_steps)
         self._guidance_scale = float(guidance_scale)
         self._negative_prompt = str(negative_prompt)
@@ -609,6 +1109,18 @@ class AnimateDiffBackground:
         )
         self._composition_fps = float(composition_fps)
         self._crossfade_half = float(crossfade_half)
+        # SDXL stills source whose keyframe PNGs feed AnimateDiff as init
+        # latents (not blended on top). Generation order in ``ensure()``:
+        # run stills -> close stills (free SDXL VRAM) -> load AnimateDiff ->
+        # for each segment, VAE-encode the closest SDXL keyframe and use its
+        # latent as the AnimateDiff init noise. The actual SDXL keyframe is
+        # never composited on top of the AnimateDiff output -- AnimateDiff
+        # IS the SDXL frame, just animated.
+        self._init_image_source: "BackgroundSource | None" = init_image_source
+        self._init_image_strength = float(init_image_strength)
+        # Cached SDXL keyframe times once the init source is ensured; lets us
+        # pick the right keyframe per segment without re-reading disk.
+        self._init_keyframe_times: tuple[float, ...] = ()
 
         self._segments: list[dict[str, Any]] = []
         self._segment_frames: list[list[np.ndarray]] = []
@@ -635,10 +1147,34 @@ class AnimateDiffBackground:
     ) -> AnimateDiffManifest:
         duration = _duration_from_analysis(analysis)
         segments = _segments_from_analysis(analysis, duration)
+        # Hash each segment's effective conditioning pair so that enabling /
+        # disabling cross-segment prompt morph invalidates the cache. The
+        # ``|||`` separator is unlikely to appear inside a prompt but is
+        # only ever read by the hasher, never by the pipeline.
+        hashed_prompts = [
+            f"{p}|||{_prompt_2_for_index(prompts, i)}"
+            for i, p in enumerate(prompts)
+        ]
+        # The presence of SDXL init images materially changes every segment's
+        # output (each loop is now seeded from a real image instead of pure
+        # noise), so it must participate in the cache key. We hash the tuple
+        # of keyframe times that will actually be consumed -- swapping a
+        # keyframe interval or disabling stills both invalidate cleanly.
+        # SDXL-stills img2img: changing strength invalidates AnimateDiff PNGs.
+        init_key = (
+            "img2img-v1|"
+            f"s={self._init_image_strength:.4f}|"
+            "t="
+            + ",".join(f"{t:.3f}" for t in self._init_keyframe_times)
+            if self._init_keyframe_times
+            else "init=none"
+        )
         ph = _prompt_hash_segments(
-            prompts,
+            hashed_prompts,
             model_id=self._model_id,
             motion_adapter_id=self._motion_adapter_id,
+            vae_id=self._vae_id,
+            init_key=init_key,
         )
         return AnimateDiffManifest(
             schema_version=MANIFEST_SCHEMA_VERSION,
@@ -677,6 +1213,29 @@ class AnimateDiffBackground:
             )
         return out
 
+    def _init_image_for_segment(self, seg_idx: int) -> "Image.Image | None":
+        """Pick the SDXL keyframe whose time is closest to the segment start.
+
+        Returns ``None`` when no SDXL stills cache is available -- AnimateDiff
+        then falls back to plain text-to-video for that segment. The PIL
+        image is resized to ``(gen_width, gen_height)`` so its VAE encoding
+        matches the AnimateDiff latent shape.
+        """
+        if not self._init_keyframe_times or not self._segments:
+            return None
+        if seg_idx < 0 or seg_idx >= len(self._segments):
+            return None
+        segment = self._segments[seg_idx]
+        target_t = float(segment.get("t_start", 0.0))
+        idx = _pick_stills_keyframe_index(self._init_keyframe_times, target_t)
+        if idx is None:
+            return None
+        return _load_stills_keyframe_pil(
+            self._cache_dir,
+            idx,
+            target_size=(self._gen_width, self._gen_height),
+        )
+
     def _try_load_disk(self, manifest: AnimateDiffManifest) -> bool:
         buf: list[list[np.ndarray]] = []
         for s in range(manifest.section_count):
@@ -703,9 +1262,41 @@ class AnimateDiffBackground:
         if self._closed:
             raise RuntimeError("AnimateDiffBackground has been closed")
 
-        def _report(p: float, msg: str) -> None:
+        # When an SDXL init-image source is wired, we generate it first so
+        # its keyframe PNGs are on disk by the time AnimateDiff segment
+        # generation needs them. We then close the SDXL pipeline so its
+        # ~5 GB VRAM is released before the AnimateDiff pipeline loads --
+        # avoids OOM on smaller GPUs and is the explicit user contract:
+        # "load SDXL, make stills, dump SDXL, load AnimateDiff."
+        init_share = 0.4 if self._init_image_source is not None else 0.0
+        anim_lo = init_share
+        anim_span = 1.0 - init_share
+
+        def _report_anim(p: float, msg: str) -> None:
             if progress is not None:
-                progress(max(0.0, min(1.0, p)), msg)
+                clamped = max(0.0, min(1.0, p))
+                progress(anim_lo + clamped * anim_span, msg)
+
+        if self._init_image_source is not None:
+            def _report_init(p: float, msg: str) -> None:
+                if progress is not None:
+                    clamped = max(0.0, min(1.0, p))
+                    progress(clamped * init_share, f"[stills] {msg}")
+
+            self._init_image_source.ensure(force=force, progress=_report_init)
+            # Snapshot keyframe times so we can pick the right one per
+            # segment, then close the source to free SDXL VRAM. The PNGs
+            # remain on disk under cache_dir/background/keyframe_*.png.
+            self._init_keyframe_times = _read_stills_keyframe_times(
+                self._cache_dir
+            )
+            try:
+                self._init_image_source.close()
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.debug("Init-image source close failed: %s", exc)
+            self._init_image_source = None
+
+        _report = _report_anim
 
         _report(0.0, "Loading analysis…")
         analysis = _load_analysis(self._cache_dir / ANALYSIS_JSON_NAME)
@@ -754,6 +1345,7 @@ class AnimateDiffBackground:
                 self._motion_adapter_id,
                 cache_dir=self._model_cache_dir,
                 device=device,
+                vae_id=self._vae_id,
             )
 
         self._segment_frames = []
@@ -763,9 +1355,12 @@ class AnimateDiffBackground:
                 0.1 + 0.85 * (s / total),
                 f"AnimateDiff segment {s + 1}/{total}…",
             )
+            prompt_2 = _prompt_2_for_index(prompts, s)
+            init_image = self._init_image_for_segment(s)
             images = _generate_segment_frames(
                 self._pipe,
                 prompt=prompts[s],
+                prompt_2=prompt_2,
                 negative_prompt=self._negative_prompt,
                 gen_width=self._gen_width,
                 gen_height=self._gen_height,
@@ -773,6 +1368,8 @@ class AnimateDiffBackground:
                 num_inference_steps=self._num_inference_steps,
                 guidance_scale=self._guidance_scale,
                 seed=self._seed,
+                init_image=init_image,
+                init_image_strength=self._init_image_strength,
             )
             row: list[np.ndarray] = []
             for f, img in enumerate(images):
@@ -856,6 +1453,17 @@ class AnimateDiffBackground:
             return
         self._closed = True
         self._segment_frames = []
+        # The init-image source (SDXL stills) is normally closed inside
+        # ``ensure()`` once its keyframes are on disk, but if ``ensure`` was
+        # never called (or raised early) we still need to release any pipeline
+        # it may have loaded.
+        init_source = self._init_image_source
+        self._init_image_source = None
+        if init_source is not None:
+            try:
+                init_source.close()
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.debug("AnimateDiff init-image source release error: %s", exc)
         pipe = self._pipe
         self._pipe = None
         if pipe is None:
@@ -887,6 +1495,8 @@ __all__ = [
     "ANIMATEDIFF_NEGATIVE_PROMPT",
     "AnimateDiffBackground",
     "AnimateDiffManifest",
+    "DEFAULT_FP16_VAE_ID",
+    "DEFAULT_INIT_IMAGE_STRENGTH",
     "DEFAULT_MOTION_FLAVOR",
     "DEFAULT_NUM_INFERENCE_STEPS",
     "MANIFEST_FILENAME",

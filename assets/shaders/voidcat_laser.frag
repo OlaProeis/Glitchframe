@@ -177,7 +177,7 @@ void main() {
         mix(c_body, l_core, u_las),
         step(0.001, u_cat));
     float cover = max(u_cat, u_las);
-    float a = cover * (0.42 + 0.38 * max(rms, u_las) + 0.12 * (1.0 - tension));
+    float a = cover * (0.28 + 0.32 * max(rms, u_las) + 0.08 * (1.0 - tension));
     a = clamp(a * intensity, 0.0, 1.0);
     vec3 premul = c_pix * a;
     vec4 ov = vec4(premul, a);

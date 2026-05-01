@@ -103,9 +103,9 @@ void main() {
     radius *= mix(1.0, 0.78, tension);
 
     float core = smoothstep(radius, radius * 0.25, d);
-    float halo = smoothstep(radius * 1.8, radius, d) * 0.35;
-    float brightness = (core + halo) * (0.38 + 0.55 * e + 0.25 * bass_hit
-                                        + 0.18 * hold);
+    float halo = smoothstep(radius * 1.8, radius, d) * 0.20;
+    float brightness = (core + halo) * (0.34 + 0.48 * e + 0.20 * bass_hit
+                                        + 0.14 * hold);
 
     // Each cell picks its pair of palette colors deterministically from its
     // hash so nearby cells aren't identical, and beat_phase smoothly swaps
@@ -123,13 +123,13 @@ void main() {
 
     // Post-drop bloom via palette[4]; only lights cells that already carry
     // a core so empty space stays dark.
-    col += palette_pick(4) * (0.28 * hold) * core;
+    col += palette_pick(4) * (0.16 * hold) * core;
 
     // Pre-drop desaturation — tightens into the build.
     float luma = dot(col, vec3(0.2126, 0.7152, 0.0722));
-    col = mix(col, vec3(luma), 0.35 * tension);
+    col = mix(col, vec3(luma), 0.28 * tension);
 
-    float alpha = clamp(brightness, 0.0, 1.0) * intensity * (1.0 + 0.20 * hold);
+    float alpha = clamp(brightness, 0.0, 1.0) * intensity * (1.0 + 0.09 * hold);
     vec4 ov = vec4(col * alpha, alpha);
     if (u_comp_background > 0.5) {
         vec3 bg = texture(u_background, v_uv).rgb;

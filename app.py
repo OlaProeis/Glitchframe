@@ -340,6 +340,8 @@ def _build_render_inputs(
     preset_id: str | None,
     custom_background_prompt: str | None,
     reactive_intensity_pct: float,
+    shader_tint: str | None,
+    shader_tint_strength_pct: float,
     logo_file: object,
     logo_position: str,
     logo_opacity_pct: float,
@@ -379,6 +381,9 @@ def _build_render_inputs(
     album: str,
     year: str,
     genre: str,
+    sdxl_ken_burns: bool,
+    sdxl_rife_morph: bool,
+    rife_exp: int,
 ) -> OrchestratorInputs:
     """Assemble :class:`OrchestratorInputs` from raw Gradio values."""
     if not song_hash:
@@ -398,13 +403,24 @@ def _build_render_inputs(
     }
 
     cbp = (custom_background_prompt or "").strip()
+    rife_e = int(np.clip(int(rife_exp), 2, 6))
+    use_rife = bool(sdxl_rife_morph) and mode == MODE_SDXL_STILLS
     return OrchestratorInputs(
         song_hash=song_hash,
         background_mode=mode,
         static_background_image=static_path,
+        sdxl_ken_burns=bool(sdxl_ken_burns),
+        sdxl_rife_morph=use_rife,
+        rife_exp=rife_e,
         preset_id=(preset_id or None),
         custom_background_prompt=cbp if cbp else None,
         reactive_intensity_pct=float(reactive_intensity_pct),
+        shader_tint=(
+            (str(shader_tint).strip() or None) if shader_tint is not None else None
+        ),
+        shader_tint_strength_pct=float(
+            np.clip(shader_tint_strength_pct, 0.0, 100.0)
+        ),
         logo_path=_coerce_path(logo_file),
         logo_position=str(logo_position or "center"),
         logo_opacity_pct=float(logo_opacity_pct),
@@ -491,9 +507,14 @@ def _run_preview(
     song_hash: str | None,
     bg_mode: str,
     static_bg: object,
+    sdxl_ken_burns: bool,
+    sdxl_rife_morph: bool,
+    rife_exp: int,
     preset_id: str | None,
     custom_background_prompt: str,
     reactive_intensity_pct: float,
+    shader_tint: str | None,
+    shader_tint_strength_pct: float,
     logo_file: object,
     logo_position: str,
     logo_opacity_pct: float,
@@ -545,6 +566,8 @@ def _run_preview(
             preset_id=preset_id,
             custom_background_prompt=custom_background_prompt,
             reactive_intensity_pct=reactive_intensity_pct,
+            shader_tint=shader_tint,
+            shader_tint_strength_pct=shader_tint_strength_pct,
             logo_file=logo_file,
             logo_position=logo_position,
             logo_opacity_pct=logo_opacity_pct,
@@ -584,6 +607,9 @@ def _run_preview(
             album=album,
             year=year,
             genre=genre,
+            sdxl_ken_burns=sdxl_ken_burns,
+            sdxl_rife_morph=sdxl_rife_morph,
+            rife_exp=rife_exp,
         )
     except ValueError as exc:
         progress(1.0, desc="Idle")
@@ -604,9 +630,14 @@ def _run_render(
     song_hash: str | None,
     bg_mode: str,
     static_bg: object,
+    sdxl_ken_burns: bool,
+    sdxl_rife_morph: bool,
+    rife_exp: int,
     preset_id: str | None,
     custom_background_prompt: str,
     reactive_intensity_pct: float,
+    shader_tint: str | None,
+    shader_tint_strength_pct: float,
     logo_file: object,
     logo_position: str,
     logo_opacity_pct: float,
@@ -658,6 +689,8 @@ def _run_render(
             preset_id=preset_id,
             custom_background_prompt=custom_background_prompt,
             reactive_intensity_pct=reactive_intensity_pct,
+            shader_tint=shader_tint,
+            shader_tint_strength_pct=shader_tint_strength_pct,
             logo_file=logo_file,
             logo_position=logo_position,
             logo_opacity_pct=logo_opacity_pct,
@@ -697,6 +730,9 @@ def _run_render(
             album=album,
             year=year,
             genre=genre,
+            sdxl_ken_burns=sdxl_ken_burns,
+            sdxl_rife_morph=sdxl_rife_morph,
+            rife_exp=rife_exp,
         )
     except ValueError as exc:
         progress(1.0, desc="Idle")
@@ -713,12 +749,18 @@ def _run_render(
     return _append_log(log, _summarise_render(result))
 
 
-def _toggle_static_bg_visibility(mode: str):
+def _toggle_bg_dependent_controls(mode: str):
     try:
         m = normalize_background_mode(mode)
     except ValueError:
         m = MODE_SDXL_STILLS
-    return gr.update(visible=(m == MODE_STATIC_KENBURNS))
+    sdxl = m == MODE_SDXL_STILLS
+    return (
+        gr.update(visible=(m == MODE_STATIC_KENBURNS)),
+        gr.update(visible=sdxl),
+        gr.update(visible=sdxl),
+        gr.update(visible=sdxl),
+    )
 
 
 def _clear_log() -> str:
@@ -798,6 +840,8 @@ def _preview_reactive_frame(
     shader_stem: str,
     palette_hex: str,
     intensity_pct: float,
+    shader_tint: str | None,
+    shader_tint_strength_pct: float,
     logo_file: str | gr.utils.NamedString | None,
     logo_position: str,
     logo_opacity: float,
@@ -871,8 +915,23 @@ def _preview_reactive_frame(
 
         palette = _parse_palette_hex(palette_hex)
 
+        # Normalise the tint controls the same way the orchestrator does so
+        # the preview matches what the full render will produce. An empty /
+        # whitespace hex disables the tint (default white peak behaviour);
+        # the strength slider is clamped + scaled to the shader 0..1 mix.
+        tint_raw = (shader_tint or "").strip() if shader_tint is not None else ""
+        tint_for_shader = tint_raw or None
+        tint_strength_norm = float(np.clip(shader_tint_strength_pct, 0.0, 100.0)) / 100.0
+
         progress(0.5, desc="Reactive preview (GPU)")
-        with ReactiveShader(stem, width=w, height=h, palette=palette or None) as reactive:
+        with ReactiveShader(
+            stem,
+            width=w,
+            height=h,
+            palette=palette or None,
+            shader_tint=tint_for_shader,
+            shader_tint_strength=tint_strength_norm,
+        ) as reactive:
             rgb = reactive.render_frame_composited_rgb(uniforms, bg)
         if stem == "void_ascii_bg":
             ad = dict(analysis)
@@ -896,9 +955,14 @@ def _preview_reactive_frame(
 
         progress(1.0, desc="Idle")
         palette_label = f"{len(palette)} colors" if palette else "default palette"
+        tint_label = (
+            f" tint={tint_for_shader} @ {shader_tint_strength_pct:.0f}%"
+            if tint_for_shader and tint_strength_norm > 0.0
+            else ""
+        )
         msg = (
             f"Reactive preview OK — shader={stem!r} intensity={intensity_pct:.0f}% "
-            f"palette={palette_label} t=0s resolution={w}×{h}"
+            f"palette={palette_label}{tint_label} t=0s resolution={w}×{h}"
             + (" + ascii" if stem == "void_ascii_bg" else "")
             + (
                 f" | logo={logo_position!r} @ {logo_opacity:.0f}%"
@@ -1735,7 +1799,7 @@ independently:
 
 **How the backgrounds differ**
 
-- *SDXL stills*: the prompt plus a structural hint (`scene N of M, t=X.Xs`) produces one keyframe per 8 s, cross-faded over the song.
+- *SDXL stills*: the prompt plus a structural hint (`scene N of M, t=X.Xs`) produces one keyframe per 8 s, cross-faded over the song. Optional **Ken Burns on SDXL stills** applies the same RMS-driven zoom/pan/tilt as static Ken Burns on each interpolated frame (no upload).
 - *Static image + Ken Burns*: the prompt is ignored — upload your own image and RMS drives zoom/pan/tilt.
 - *AnimateDiff loops*: the prompt is combined with a preset-specific **motion flavor** (e.g. `slow cosmic drift, subtle parallax…`) plus a pacing cue (`establishing shot` → `steady motion` → `slower fade-out motion`). Each song segment renders one short loop, cross-faded at boundaries.
 
@@ -1776,20 +1840,55 @@ See `docs/technical/visual-style-presets.md` for the full schema and
                     choices=[
                         ("SDXL AI stills", MODE_SDXL_STILLS),
                         ("Static image + Ken Burns (RMS)", MODE_STATIC_KENBURNS),
-                        ("AnimateDiff loops (SDXL, GPU) — (broken)", MODE_ANIMATEDIFF),
+                        (
+                            "AnimateDiff (animates SDXL stills, GPU)",
+                            MODE_ANIMATEDIFF,
+                        ),
                     ],
                     value=MODE_SDXL_STILLS,
                     info=(
                         f"Canonical values: {', '.join(BACKGROUND_MODES)}. "
-                        "AnimateDiff is currently broken: SDXL+MotionAdapter "
-                        "produces all-black frames under FP16 due to a VAE "
-                        "NaN issue — kept in the list for parity, do not use."
+                        "AnimateDiff first generates the SDXL stills, then "
+                        "unloads SDXL and reloads as AnimateDiff — each "
+                        "16-frame loop is *seeded* from the closest SDXL "
+                        "still, so the output is your keyframes with motion "
+                        "baked in (no overlay, no double-exposure). "
+                        "~5–10× slower than plain SDXL stills."
                     ),
                 )
                 static_bg_file = gr.File(
                     label="Static background image (Ken Burns)",
                     file_types=[".png", ".jpg", ".jpeg", ".webp"],
                     visible=False,
+                )
+                sdxl_ken_burns_cb = gr.Checkbox(
+                    label="Ken Burns on SDXL stills (RMS)",
+                    value=False,
+                    info=(
+                        "Adds zoom/pan/tilt from the track's loudness envelope on top "
+                        "of AI keyframes — same motion recipe as static Ken Burns, "
+                        "without uploading an image. Cached SDXL PNGs are unchanged."
+                    ),
+                )
+                sdxl_rife_morph_cb = gr.Checkbox(
+                    label="Morph keyframes (RIFE)",
+                    value=False,
+                    info=(
+                        "After SDXL keyframes are generated, runs Practical-RIFE "
+                        "(MIT) optical-flow interpolation between each consecutive pair "
+                        "so the background evolves smoothly instead of only crossfading. "
+                        "Requires CUDA; weights download once from Hugging Face "
+                        "(~24 MB). Uses extra VRAM temporarily while building the "
+                        "morph cache under cache/<song>/background/rife_timeline/."
+                    ),
+                )
+                rife_exp_slider = gr.Slider(
+                    label="RIFE subdivisions (2^N steps between keyframes)",
+                    minimum=2,
+                    maximum=6,
+                    value=4,
+                    step=1,
+                    info="Higher = smoother morphs and slower RIFE bake. Ignored when RIFE is off.",
                 )
                 reactive_intensity = gr.Slider(
                     label="Reactive intensity",
@@ -1799,6 +1898,26 @@ See `docs/technical/visual-style-presets.md` for the full schema and
                     step=1,
                     info="Percent (uniform intensity = value ÷ 100)",
                 )
+                with gr.Accordion("Shader peak tint (for light backgrounds)", open=False):
+                    gr.Markdown(
+                        "Some shaders (currently `spectral_milkdrop`) blow out their "
+                        "loudest peaks toward white. On bright SDXL stills the white "
+                        "vanishes into the backdrop — pick a colour here and dial up "
+                        "the strength to replace those white peaks with the chosen "
+                        "tint instead. Strength `0` keeps the original behaviour."
+                    )
+                    shader_tint_picker = gr.ColorPicker(
+                        label="Peak tint colour",
+                        value="#FFFFFF",
+                    )
+                    shader_tint_strength_slider = gr.Slider(
+                        label="Peak tint strength",
+                        minimum=0,
+                        maximum=100,
+                        value=0,
+                        step=1,
+                        info="0% = white peaks (default); 100% = fully replace whites with the chosen tint.",
+                    )
                 btn_reactive_preview = gr.Button("Preview reactive frame (t = 0 s)")
                 reactive_preview_image = gr.Image(
                     label="Reactive + test background (GPU)",
@@ -1852,9 +1971,14 @@ See `docs/technical/visual-style-presets.md` for the full schema and
             song_hash_state,
             bg_mode,
             static_bg_file,
+            sdxl_ken_burns_cb,
+            sdxl_rife_morph_cb,
+            rife_exp_slider,
             preset_dd,
             custom_prompt,
             reactive_intensity,
+            shader_tint_picker,
+            shader_tint_strength_slider,
             logo_file,
             logo_position,
             logo_opacity,
@@ -1909,9 +2033,14 @@ See `docs/technical/visual-style-presets.md` for the full schema and
             show_progress="full",
         )
         bg_mode.change(
-            fn=_toggle_static_bg_visibility,
+            fn=_toggle_bg_dependent_controls,
             inputs=[bg_mode],
-            outputs=[static_bg_file],
+            outputs=[
+                static_bg_file,
+                sdxl_ken_burns_cb,
+                sdxl_rife_morph_cb,
+                rife_exp_slider,
+            ],
         )
         btn_align_lyrics.click(
             fn=_align_lyrics,
@@ -2030,6 +2159,8 @@ See `docs/technical/visual-style-presets.md` for the full schema and
                 shader_dd,
                 palette_hex,
                 reactive_intensity,
+                shader_tint_picker,
+                shader_tint_strength_slider,
                 logo_file,
                 logo_position,
                 logo_opacity,

@@ -80,7 +80,7 @@ void main() {
     float glow_y = smoothstep(top_y + 0.03, top_y, v_uv.y) *
                    step(base_y, v_uv.y);
     float glow = glow_y * in_bar_x *
-                 (0.35 + 0.35 * bass_hit + 0.25 * onset_pulse + 0.45 * t_hi);
+                 (0.30 + 0.28 * bass_hit + 0.18 * onset_pulse + 0.35 * t_hi);
 
     // Cool↔hot slot pair walks across the 8 bars as before, but bar_phase
     // adds a slow per-bar bias so the gradient never tracks raw time.
@@ -97,16 +97,16 @@ void main() {
 
     // Post-drop bloom via palette[4]; rides alongside onset_pulse so the
     // drop lands as a compound flash.
-    col += palette_pick(4) * (0.22 * hold + 0.08 * onset_pulse);
+    col += palette_pick(4) * (0.14 * hold + 0.05 * onset_pulse);
 
     // Pre-drop desaturation: blend toward luma so the build feels tighter
     // and colder. Snaps back when drop_hold kicks in.
     float luma = dot(col, vec3(0.2126, 0.7152, 0.0722));
     col = mix(col, vec3(luma), 0.45 * tension);
 
-    float alpha = clamp(bar + glow * 0.6, 0.0, 1.0)
+    float alpha = clamp(bar + glow * 0.5, 0.0, 1.0)
                   * intensity
-                  * (1.0 + 0.25 * hold);
+                  * (1.0 + 0.12 * hold);
     vec4 ov = vec4(col * alpha, alpha);
     if (u_comp_background > 0.5) {
         vec3 bg = texture(u_background, v_uv).rgb;

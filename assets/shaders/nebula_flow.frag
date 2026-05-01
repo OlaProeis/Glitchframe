@@ -118,7 +118,9 @@ void main() {
 
     float cloud = (0.5 + 0.5 * breath) * fbm(uv * 2.4 + drift, hold);
     cloud += 0.35 * fbm(uv * 5.7 - drift * 1.7 + vec2(13.0, -9.0), hold * 0.6);
-    cloud += 0.18 * env;
+    // Reduced ``env`` pump (was 0.18) — it inflated low-density cloud uniformly
+    // and read as SDXL-covering fog. Onset sparkle stays in ``stars``.
+    cloud += 0.07 * env;
     cloud = clamp(cloud, 0.0, 1.4);
 
     // Sparse star field: transient_hi lowers the threshold (more stars
@@ -153,15 +155,15 @@ void main() {
 
     // Post-drop bloom via palette[4]; onset_pulse / bass_hit ride alongside
     // at half weight so the drop lands as a compound flash.
-    neb += palette_pick(4) * (0.28 * hold + 0.14 * pulse + 0.14 * bass_hit);
+    neb += palette_pick(4) * (0.18 * hold + 0.10 * pulse + 0.10 * bass_hit);
 
     // Saturate bright cloud cores toward white so dense regions of the
     // nebula read as crisp highlights against any background colour. Faint
     // cloud edges stay coloured (low ``cloud`` -> low mix), but peaks pump
     // toward white. Pairs with the alpha boost below so highlights are
     // visibly opaque on busy SDXL stills.
-    float cloud_peak = pow(clamp(cloud * 0.85, 0.0, 1.0), 2.5);
-    neb = mix(neb, vec3(1.55), cloud_peak * 0.45);
+    float cloud_peak = pow(clamp(cloud * 0.85, 0.0, 1.0), 2.7);
+    neb = mix(neb, vec3(1.55), cloud_peak * 0.28);
 
     // Stars are near-white highlights on top of the nebula.
     neb = mix(neb, vec3(1.0), clamp(stars * 0.85, 0.0, 1.0));
@@ -181,15 +183,13 @@ void main() {
     // the entire frame even where ``cloud`` was zero.
     // See ``docs/technical/reactive-shader-layer.md``.
     //
-    // Cloud weighting bumped (2026-04): the nebula now has ~1.3x the
-    // baseline opacity so it reads as a clear nebula on top of the SDXL
-    // still rather than a thin haze that the still wins out over. Quiet,
-    // empty regions (low ``cloud``) still drop near zero so the
-    // background shows through where the nebula isn't painting.
-    float alpha = clamp(pow(cloud, 0.85)
+    // 2026-05: sharper ``cloud`` opacity curve + lower multipliers so thin
+    // nebula veil doesn't tile-bright across the SDXL backdrop; drops still
+    // lift briefly via ``hold`` terms.
+    float alpha = clamp(pow(cloud, 1.08)
                         * vignette
                         * intensity
-                        * (1.30 + 0.45 * hold + 0.25 * t_lo + 0.20 * pulse),
+                        * (1.06 + 0.30 * hold + 0.16 * t_lo + 0.12 * pulse),
                         0.0, 1.0);
     vec3 col = neb * alpha;
     vec4 ov = vec4(col, alpha);

@@ -82,7 +82,7 @@ void main() {
     float mask = smoothstep(thickness + 0.015, thickness * 0.4, ring);
 
     float radial_fade = smoothstep(1.15, 0.10, r);
-    float beat_flash = (1.0 - beat_phase) * 0.45;
+    float beat_flash = (1.0 - beat_phase) * 0.30;
 
     // Each ring picks its base hue from the palette, and overall tone shifts
     // with ``rms`` so quiet sections sit on early palette colors and loud
@@ -96,14 +96,14 @@ void main() {
     // Outer-ring bloom on drops: weight toward the outer radius so the
     // shockwave feels like it's expanding, using palette[4] as the accent.
     float outer_mask = smoothstep(0.35, 0.90, r) * radial_fade;
-    col += palette_pick(4) * hold * outer_mask * 0.55;
+    col += palette_pick(4) * hold * outer_mask * 0.36;
 
     // Pre-drop desaturation — tightens the palette into the build.
     float luma = dot(col, vec3(0.2126, 0.7152, 0.0722));
     col = mix(col, vec3(luma), 0.40 * tension);
 
     float alpha = mask * radial_fade
-                * (0.32 + 0.45 * bass_hit + 0.28 * onset_pulse + 0.30 * hold)
+                * (0.28 + 0.38 * bass_hit + 0.22 * onset_pulse + 0.22 * hold)
                 * intensity;
     alpha = clamp(alpha, 0.0, 1.0);
     vec4 ov = vec4(col * alpha, alpha);

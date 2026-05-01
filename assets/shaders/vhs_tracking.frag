@@ -116,10 +116,10 @@ void main() {
     float band_thr = mix(0.82, 0.72, 0.5 * t_hi + 0.5 * hold);
     float band = step(band_thr, hash21(vec2(0.0, floor(v_uv.y * 64.0 + time * 9.0))));
     col += palette_pick(1) * band
-           * (0.15 + 0.32 * onset_pulse + 0.28 * bass_hit + 0.26 * t_hi);
+           * (0.10 + 0.22 * onset_pulse + 0.20 * bass_hit + 0.18 * t_hi);
 
     // Post-drop chroma bleed tinted toward palette[4].
-    col += palette_pick(4) * band * (0.32 * hold);
+    col += palette_pick(4) * band * (0.20 * hold);
 
     // Beat flash accents a palette slot on every beat.
     col += palette_pick(2) * (1.0 - beat_phase) * 0.10;
@@ -140,7 +140,7 @@ void main() {
     // VHS layer punchy on hits and during drops.
     // See ``docs/technical/reactive-shader-layer.md``.
     float content = clamp(dot(col, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
-    float audio_lift = 0.22 * rms_g + 0.14 * bass_hit + 0.20 * hold;
+    float audio_lift = 0.14 * rms_g + 0.10 * bass_hit + 0.12 * hold;
     float alpha = clamp((content + audio_lift) * intensity, 0.0, 1.0);
     vec3 rgb_pre = col * alpha;
     vec4 ov = vec4(rgb_pre, alpha);

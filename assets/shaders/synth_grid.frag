@@ -137,9 +137,9 @@ void main() {
         // Horizon halo: exponential falloff in both directions. drop_hold
         // blooms it hard via palette[4] for a couple of seconds post-drop.
         float halo = exp(-abs(uv.y - horizon) * 7.5)
-                   * (0.45 + 0.22 * rms_g + 0.20 * bass_hit + 0.40 * hold);
-        col += sun_hi * halo * 0.45;
-        col += grid_col * halo * (0.60 * hold);
+                   * (0.38 + 0.16 * rms_g + 0.14 * bass_hit + 0.30 * hold);
+        col += sun_hi * halo * 0.30;
+        col += grid_col * halo * (0.38 * hold);
 
         // High-band sparkle at the top of the frame (cymbals / hats area);
         // transient_hi amps it directly.
@@ -148,7 +148,7 @@ void main() {
 
         // Let higher sky fade toward transparent so the backdrop bleeds in;
         // stay mostly opaque near the horizon and sun to preserve contrast.
-        local_alpha = mix(0.95, 0.65, smoothstep(horizon, 1.0, uv.y));
+        local_alpha = mix(0.90, 0.52, smoothstep(horizon, 1.0, uv.y));
         // Sun disc is always fully opaque over the backdrop.
         local_alpha = max(local_alpha, disc);
     }
@@ -162,7 +162,7 @@ void main() {
     col = mix(col, vec3(luma), 0.35 * tension);
     col = mix(col, sky_lo, 0.20 * tension);
 
-    float alpha = clamp(intensity * local_alpha * (1.0 + 0.15 * hold),
+    float alpha = clamp(intensity * local_alpha * (1.0 + 0.08 * hold),
                         0.0, 1.0);
     vec3 rgb_pre = col * alpha;
     vec4 ov = vec4(rgb_pre, alpha);

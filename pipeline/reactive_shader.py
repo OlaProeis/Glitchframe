@@ -77,6 +77,13 @@ DEFAULT_PALETTE: tuple[str, ...] = (
 
 _BACKGROUND_TEXTURE_UNIT = 0
 
+# Default values for the optional peak-tint uniforms (``u_shader_tint`` /
+# ``u_shader_tint_strength``). With strength = 0 every shader behaves
+# exactly as before, so adding these defaults is a no-op for shaders that
+# don't declare the uniforms (``_set_uniform`` skips unknown names).
+DEFAULT_SHADER_TINT_RGB: tuple[float, float, float] = (1.0, 1.0, 1.0)
+DEFAULT_SHADER_TINT_STRENGTH: float = 0.0
+
 # Second sampler unit reserved for the optional feedback / warp framebuffer
 # (``u_prev_frame``). Kept distinct from the background unit so the compositor
 # path (``u_background`` on unit 0) and the Milkdrop-style feedback loop on
@@ -98,6 +105,40 @@ def _parse_hex_color(hex_str: str) -> tuple[float, float, float]:
     except ValueError as exc:
         raise ValueError(f"invalid hex in palette color {hex_str!r}: {exc}") from exc
     return (r / 255.0, g / 255.0, b / 255.0)
+
+
+def _resolve_shader_tint(
+    hex_color: str | None,
+    strength: float,
+) -> tuple[tuple[float, float, float], float]:
+    """
+    Parse the ``shader_tint`` / ``shader_tint_strength`` constructor args.
+
+    ``hex_color`` accepts ``None`` / ``""`` (whitespace stripped) which falls
+    back to :data:`DEFAULT_SHADER_TINT_RGB` (white) — combined with the
+    default strength of 0 this is a no-op and matches the historical white
+    peak behaviour exactly. Bad hex raises ``ValueError`` so the failure
+    surfaces at construction, not on the first frame.
+
+    ``strength`` is clamped to ``[0, 1]`` because the shader uses it as a
+    ``mix()`` weight; out-of-range values would over- or under-shoot the
+    white target. ``NaN`` is rejected outright instead of silently
+    propagating into the GPU.
+    """
+    if hex_color is None or not str(hex_color).strip():
+        rgb: tuple[float, float, float] = DEFAULT_SHADER_TINT_RGB
+    else:
+        rgb = _parse_hex_color(str(hex_color))
+
+    try:
+        s = float(strength)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"shader_tint_strength must be a real number, got {strength!r}"
+        ) from exc
+    if not (s == s):  # NaN guard — float('nan') != float('nan')
+        raise ValueError("shader_tint_strength must not be NaN")
+    return rgb, float(max(0.0, min(1.0, s)))
 
 
 def _build_palette_uniform(
@@ -742,6 +783,8 @@ class ReactiveShader:
         vertex_shader: str = DEFAULT_VERTEX_SHADER,
         palette: Sequence[str] | None = None,
         feedback_enabled: bool | None = None,
+        shader_tint: str | None = None,
+        shader_tint_strength: float = DEFAULT_SHADER_TINT_STRENGTH,
     ) -> None:
         if width <= 0 or height <= 0:
             raise ValueError(f"Invalid resolution: {width}x{height}")
@@ -756,6 +799,13 @@ class ReactiveShader:
         self._palette_flat, self._palette_size = _build_palette_uniform(palette)
         # Reused every frame in :meth:`_apply_uniforms` (avoid ``list(...)`` alloc).
         self._palette_uniform_list: list[float] = list(self._palette_flat)
+
+        # Optional user-controllable peak tint. Parsed once at construction so
+        # bad hex / out-of-range strength fail fast — same contract as the
+        # palette. See :func:`_resolve_shader_tint` for the clamp + NaN rules.
+        self._shader_tint_rgb, self._shader_tint_strength = _resolve_shader_tint(
+            shader_tint, shader_tint_strength
+        )
 
         root = Path(shaders_dir) if shaders_dir is not None else SHADERS_DIR
         frag_path = root / f"{shader_name}.frag"
@@ -912,6 +962,16 @@ class ReactiveShader:
         return self._feedback_enabled
 
     @property
+    def shader_tint_rgb(self) -> tuple[float, float, float]:
+        """User-set peak tint colour as ``(r, g, b)`` floats in ``[0, 1]``."""
+        return self._shader_tint_rgb
+
+    @property
+    def shader_tint_strength(self) -> float:
+        """User-set peak tint strength in ``[0, 1]``; ``0`` keeps white peaks."""
+        return self._shader_tint_strength
+
+    @property
     def has_prev_frame(self) -> bool:
         """``True`` once at least one frame has been rendered into the feedback loop."""
         return self._has_prev_frame
@@ -1043,6 +1103,12 @@ class ReactiveShader:
             # GPU state.
             "u_palette": self._palette_uniform_list,
             "u_palette_size": int(self._palette_size),
+            # Peak-tint controls — sticky per instance, same contract as the
+            # palette: re-uploaded every frame so the GPU state can't drift.
+            # Shaders that don't declare these uniforms ignore them silently
+            # via ``_set_uniform``'s ``KeyError`` path.
+            "u_shader_tint": self._shader_tint_rgb,
+            "u_shader_tint_strength": float(self._shader_tint_strength),
         }
 
         merged: dict[str, Any] = dict(defaults)
@@ -1180,6 +1246,8 @@ __all__: Sequence[str] = [
     "DEFAULT_NUM_BANDS",
     "DEFAULT_PALETTE",
     "DEFAULT_SHADER",
+    "DEFAULT_SHADER_TINT_RGB",
+    "DEFAULT_SHADER_TINT_STRENGTH",
     "DEFAULT_VERTEX_SHADER",
     "DEFAULT_WIDTH",
     "ONSET_DECAY_PER_SEC",

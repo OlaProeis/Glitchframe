@@ -57,6 +57,10 @@ MANIFEST_FILENAME = "manifest.json"
 KEYFRAME_FILENAME_FMT = "keyframe_{index:04d}.png"
 MANIFEST_SCHEMA_VERSION = 1
 
+RIFE_TIMELINE_DIRNAME = "rife_timeline"
+MANIFEST_RIFE_FILENAME = "manifest_rife.json"
+RIFE_MANIFEST_SCHEMA_VERSION = 1
+
 ProgressFn = Callable[[float, str], None]
 
 
@@ -152,6 +156,87 @@ class BackgroundManifest:
             and self.model_id == model_id
             and self.width == int(width)
             and self.height == int(height)
+        )
+
+
+@dataclass(frozen=True)
+class RifeMorphManifest:
+    """Cache metadata for RIFE-densified timelines layered on SDXL keyframes."""
+
+    schema_version: int
+    base_prompt_hash: str
+    preset_id: str
+    section_count: int
+    num_keyframes: int
+    duration_sec: float
+    rife_exp: int
+    rife_repo_id: str
+    width: int
+    height: int
+    frame_count: int
+    times: tuple[float, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": int(self.schema_version),
+            "base_prompt_hash": self.base_prompt_hash,
+            "preset_id": self.preset_id,
+            "section_count": int(self.section_count),
+            "num_keyframes": int(self.num_keyframes),
+            "duration_sec": float(self.duration_sec),
+            "rife_exp": int(self.rife_exp),
+            "rife_repo_id": self.rife_repo_id,
+            "width": int(self.width),
+            "height": int(self.height),
+            "frame_count": int(self.frame_count),
+            "times": [float(x) for x in self.times],
+        }
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> "RifeMorphManifest":
+        try:
+            return cls(
+                schema_version=int(raw["schema_version"]),
+                base_prompt_hash=str(raw["base_prompt_hash"]),
+                preset_id=str(raw["preset_id"]),
+                section_count=int(raw["section_count"]),
+                num_keyframes=int(raw["num_keyframes"]),
+                duration_sec=float(raw["duration_sec"]),
+                rife_exp=int(raw["rife_exp"]),
+                rife_repo_id=str(raw["rife_repo_id"]),
+                width=int(raw["width"]),
+                height=int(raw["height"]),
+                frame_count=int(raw["frame_count"]),
+                times=tuple(float(x) for x in raw["times"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid RIFE manifest: {exc}") from exc
+
+    def matches_key(
+        self,
+        *,
+        base_prompt_hash: str,
+        preset_id: str,
+        section_count: int,
+        num_keyframes: int,
+        duration_sec: float,
+        rife_exp: int,
+        rife_repo_id: str,
+        width: int,
+        height: int,
+    ) -> bool:
+        return (
+            self.schema_version == RIFE_MANIFEST_SCHEMA_VERSION
+            and self.base_prompt_hash == base_prompt_hash
+            and self.preset_id == preset_id
+            and self.section_count == int(section_count)
+            and self.num_keyframes == int(num_keyframes)
+            and abs(self.duration_sec - float(duration_sec)) < 1e-6
+            and self.rife_exp == int(rife_exp)
+            and self.rife_repo_id == rife_repo_id
+            and self.width == int(width)
+            and self.height == int(height)
+            and len(self.times) == int(self.frame_count)
         )
 
 
@@ -369,6 +454,66 @@ def _load_keyframes(
                 img = img.resize((width, height), Image.LANCZOS)
             frames.append(np.asarray(img, dtype=np.uint8).copy())
     return frames
+
+
+def _rife_timeline_dir(cache_dir: Path) -> Path:
+    return _background_dir(cache_dir) / RIFE_TIMELINE_DIRNAME
+
+
+def _rife_manifest_path(cache_dir: Path) -> Path:
+    return _background_dir(cache_dir) / MANIFEST_RIFE_FILENAME
+
+
+def _rife_frame_path(cache_dir: Path, index: int) -> Path:
+    return _rife_timeline_dir(cache_dir) / f"rife_{index:06d}.png"
+
+
+def _load_rife_manifest(cache_dir: Path) -> RifeMorphManifest | None:
+    p = _rife_manifest_path(cache_dir)
+    if not p.is_file():
+        return None
+    with p.open("r", encoding="utf-8") as f:
+        raw = json.load(f)
+    return RifeMorphManifest.from_dict(raw)
+
+
+def _rife_timeline_pngs_complete(cache_dir: Path, count: int) -> bool:
+    if count < 1:
+        return False
+    for i in range(count):
+        if not _rife_frame_path(cache_dir, i).is_file():
+            return False
+    return True
+
+
+def _load_rife_timeline_frames(
+    cache_dir: Path, count: int, width: int, height: int
+) -> list[np.ndarray]:
+    frames: list[np.ndarray] = []
+    for i in range(count):
+        path = _rife_frame_path(cache_dir, i)
+        if not path.is_file():
+            raise FileNotFoundError(f"Cached RIFE frame missing: {path}")
+        with Image.open(path) as im:
+            img = im.convert("RGB")
+            if img.size != (width, height):
+                img = img.resize((width, height), Image.LANCZOS)
+            frames.append(np.asarray(img, dtype=np.uint8).copy())
+    return frames
+
+
+def _persist_rife_timeline(
+    cache_dir: Path,
+    frames: Sequence[np.ndarray],
+    times: Sequence[float],
+    manifest: RifeMorphManifest,
+) -> None:
+    td = _rife_timeline_dir(cache_dir)
+    td.mkdir(parents=True, exist_ok=True)
+    for i, arr in enumerate(frames):
+        img = Image.fromarray(arr, mode="RGB")
+        _atomic_write_png(img, _rife_frame_path(cache_dir, i))
+    _atomic_write_json(manifest.to_dict(), _rife_manifest_path(cache_dir))
 
 
 # ---------------------------------------------------------------------------
@@ -695,6 +840,11 @@ class BackgroundStills:
         negative_prompt: str = DEFAULT_NEGATIVE_PROMPT,
         seed: int | None = 0,
         model_cache_dir: Path | None = None,
+        ken_burns: bool = False,
+        ken_burns_margin: float | None = None,
+        rife_morph: bool = False,
+        rife_exp: int = 4,
+        rife_repo_id: str = "MonsterMMORPG/RIFE_4_26",
     ) -> None:
         cache = Path(cache_dir)
         if not cache.is_dir():
@@ -730,12 +880,32 @@ class BackgroundStills:
         self._model_cache_dir = (
             Path(model_cache_dir) if model_cache_dir is not None else MODEL_CACHE_DIR
         )
+        self._ken_burns = bool(ken_burns)
+        if ken_burns_margin is not None:
+            km = float(ken_burns_margin)
+            if km <= 1.0:
+                raise ValueError(f"ken_burns_margin must be > 1.0, got {km}")
+            self._ken_burns_margin = km
+        else:
+            self._ken_burns_margin = 1.38  # keep in sync with background_kenburns.DEFAULT_MARGIN
+
+        re = int(rife_exp)
+        if re < 2:
+            re = 2
+        elif re > 6:
+            re = 6
+        self._rife_morph = bool(rife_morph)
+        self._rife_exp = re
+        self._rife_repo = str(rife_repo_id).strip() or "MonsterMMORPG/RIFE_4_26"
 
         self._plans: list[KeyframePlan] | None = None
         self._frames: list[np.ndarray] | None = None
         self._manifest: BackgroundManifest | None = None
+        self._timeline_times: tuple[float, ...] | None = None
         self._pipe: Any = None
         self._closed = False
+        self._kb_duration: float = 0.0
+        self._kb_analysis: dict[str, Any] | None = None
 
     # -- properties ---------------------------------------------------------
 
@@ -798,6 +968,102 @@ class BackgroundStills:
             keyframe_times=tuple(p.t_sec for p in plans),
             prompts=prompts,
         )
+
+    def _prepare_ken_burns_state(self, analysis: Mapping[str, Any]) -> None:
+        if not self._ken_burns:
+            self._kb_analysis = None
+            self._kb_duration = 0.0
+            return
+        self._kb_analysis = dict(analysis)
+        self._kb_duration = _duration_from_analysis(analysis)
+
+    def _apply_rife_morph_if_needed(
+        self,
+        mf: BackgroundManifest,
+        *,
+        force: bool,
+        report: ProgressFn,
+    ) -> None:
+        """Replace ``self._frames`` with a RIFE-dense timeline when enabled."""
+        self._timeline_times = None
+        if not self._rife_morph:
+            return
+        kf = self._frames
+        if kf is None or mf.num_keyframes < 2:
+            LOGGER.info("RIFE morph skipped (need at least two SDXL keyframes)")
+            return
+
+        if not force:
+            try:
+                rm = _load_rife_manifest(self._cache_dir)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.info("Ignoring unreadable RIFE manifest (%s)", exc)
+                rm = None
+            if rm is not None and rm.matches_key(
+                base_prompt_hash=mf.prompt_hash,
+                preset_id=mf.preset_id,
+                section_count=mf.section_count,
+                num_keyframes=mf.num_keyframes,
+                duration_sec=mf.duration_sec,
+                rife_exp=self._rife_exp,
+                rife_repo_id=self._rife_repo,
+                width=self._width,
+                height=self._height,
+            ) and _rife_timeline_pngs_complete(self._cache_dir, rm.frame_count):
+                try:
+                    self._frames = _load_rife_timeline_frames(
+                        self._cache_dir,
+                        rm.frame_count,
+                        self._width,
+                        self._height,
+                    )
+                except FileNotFoundError as exc:
+                    LOGGER.info(
+                        "RIFE manifest matches but a frame is missing (%s); will regenerate",
+                        exc,
+                    )
+                else:
+                    self._timeline_times = tuple(rm.times)
+                    report(1.0, "Reused cached RIFE morph timeline")
+                    return
+
+        from pipeline.rife_runtime import rife_build_morph_timeline
+
+        try:
+            import torch  # type: ignore
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError("PyTorch is required for RIFE morph") from exc
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "RIFE morph requires a CUDA GPU; disable “Morph keyframes (RIFE)” "
+                "or run on hardware with CUDA"
+            )
+        device = torch.device("cuda:0")
+        dense_frames, dense_times = rife_build_morph_timeline(
+            tuple(kf),
+            mf.keyframe_times,
+            exp=self._rife_exp,
+            device=device,
+            repo_id=self._rife_repo,
+            progress=report,
+        )
+        final_m = RifeMorphManifest(
+            schema_version=RIFE_MANIFEST_SCHEMA_VERSION,
+            base_prompt_hash=mf.prompt_hash,
+            preset_id=mf.preset_id,
+            section_count=mf.section_count,
+            num_keyframes=mf.num_keyframes,
+            duration_sec=mf.duration_sec,
+            rife_exp=self._rife_exp,
+            rife_repo_id=self._rife_repo,
+            width=self._width,
+            height=self._height,
+            frame_count=len(dense_frames),
+            times=tuple(float(t) for t in dense_times),
+        )
+        _persist_rife_timeline(self._cache_dir, dense_frames, dense_times, final_m)
+        self._frames = dense_frames
+        self._timeline_times = final_m.times
 
     # -- generation / cache -------------------------------------------------
 
@@ -870,12 +1136,16 @@ class BackgroundStills:
                 else:
                     self._frames = frames
                     self._manifest = existing
+                    self._prepare_ken_burns_state(analysis)
                     _report(1.0, "Reused cached background keyframes")
+                    self._apply_rife_morph_if_needed(existing, force=force, report=_report)
                     return existing
 
         frames = self._generate_and_persist(expected, _report)
         self._frames = frames
         self._manifest = expected
+        self._prepare_ken_burns_state(analysis)
+        self._apply_rife_morph_if_needed(expected, force=force, report=_report)
         return expected
 
     def _generate_and_persist(
@@ -1011,10 +1281,33 @@ class BackgroundStills:
                 "background_frame called before ensure_keyframes(); "
                 "generate or load keyframes first"
             )
-        return _interpolate_frame(
+        times_src = (
+            self._timeline_times
+            if self._timeline_times is not None
+            else self._manifest.keyframe_times
+        )
+        base = _interpolate_frame(
             self._frames,
-            self._manifest.keyframe_times,
+            times_src,
             float(t),
+        )
+        if not self._ken_burns:
+            return base
+        if self._kb_analysis is None:
+            raise RuntimeError(
+                "SDXL Ken Burns enabled but analysis state is missing; "
+                "call ensure_keyframes() first"
+            )
+        from pipeline.background_kenburns import apply_ken_burns_to_rgb_array
+
+        return apply_ken_burns_to_rgb_array(
+            base,
+            width=self._width,
+            height=self._height,
+            margin=self._ken_burns_margin,
+            t=float(t),
+            duration_sec=self._kb_duration,
+            analysis=self._kb_analysis,
         )
 
     # -- lifecycle ----------------------------------------------------------
@@ -1025,6 +1318,8 @@ class BackgroundStills:
             return
         self._closed = True
         self._frames = None
+        self._timeline_times = None
+        self._kb_analysis = None
         pipe = self._pipe
         self._pipe = None
         if pipe is None:
@@ -1074,7 +1369,9 @@ __all__: Sequence[str] = [
     "KEYFRAME_FILENAME_FMT",
     "KeyframePlan",
     "MANIFEST_FILENAME",
-    "MANIFEST_SCHEMA_VERSION",
+    "RIFE_MANIFEST_SCHEMA_VERSION",
+    "RIFE_TIMELINE_DIRNAME",
+    "RifeMorphManifest",
     "plan_keyframes",
     "prompt_hash",
 ]

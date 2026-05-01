@@ -2,6 +2,12 @@
 
 Defined here so :mod:`config` and the UI can validate preset YAML without
 importing OpenGL-backed :mod:`pipeline.reactive_shader`.
+
+Nine preset YAML files each pin one stem (``cosmic-flow`` → ``nebula_flow``,
+etc.). Additional stems remain in the dropdown for manual experiments and
+legacy paths: ``spectrum_bars`` (also :data:`ReactiveShader` default stem),
+``particles``, ``nebula_drift`` (A/B sibling of ``nebula_flow``), and
+``voidcat_laser`` (non-ASCII voidcat motif).
 """
 
 from __future__ import annotations
