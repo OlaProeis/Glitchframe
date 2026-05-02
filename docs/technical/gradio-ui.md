@@ -15,8 +15,8 @@ Feature doc for the browser UI entrypoint: tabbed layout, inputs, queued actions
 ## Inputs (layout-level)
 
 - File uploads: audio (common formats), logo PNG, optional static background image.
-- Text: metadata fields, lyrics, custom prompt, filename prefix.
-- **Preset** dropdown: `get_preset_ids()` from `config.py`; if `presets/` has no YAML yet, the six PRD default IDs are used.
+- Text: metadata fields, lyrics, scene prompt / typography style / comma-separated palette (Visual style), filename prefix.
+- **Visual style** tab: **Reactive shader** dropdown (includes **No reactive shader**). Changing the shader pre-fills **Scene prompt**, **Typography style**, and **Color palette** from `pipeline/visual_style.py`; you can edit all of them. Preview / render pass an inline preset dict into `OrchestratorInputs` and set `preset_id` to `style-<shader_stem>` for background caches. Optional `presets/*.yaml` still load via `config.load_preset_registry()` for advanced setups.
 - Sliders: logo opacity and reactive intensity (0–100%).
 - Choices: logo position, background mode, resolution, FPS.
 - **Branding:** logo PNG upload, position dropdown, opacity slider; beat pulse, snare neon, squeeze, and impact glitch sliders; **Traveling rim light (optional)** accordion — rim mode (`off` / classic neon only / traveling rim + neon), travel speed, colour spread, inward bleed %, CW/CCW direction, audio-reactive rim with snare/bass link toggles and modulation strength (wired to `OrchestratorInputs` → `CompositorConfig`, branding-only — no song cache impact). **Preview logo on test frame** runs `pipeline.logo_composite` on a built-in RGB gradient (rim settings apply on full **Preview 10 s** / **Render**, not this static preview). **Preview reactive frame** also applies the same logo overlay when a file is uploaded (placement and opacity match the Branding tab).
@@ -33,4 +33,4 @@ Feature doc for the browser UI entrypoint: tabbed layout, inputs, queued actions
 
 ## Related code
 
-- **`config.py`** — `CACHE_DIR`, `OUTPUTS_DIR`, `get_preset_ids()`, `ensure_runtime_dirs()`.
+- **`config.py`** — `CACHE_DIR`, `OUTPUTS_DIR`, `load_preset_registry()` / optional YAML presets, `ensure_runtime_dirs()`.

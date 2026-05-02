@@ -23,8 +23,10 @@ that the compositor stacks on top of the reactive shader pass.
 
 ## Motion presets
 
-Motion presets are keyed by the preset YAML's `typo_style` string. Every
-preset string used in `presets/*.yaml` has a matching pure function in
+Motion presets are keyed by the **`typo_style`** string on the resolved
+preset dict (Gradio **Visual style** → `shader_style_bundle(...)` in
+`pipeline/visual_style.py`; optional YAML under `presets/` uses the same
+field). Every supported `typo_style` has a matching pure function in
 `MOTION_PRESETS`:
 
 | `typo_style` | Behaviour |
@@ -66,17 +68,16 @@ around the glyph centre so words pop without shifting horizontally.
   drawn** in the current render path — every treatment we tried
   (`kStroke_Style` outline, tight single-pass blur, wide multi-pass
   blur, soft whisper blur) drew as a visible coloured rim or blob on
-  saturated preset palettes (cyan fill + pink/magenta glow on
-  `cosmic-flow` / `neon-synthwave` / `glitch-vhs`). Lyrics now ship as
+  saturated style palettes (e.g. cyan fill on magenta-tinted shader
+  backgrounds). Lyrics now ship as
   clean fill only; fill-vs-background contrast is guaranteed by
   `pipeline.preset_colors.resolve_text_colors`. Mirrors
   `pipeline.title_overlay.render_title_rgba` and `pipeline.thumbnail`.
   Do not reintroduce a halo / stroke / bloom without a preset-matrix
   visual sign-off first.
 - Both colors come from `pipeline.preset_colors.resolve_text_colors()`
-  applied to the preset palette, so the *brightest* palette entry drives
-  the fill and the most saturated mid-tone drives the glow — preset
-  palettes are ordered dark→bright for the shader's `u_palette[5]`, so
+  applied to the active palette from the preset dict (`OrchestratorInputs.presets`), so the *brightest* palette entry drives
+  the fill and the most saturated mid-tone drives the glow — palettes are ordered dark→bright for the shader's `u_palette[5]`, so
   taking `colors[0]` / `colors[1]` directly would paint lyrics in the
   darkest background tones and render them unreadable.
 
@@ -106,7 +107,7 @@ around the glyph centre so words pop without shifting horizontally.
 | `KineticTypographyLayer`, `AlignedWord`, `WordMotion` | `pipeline/kinetic_typography.py` |
 | Motion preset registry (`MOTION_PRESETS`, `SUPPORTED_MOTIONS`) | `pipeline/kinetic_typography.py` |
 | Aligned JSON reader (`load_aligned_words`) | `pipeline/kinetic_typography.py` |
-| Preset `typo_style` values feeding the motion name | `presets/*.yaml` |
+| Resolved `typo_style` feeding the motion name | `pipeline/visual_style.py` + optional YAML under `presets/` |
 | Word timings consumed by the layer | `cache/<song_hash>/lyrics.aligned.json` |
 
 ## Related

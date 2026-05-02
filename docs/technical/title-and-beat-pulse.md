@@ -45,9 +45,8 @@ stacking order and corner anchoring are shared.
   `middle-left / center / middle-right`). Helpers `normalize_title_position`
   and `normalize_title_size` accept free-form UI labels (`"Top-center"`,
   `"TOP"`, `"middle"`, etc.) and raise `ValueError` on unknown values.
-- Fill / shadow colors come from the active preset's palette (`base_color`,
-  `shadow_color` on `CompositorConfig`) so the card matches the preset
-  aesthetic without extra configuration.
+- Fill / shadow colors come from the resolved visual-style palette (`base_color`,
+  `shadow_color` on `CompositorConfig` — propagated from `OrchestratorInputs.presets`) so the card matches the active shader bundle without extra configuration.
 - The layer is composited **above** the reactive shader and kinetic
   typography but **below** the logo, so branding always sits on top.
 
@@ -64,8 +63,8 @@ glow, no `kStroke_Style` outline, no drop shadow. Every variant was
 tried and rejected on saturated preset palettes:
 
 - A `kStroke_Style` outline in the glow colour drew as a **crisp colour
-  ring** on complementary palettes (cyan fill + pink/magenta glow on
-  `cosmic-flow`; yellow fill + cyan glow on `neon-synthwave`) — the
+  ring** on complementary palettes (e.g. cyan fill vs magenta-accent
+  backgrounds, or yellow fill vs cyan-accent backgrounds) — the
   original "text border issue".
 - A wide multi-pass blur (wide + mid + tight) bled far past the glyph
   and stacked into a **solid colour cloud** at the rim on those same
@@ -371,13 +370,12 @@ and be version-controlled so renders are consistent across machines.
 
 `CompositorConfig.base_color` (title fill) and `shadow_color` (glow) are
 resolved from the preset palette by
-`pipeline.preset_colors.resolve_text_colors()`. Preset palettes are
+`pipeline.preset_colors.resolve_text_colors()`. Style palettes are
 ordered dark → bright for the shader's `u_palette[5]` — text needs the
 opposite, so the resolver picks the *brightest* entry for the fill and
 the most saturated remaining entry for the glow. This keeps titles
-readable on dark-theme presets (cosmic-flow, neon-synthwave, organic-liquid,
-glitch-vhs) where the first two palette slots are near-black
-background colors.
+readable on **dark-first** bundles from `pipeline/visual_style.py` where
+the first palette slots are near-black background tones.
 
 ## Orchestrator inputs
 

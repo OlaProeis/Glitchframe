@@ -42,10 +42,8 @@ builder (`_build_keyframe_prompt` in `background_stills.py`):
   t=X.Xs`) to diversify still keyframes; harmless for image diffusion.
 - **AnimateDiff** skips structural hints — the motion adapter treats them as
   content and drifts off-topic. Instead every loop gets:
-  1. The preset's scene prompt (from YAML `prompt`).
-  2. A preset-specific **motion flavor** from `MOTION_FLAVORS` (e.g. "slow
-     cosmic drift, subtle parallax between dust layers" for `cosmic-flow`). Unknown
-     preset ids fall back to `DEFAULT_MOTION_FLAVOR`.
+  1. The **scene prompt** from the orchestrator (Gradio **Visual style** textbox, or the shader’s built-in example when empty).
+  2. A **motion flavor**: for cache ids `style-<shader_stem>`, from `pipeline.visual_style.motion_flavor_for_style_preset`; otherwise from legacy `MOTION_FLAVORS` by preset id, or `DEFAULT_MOTION_FLAVOR` when unknown.
   3. A **pacing cue** that varies by song position: `establishing shot, slow
      motion` in the first quartile, `steady motion` through the middle,
      `slower fade-out motion` in the last quartile (`_pacing_cue`).

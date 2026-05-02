@@ -78,12 +78,12 @@ class TestBuildMotionPrompt(unittest.TestCase):
     def test_includes_preset_prompt_and_flavor(self) -> None:
         p = _build_motion_prompt(
             "Deep space nebula, violet dust",
-            preset_id="cosmic-flow",
+            preset_id="style-spectral_milkdrop",
             index=2,
             total=5,
         )
         self.assertIn("Deep space nebula", p)
-        self.assertIn("cosmic drift", p)
+        self.assertIn("orbital drift", p)
 
     def test_unknown_preset_falls_back_to_default_flavor(self) -> None:
         p = _build_motion_prompt(
@@ -110,13 +110,13 @@ class TestBuildMotionPrompt(unittest.TestCase):
 
     def test_pacing_cue_changes_with_position(self) -> None:
         early = _build_motion_prompt(
-            "x", preset_id="cosmic-flow", index=0, total=8
+            "x", preset_id="style-spectral_milkdrop", index=0, total=8
         )
         mid = _build_motion_prompt(
-            "x", preset_id="cosmic-flow", index=4, total=8
+            "x", preset_id="style-spectral_milkdrop", index=4, total=8
         )
         late = _build_motion_prompt(
-            "x", preset_id="cosmic-flow", index=7, total=8
+            "x", preset_id="style-spectral_milkdrop", index=7, total=8
         )
         self.assertIn("establishing", early)
         self.assertIn("steady motion", mid)
@@ -124,14 +124,14 @@ class TestBuildMotionPrompt(unittest.TestCase):
 
     def test_empty_preset_prompt_skipped_not_crashed(self) -> None:
         p = _build_motion_prompt(
-            "", preset_id="cosmic-flow", index=0, total=1
+            "", preset_id="style-spectral_milkdrop", index=0, total=1
         )
         self.assertFalse(p.startswith(","))
-        self.assertIn("cosmic drift", p)
+        self.assertIn("orbital drift", p)
 
 
 class TestMotionFlavors(unittest.TestCase):
-    def test_all_builtin_presets_have_flavors(self) -> None:
+    def test_legacy_named_presets_still_resolve(self) -> None:
         expected = {
             "cosmic-flow",
             "glitch-vhs",
@@ -141,10 +141,17 @@ class TestMotionFlavors(unittest.TestCase):
             "organic-liquid",
         }
         missing = expected - set(MOTION_FLAVORS.keys())
-        self.assertFalse(
-            missing,
-            f"Presets missing motion flavors: {sorted(missing)}",
+        self.assertFalse(missing)
+
+    def test_style_synth_grid_flavor_via_builder(self) -> None:
+        p = _build_motion_prompt(
+            "city skyline neon",
+            preset_id="style-synth_grid",
+            index=0,
+            total=4,
         )
+        self.assertIn("city skyline neon", p)
+        self.assertIn("forward drive", p)
 
     def test_flavors_are_nonempty_strings(self) -> None:
         for pid, flavor in MOTION_FLAVORS.items():

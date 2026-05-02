@@ -44,9 +44,8 @@ class OrchestratorInputs:
     presets: dict[str, Any] = field(default_factory=dict)
     output_settings: dict[str, Any] = field(default_factory=dict)
     # Background compositor source (see ``pipeline.background``); not part of song hash.
-    # Default kept in sync with the Gradio radio default in ``app.py``. AnimateDiff
-    # is an optional heavier path (video diffusion); many setups use SDXL stills
-    # with optional RIFE morph instead — see ``docs/technical/rife-morph-background.md``.
+    # Default kept in sync with the Gradio radio default in ``app.py``.
+    # Typical path: SDXL stills with optional RIFE morph — see ``docs/technical/rife-morph-background.md``.
     background_mode: str = "sdxl-stills"
     static_background_image: str | Path | None = None
     # When True and background_mode is SDXL stills, apply RMS-driven Ken Burns
@@ -58,7 +57,7 @@ class OrchestratorInputs:
     rife_exp: int = 4
     # Cosmetic render settings (never influence the song cache key).
     preset_id: str | None = None
-    # When non-empty, replaces the preset YAML ``prompt`` for SDXL / AnimateDiff.
+    # When non-empty, replaces the preset YAML ``prompt`` for SDXL still generation.
     custom_background_prompt: str | None = None
     reactive_intensity_pct: float = 50.0
     # Optional user-controllable peak tint for the reactive shader. ``None`` /
@@ -589,7 +588,7 @@ def _render_pipeline(
         effects_timeline=eff_timeline,
         auto_reactivity_master=float(eff_auto_master),
     )
-    if preset_id == "voidcat-laser":
+    if shader_name == "void_ascii_bg":
         from pipeline.voidcat_ascii import build_voidcat_ascii_context
 
         _ad = dict(state.analysis.analysis)
@@ -646,7 +645,7 @@ def _render_pipeline(
         if progress is not None:
             progress(
                 render_lo,
-                "Compositing video (frames + encode) — GPU memory freed after AnimateDiff…",
+                "Compositing video (frames + encode) — background GPU resources released…",
             )
 
         compositor = render_full_video(

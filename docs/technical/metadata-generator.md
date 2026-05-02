@@ -1,13 +1,13 @@
 # Metadata generator (`metadata.txt`)
 
-Feature: build a **YouTube-oriented** `metadata.txt` beside `output.mp4` under `outputs/<run_id>/`: suggested title, description (credits, optional lyrics, chapter timestamps), and tags from song fields and the active visual preset.
+Feature: build a **YouTube-oriented** `metadata.txt` beside `output.mp4` under `outputs/<run_id>/`: suggested title, description (credits, optional lyrics, chapter timestamps), and tags from song fields and the resolved **visual style** (shader + typography + palette), including `preset_id` values like `style-synth_grid` when using the bundled shader-first flow.
 
 ## Inputs
 
 - **Song fields** — `OrchestratorInputs.metadata`: optional `artist`, `title`, `album`, `year`, `genre` (cosmetic; not part of `song_hash`).
 - **`analysis.json`** — `segments` for chapter start times; `tempo.bpm` for the description when not overridden.
 - **Lyrics** — prefer `AlignmentResult.lines` when alignment ran; otherwise non-empty `OrchestratorInputs.lyrics_text` split by line.
-- **Preset** — `preset_id` / full preset dict for tags (`shader`, `typo_style`, preset id and hyphen segments). Resolved from `OrchestratorInputs.presets` (`id`, `preset_id`, or `preset` dict); unknown ids skip loaded preset data.
+- **Visual style / preset dict** — `preset_id`, `shader`, `typo_style`, and palette-derived tags come from `OrchestratorInputs.presets` (`id`, `preset_id`, or nested `preset` dict). Typical full renders use **`style-<shader_stem>`** ids (see `pipeline/visual_style.py`). Optional YAML files under `presets/` remain supported for overrides; legacy hyphen ids (`neon-synthwave`, …) are still readable for old caches/metadata.
 
 ## Output file format (v1)
 

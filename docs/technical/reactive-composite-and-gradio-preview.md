@@ -9,15 +9,15 @@ Feature: blend the reactive moderngl pass over a full-frame **RGB** background i
 
 ## Validation and CPU blend helper
 
-- `resolve_builtin_shader_stem(stem)` checks `BUILTIN_SHADERS` and the presence of `{stem}.frag` under `SHADERS_DIR`; raises `ValueError` or `FileNotFoundError` — **no fallback** to another shader.
+- `resolve_builtin_shader_stem(stem)` checks `BUILTIN_SHADERS`. The stem `none` is valid and skips the fragment file check (compositor uses a CPU passthrough). Other stems require `{stem}.frag` under `SHADERS_DIR`. Custom `ReactiveShader(..., shaders_dir=tmpdir)` used in tests resolves stems from that directory without the allowlist.
 - `composite_premultiplied_rgba_over_rgb(rgba, rgb)` applies the same premultiplied-over-RGB math in NumPy (tests or offline use).
 
 ## Gradio
 
 - **Reactive intensity** (0–100) maps to `uniforms_at_time(..., intensity=value/100)`.
-- **Preview reactive frame (t = 0 s)** requires an ingested song and `cache/<song_hash>/analysis.json` (run **Analyze** first). It uses the **Reactive shader** dropdown (preset-filled), renders at **960×540** over a built-in gradient test background, and shows the result under **Reactive + test background (GPU)**. Failures are logged; GL and missing-analysis errors are not swallowed.
+- **Preview reactive frame (t = 0 s)** requires an ingested song and `cache/<song_hash>/analysis.json` (run **Analyze** first). It uses the **Reactive shader** dropdown; **No reactive shader** shows the test gradient only (optional logo overlay). Other stems render at **960×540** over the gradient. Failures are logged; GL and missing-analysis errors are not swallowed.
 
 ## See also
 
 - `docs/technical/reactive-shader-layer.md` — uniforms, `uniforms_at_time`, FBO lifecycle.
-- `docs/technical/visual-style-presets.md` — preset `shader` field and allowlist.
+- `docs/technical/visual-style-presets.md` — shader list, example prompts, and optional YAML presets.
