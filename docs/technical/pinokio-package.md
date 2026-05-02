@@ -14,7 +14,11 @@ This project ships:
 | `icon.png` | Launcher icon (derived from a UI screenshot) |
 | `pinokio_meta.json` | Optional name / description / homepage for listings |
 
+**RIFE morph:** First use of **Morph keyframes (RIFE)** downloads **~24 MB** from Hugging Face into `MODEL_CACHE_DIR` (same `HF_HUB_DISABLE_SYMLINKS` behaviour as WhisperX on Windows). No change to `install.js` is required.
+
 **Launch:** After install, the user must click **Start** in Pinokio; the app does not auto-run. **ffmpeg** must be on the user&rsquo;s `PATH` (Pinokio cannot install system encoders for you). **Windows + Align lyrics:** the installer pins a **coherent cu121** stack (see `pyproject.toml` optional deps). ``start.js`` still defaults **CPU** WhisperX so broken setups complete; opt into **GPU** alignment by clearing or overriding ``GLITCHFRAME_WHISPERX_DEVICE`` per README. If `.[all]` fails on a given machine, use **Factory reset** or trim `install.js` locally (see README).
+
+**Tracebacks and `...\uv\python\...` paths:** If an error mentions `collections` or another stdlib module under `%AppData%\Roaming\uv\python\` (or similar), that is usually the **standard library prefix for the interpreter that ran the failing import**, not proof that Pinokio started a different “global Python” while your app logged the `env` launcher. **`uv`** can install the base interpreter there; **venv still uses `env\Scripts\python.exe`** as `sys.executable`. Same process, library files rooted under that store path.
 
 ### No interactive terminal inside Pinokio?
 

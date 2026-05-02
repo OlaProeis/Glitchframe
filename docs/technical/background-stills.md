@@ -42,9 +42,21 @@ any wall-clock time.
    cancel mid-run leaves valid PNGs on disk; the next call resumes by skipping
    any keyframe whose PNG is already readable and only invoking SDXL for the
    missing indices.
-6. `background_frame(t) -> np.ndarray (H, W, 3) uint8` clamps `t` to
-   `[t_0, t_{N-1}]`, finds the bracketing pair, and returns a crossfade blend
-   weighted by `smoothstep((t - t_i) / (t_{i+1} - t_i))`.
+6. `background_frame(t) -> np.ndarray (H, W, 3) uint8` clamps/finds a bracket
+   over the **active** time list: either `BackgroundManifest.keyframe_times`
+   (plain stills) or a denser list after **RIFE** (see below), then returns a
+   crossfade blend weighted by
+   `smoothstep((t - t_i) / (t_{i+1} - t_i))`.
+
+## Optional: RIFE morph (default-on in UI)
+
+When **Morph keyframes (RIFE)** is enabled (`BackgroundStills` /
+`sdxl_rife_morph=True`), after SDXL keyframes are ready the pipeline runs
+Practical-RIFE–style interpolation between each consecutive keyframe pair,
+writes `rife_timeline/rife_*.png` + `manifest_rife.json`, and samples
+`background_frame(t)` along that dense timeline. **Ken Burns on SDXL stills**
+still applies on top when enabled. Details, cache schema, and HF weights:
+[`rife-morph-background.md`](rife-morph-background.md).
 
 ## Cache layout
 
@@ -54,6 +66,10 @@ cache/<hash>/background/
   keyframe_0000.png       # native SDXL generation resolution (1344x768 by default)
   keyframe_0001.png
   ...
+  manifest_rife.json      # optional: when RIFE morph is enabled
+  rife_timeline/          # optional: RIFE densified frames
+    rife_000000.png
+    ...
 ```
 
 `manifest.json` schema (v1):
@@ -107,6 +123,10 @@ rest of the pipeline.
 - Always used: `diffusers`, `torch`, `pillow`, `numpy` (already in core deps).
 - Model weights download on first run under `MODEL_CACHE_DIR` (env overridable
   via `GLITCHFRAME_MODEL_CACHE` (legacy `MUSICVIDS_MODEL_CACHE`); HF also respects `HF_HOME` / `TORCH_HOME`).
+
+## Timeline editor (UI)
+
+The **Background keyframes** Gradio tab edits timing and prompts, runs single-slot SDXL regenerate, and stages upload crops before **Save timeline** updates this cache. See [`background-keyframes-editor.md`](background-keyframes-editor.md).
 
 ## Related files
 

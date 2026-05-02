@@ -45,15 +45,15 @@ class OrchestratorInputs:
     output_settings: dict[str, Any] = field(default_factory=dict)
     # Background compositor source (see ``pipeline.background``); not part of song hash.
     # Default kept in sync with the Gradio radio default in ``app.py``. AnimateDiff
-    # is currently broken (FP16 VAE NaN → all-black frames) so SDXL stills is the
-    # canonical default; AnimateDiff stays selectable but is labelled "(broken)".
+    # is an optional heavier path (video diffusion); many setups use SDXL stills
+    # with optional RIFE morph instead — see ``docs/technical/rife-morph-background.md``.
     background_mode: str = "sdxl-stills"
     static_background_image: str | Path | None = None
     # When True and background_mode is SDXL stills, apply RMS-driven Ken Burns
     # zoom/pan/tilt on top of interpolated keyframes (no extra uploads).
-    sdxl_ken_burns: bool = False
-    # Optical-flow morph between consecutive SDXL keyframes (RIFE). SDXL stills only.
-    sdxl_rife_morph: bool = False
+    sdxl_ken_burns: bool = True
+    # Optical-flow morph between SDXL keyframes (RIFE). SDXL stills only.
+    sdxl_rife_morph: bool = True
     # RIFE depth: ``2**exp`` uniform steps between each keyframe pair (clamped 2–6).
     rife_exp: int = 4
     # Cosmetic render settings (never influence the song cache key).

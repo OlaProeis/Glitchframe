@@ -194,5 +194,9 @@ def rife_build_morph_timeline(
             except Exception as exc:  # noqa: BLE001
                 LOGGER.debug("RIFE cuda empty_cache: %s", exc)
 
-    _report(1.0, "RIFE morph timeline ready")
+    _report(
+        0.97,
+        "RIFE interpolation done — saving morph frames to cache "
+        "(may take several minutes; UI may look idle briefly between updates)…",
+    )
     return frames_out, times_out

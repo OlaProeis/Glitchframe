@@ -25,19 +25,14 @@ from typing import Mapping
 import numpy as np
 
 
-# Baseline edge darkening even with silent uniforms. Keeps the picture framed
-# and gives every preset a baseline of contrast against the SDXL/AnimateDiff
-# still — corners read as a clearly darker band even before the audio pulse
-# adds breath. 0.0 disables the static component (only the audio pulse
-# survives, which is barely visible).
-_BASE_EDGE_DARKEN = 0.32
+# Baseline edge darkening even with silent uniforms. Kept strong enough to read
+# on graded SDXL frames (purple/orange shadows); previously ~0.32 disappeared
+# once the reactive layer had already vignetted and the corners were dark.
+_BASE_EDGE_DARKEN = 0.46
 
-# Maximum *additional* edge darkening contributed by the audio pulse on top of
-# ``_BASE_EDGE_DARKEN``. Layered on top of the base via clamp(base + audio, 0,
-# 1) so loud sections darken corners by up to ``base + audio`` total. Bumped
-# alongside ``_BASE_EDGE_DARKEN`` so the pulse stays visible against the
-# darker baseline.
-_AUDIO_EDGE_PULSE = 0.18
+# Additional edge darkening on bass / drop_hold / rms so hits read clearly on
+# top of the baseline (cinematic pump, not a whisper).
+_AUDIO_EDGE_PULSE = 0.34
 
 # Inner radius (normalised) where vignette begins to ramp in. Below this the
 # frame is untouched. ``1.0`` is the corner of a unit-square (sqrt(2)/sqrt(2)
@@ -103,7 +98,9 @@ def _audio_factor(uniforms: Mapping[str, float]) -> float:
     bass = float(uniforms.get("bass_hit", 0.0) or 0.0)
     hold = float(uniforms.get("drop_hold", 0.0) or 0.0)
     rms = float(uniforms.get("rms", 0.0) or 0.0)
-    f = 0.55 * bass + 0.30 * hold + 0.18 * rms
+    # Bass-forward so corners snap on kicks; hold + RMS keep sustained sections
+    # from looking static.
+    f = 0.62 * bass + 0.28 * hold + 0.20 * rms
     if f < 0.0:
         return 0.0
     if f > 1.0:
