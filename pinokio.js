@@ -1,5 +1,5 @@
 module.exports = {
-  version: "2.0",
+  version: "3.7",
   title: "Glitchframe",
   description: "Local GPU music video generator (Gradio UI)",
   icon: "icon.png",
@@ -12,45 +12,84 @@ module.exports = {
     },
   ],
   menu: async (kernel, info) => {
-    const installing = info.running("install.js");
-    const installed = info.exists("env");
-
-    if (installing) {
-      return [
-        { icon: "fa-solid fa-plug", text: "Installing...", href: "install.js" },
-      ];
+    let installed = info.exists("env")
+    let running = {
+      install: info.running("install.js"),
+      start: info.running("start.js"),
+      update: info.running("update.js"),
+      reset: info.running("reset.js")
     }
-
-    if (installed) {
-      const running = info.running("start.js");
-      if (running) {
-        const memory = info.local("start.js");
-        if (memory && memory.url) {
-          return [
-            { icon: "fa-solid fa-rocket", text: "Open Web UI", href: memory.url },
-            { icon: "fa-solid fa-terminal", text: "Terminal", href: "start.js" },
-            { icon: "fa-solid fa-rotate", text: "Update", href: "update.js" },
-            { icon: "fa-solid fa-plug", text: "Reinstall", href: "install.js" },
-            { icon: "fa-solid fa-broom", text: "Factory Reset", href: "reset.js" },
-          ];
+    if (running.install) {
+      return [{
+        default: true,
+        icon: "fa-solid fa-plug",
+        text: "Installing",
+        href: "install.js",
+      }]
+    } else if (installed) {
+      if (running.start) {
+        let local = info.local("start.js")
+        if (local && local.url) {
+          return [{
+            default: true,
+            icon: "fa-solid fa-rocket",
+            text: "Open Web UI",
+            href: local.url,
+          }, {
+            icon: 'fa-solid fa-terminal',
+            text: "Terminal",
+            href: "start.js",
+          }]
+        } else {
+          return [{
+            default: true,
+            icon: 'fa-solid fa-terminal',
+            text: "Terminal",
+            href: "start.js",
+          }]
         }
-        return [
-          { icon: "fa-solid fa-terminal", text: "Terminal", href: "start.js" },
-          { icon: "fa-solid fa-rotate", text: "Update", href: "update.js" },
-          { icon: "fa-solid fa-broom", text: "Factory Reset", href: "reset.js" },
-        ];
+      } else if (running.update) {
+        return [{
+          default: true,
+          icon: 'fa-solid fa-rotate',
+          text: "Updating",
+          href: "update.js",
+        }]
+      } else if (running.reset) {
+        return [{
+          default: true,
+          icon: 'fa-solid fa-broom',
+          text: "Resetting",
+          href: "reset.js",
+        }]
+      } else {
+        return [{
+          default: true,
+          icon: "fa-solid fa-power-off",
+          text: "Start",
+          href: "start.js",
+        }, {
+          icon: "fa-solid fa-rotate",
+          text: "Update",
+          href: "update.js",
+        }, {
+          icon: "fa-solid fa-plug",
+          text: "Reinstall",
+          href: "install.js",
+        }, {
+          icon: "fa-solid fa-broom",
+          text: "<div><strong>Reset</strong><div>Revert to pre-install state</div></div>",
+          href: "reset.js",
+          confirm: "Are you sure you wish to reset the app?"
+        }]
       }
-      return [
-        { default: true, icon: "fa-solid fa-power-off", text: "Start", href: "start.js" },
-        { icon: "fa-solid fa-rotate", text: "Update", href: "update.js" },
-        { icon: "fa-solid fa-plug", text: "Reinstall", href: "install.js" },
-        { icon: "fa-solid fa-broom", text: "Factory Reset", href: "reset.js" },
-      ];
+    } else {
+      return [{
+        default: true,
+        icon: "fa-solid fa-plug",
+        text: "Install",
+        href: "install.js",
+      }]
     }
-
-    return [
-      { icon: "fa-solid fa-plug", text: "Install", href: "install.js" },
-      { icon: "fa-solid fa-rotate", text: "Update", href: "update.js" },
-    ];
-  },
-};
+  }
+}
