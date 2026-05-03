@@ -1145,7 +1145,7 @@
         "id": 67,
         "title": "Track A2: torch 2.7+cu128, WhisperX 3.3.6+, ctranslate2 4.5+ (RTX 50 / Pinokio)",
         "description": "Migrate Windows GPU stack from Track A (torch 2.2.2+cu121, WhisperX 3.3.0, ctranslate2 4.4.0, cuDNN 8) to a cu128-era chain so RTX 50 (Blackwell) works and Pinokio matches the proven whisper-webui / jhj0517 setup.",
-        "details": "Scope:\n- pyproject.toml, requirements.txt, install.js: pin torch / torchvision / torchaudio to 2.7.x + cu128 index; bump whisperx to a version compatible with torch>=2.5 (e.g. >=3.3.6 per metadata); bump ctranslate2 to >=4.5,<5; align faster-whisper with WhisperX pins.\n- Pinokio install.js: consider conditional branch for RTX 50 (Pinokio when: gpu_model matches 50 series) vs default all NVIDIA Windows to cu128; keep requires.bundle ai; do not add nvidia-cudnn-cu12 pip wheel without full retest (history of DLL clashes).\n- Re-validate Align lyrics (GPU + existing CPU retry), Demucs, SDXL, AnimateDiff on Windows; adjust or retire scripts/windows_provision_cudnn_next_to_ctranslate2.py if redundant under cuDNN 9.\n- Docs: extend pinokio-lyrics-align-windows-handover.md and current-handover-prompt with Track A2 notes.\n- Reference: pinokiofactory whisper-webui (torch.js, install.js) and Pinokio beta app github-com-pinokiofactory-whisper-webui.\n\nDefer compat shim removal to task 68.",
+        "details": "Scope:\n- pyproject.toml, requirements.txt, install.js: pin torch / torchvision / torchaudio to 2.7.x + cu128 index; bump whisperx to a version compatible with torch>=2.5 (e.g. >=3.3.6 per metadata); bump ctranslate2 to >=4.5,<5; align faster-whisper with WhisperX pins.\n- Pinokio install.js: consider conditional branch for RTX 50 (Pinokio when: gpu_model matches 50 series) vs default all NVIDIA Windows to cu128; keep requires.bundle ai; do not add nvidia-cudnn-cu12 pip wheel without full retest (history of DLL clashes).\n- Re-validate Align lyrics (GPU + existing CPU retry), Demucs, SDXL, AnimateDiff on Windows; adjust or retire scripts/windows_provision_cudnn_next_to_ctranslate2.py if redundant under cuDNN 9.\n- Docs: extend pinokio-lyrics-align-windows-handover.md and current-handover-prompt with Track A2 notes.\n- Reference: pinokiofactory whisper-webui (torch.js, install.js) and Pinokio beta app github-com-pinokiofactory-whisper-webui.\n- After Track A2 lands, task 70 captures RTX 5080 Pinokio tester feedback (torch.js, single owner for CUDA torch, slimmer install).\n\nDefer compat shim removal to task 68.",
         "testStrategy": "Clean .venv and Pinokio reinstall; python -m unittest discover; manual: Analyze + Align lyrics + short preview render on Windows; RTX 50 smoke with Pinokio admin or external tester if available.",
         "priority": "high",
         "dependencies": [
@@ -1182,12 +1182,49 @@
         "status": "pending",
         "subtasks": [],
         "updatedAt": "2026-04-28T21:00:00.000Z"
+      },
+      {
+        "id": 70,
+        "title": "Pinokio: absorb RTX 5080 installer feedback (post Track A2)",
+        "description": "Merge external Pinokio tester outcomes into the shipped install story: single owner for CUDA Torch (torch.js vs pip extras), optionally remove Torch from pyproject optional deps or trim pip install -e .[all] from install.js where it duplicates Pinokio, readability pass on install.js and start.js.",
+        "details": "Source: Discord RTX 5080 / torch 2.7+cu128 tester. Deliverables: reconcile with task 67 Track A2 pins; prefer whisper-webui style torch.js; avoid fighting the resolver with Torch in both pyproject and Pinokio. Merge tester branch or gist rather than blind replace. Optional: trim comments on start.js and install.js once behavior is frozen.",
+        "testStrategy": "Clean Pinokio reinstall on Windows; Analyze, Align lyrics, short preview; compare install log to pre-change baseline; no duplicate torch upgrade downgrade cycles in one install.",
+        "priority": "high",
+        "dependencies": [
+          "67"
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 71,
+        "title": "BeatNet/madmom strategy for Python 3.11 plus",
+        "description": "Pick a supported path for tempo and downbeats without downgrading Python: maintained fork, alternate model, or documented librosa-only default on Windows Pinokio.",
+        "details": "Context: BeatNet pins pull numba/llvmlite unsuitable for 3.11; uv pip install beatnet --no-deps does not fix madmom collections.MutableSequence (removed from collections in Python 3.10+). Non-goals: monkey-patching stdlib collections, standardizing on Python 3.9 for Glitchframe. Options to evaluate: community fork, Essentia/allin1-style beat tools, or explicitly support librosa fallback only and update docs. Smoke: Analyze logs show tempo.source librosa when ML stack absent and pipeline still behaves.",
+        "testStrategy": "Unit or manual: analyze_song with beats extra absent returns valid analysis.json and tempo.source documented; no ImportError in core app startup.",
+        "priority": "medium",
+        "dependencies": [],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 72,
+        "title": "Investigate Align lyrics empty Whisper textarea",
+        "description": "When alignment runs, Gradio lyric-related text areas stay empty despite optional beat detectors only logging skips (unrelated).",
+        "details": "Separate from BeatNet or madmom ImportError lines. Check app.py and lyrics_aligner handlers: return wiring to Gradio components, swallowed exceptions, WhisperX or HF download failures, HF_HUB symlink settings. Prefer reproduction on torch 2.7+cu128 Pinokio env (task 67). Collect full traceback from Align lyrics, not INFO skip lines only.",
+        "testStrategy": "Reproduce or close: after fix, Align fills transcript or pasted-align result text as designed; add log line on failure path if currently silent.",
+        "priority": "medium",
+        "dependencies": [
+          "67"
+        ],
+        "status": "pending",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-28T21:00:00.000Z",
-      "taskCount": 69,
+      "lastModified": "2026-05-02T10:00:00.000Z",
+      "taskCount": 72,
       "completedCount": 50,
       "tags": [
         "master"

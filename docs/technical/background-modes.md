@@ -4,7 +4,8 @@ Feature: selectable full-frame backgrounds for the compositor via a shared
 `BackgroundSource` API (`ensure()` / `background_frame(t)` / `close()`).
 
 See also `docs/technical/background-stills.md` for the SDXL keyframe cache and
-interpolation details.
+interpolation details, and `docs/technical/background-keyframes-editor.md` for
+the Gradio timeline (edit timing/prompts, regen, uploads).
 
 > **Status — AnimateDiff black-frame regression fixed.** The SDXL stock VAE
 > silently NaNs in fp16 once the (16-frame × latent) tensor passes through
@@ -20,14 +21,14 @@ interpolation details.
 
 | Canonical ID | Module / class | Notes |
 |--------------|----------------|-------|
-| `sdxl-stills` | `pipeline.background_stills.BackgroundStills` | **Default.** `manifest.json` + `keyframe_*.png`. |
+| `sdxl-stills` | `pipeline.background_stills.BackgroundStills` | **Default.** `manifest.json` + `keyframe_*.png`. Optional **RIFE** morph (`sdxl_rife_morph`, `rife_exp`); see [`rife-morph-background.md`](rife-morph-background.md). |
 | `static-kenburns` | `pipeline.background_kenburns.StaticKenBurnsBackground` | `manifest_static_kenburns.json`, `source.<ext>`; RMS from `analysis.json` drives zoom/pan/tilt. |
 | `animatediff` | `pipeline.background_animatediff.AnimateDiffBackground` | **AnimateDiff seeded by SDXL stills.** Wraps a `BackgroundStills` instance as `init_image_source` and uses each closest SDXL keyframe as the **init latent** for the matching AnimateDiff segment — the output IS the SDXL still, animated. No sample-time blending / overlay. `manifest_animatediff.json` (schema v2), `anim_{seg}_{f}.png`; requires CUDA + diffusers with `AnimateDiffSDXLPipeline`. Loads `madebyollin/sdxl-vae-fp16-fix` for fp16-safe decode. |
 
 ## Factory and orchestration
 
-- **Source modules:** `pipeline/background.py` (protocol + factory), `background_stills.py`, `background_kenburns.py`, `background_animatediff.py`; UI/inputs: `app.py`, `orchestrator.py` (`background_mode`, `static_background_image`).
-- `pipeline.background.create_background_source(mode, cache_dir, preset_id=..., preset_prompt=..., static_image_path=...)` returns a concrete source.
+- **Source modules:** `pipeline/background.py` (protocol + factory), `background_stills.py`, `background_kenburns.py`, `background_animatediff.py`; UI/inputs: `app.py`, `orchestrator.py` (`background_mode`, `static_background_image`, `sdxl_ken_burns`, `sdxl_rife_morph`, `rife_exp` for stills).
+- `pipeline.background.create_background_source(...)` returns a concrete source (`sdxl_rife_morph` / `rife_exp` apply only to `sdxl-stills`).
 - `pipeline.background.normalize_background_mode` maps UI labels to canonical IDs (raises on unknown).
 - `OrchestratorInputs.background_mode` and `OrchestratorInputs.static_background_image` carry user choices into full render / preview (non-cache-key metadata).
 
@@ -41,10 +42,8 @@ builder (`_build_keyframe_prompt` in `background_stills.py`):
   t=X.Xs`) to diversify still keyframes; harmless for image diffusion.
 - **AnimateDiff** skips structural hints — the motion adapter treats them as
   content and drifts off-topic. Instead every loop gets:
-  1. The preset's scene prompt (from YAML `prompt`).
-  2. A preset-specific **motion flavor** from `MOTION_FLAVORS` (e.g. "slow
-     cosmic drift, subtle parallax between dust layers" for `cosmic-flow`). Unknown
-     preset ids fall back to `DEFAULT_MOTION_FLAVOR`.
+  1. The **scene prompt** from the orchestrator (Gradio **Visual style** textbox, or the shader’s built-in example when empty).
+  2. A **motion flavor**: for cache ids `style-<shader_stem>`, from `pipeline.visual_style.motion_flavor_for_style_preset`; otherwise from legacy `MOTION_FLAVORS` by preset id, or `DEFAULT_MOTION_FLAVOR` when unknown.
   3. A **pacing cue** that varies by song position: `establishing shot, slow
      motion` in the first quartile, `steady motion` through the middle,
      `slower fade-out motion` in the last quartile (`_pacing_cue`).

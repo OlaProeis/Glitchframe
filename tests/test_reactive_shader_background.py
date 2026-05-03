@@ -41,6 +41,10 @@ if _GL_AVAILABLE:  # Import lazily so the skip works on GL-less hosts.
     from pipeline.reactive_shader import BUILTIN_SHADERS, ReactiveShader
 
 
+# ReactiveShader rejects ``none``; only GL-backed stems are tested below.
+_BG_TEST_SHADERS: tuple[str, ...] = tuple(s for s in BUILTIN_SHADERS if s != "none")
+
+
 _SILENT_UNIFORMS: dict[str, Any] = {
     "time": 0.0,
     "beat_phase": 0.0,
@@ -67,7 +71,7 @@ class TestBackgroundTextureFormat(unittest.TestCase):
         # ``"f1"`` -> GL_RGB8 (normalised; sampler2D reads as floats in [0, 1]).
         # ``"u1"`` -> GL_RGB8UI (integer; only usampler2D can read it; sampler2D
         # silently returns vec4(0)).
-        with ReactiveShader("particles", width=32, height=32) as shader:
+        with ReactiveShader("spectral_milkdrop", width=32, height=32) as shader:
             self.assertEqual(shader._bg_tex.dtype, "f1")
             self.assertEqual(shader._bg_tex.components, 3)
 
@@ -88,7 +92,7 @@ class TestBackgroundComposite(unittest.TestCase):
         # uploaded pixels, the diff between black-bg and bright-bg renders
         # would be zero. We require a non-trivial difference for every
         # bundled shader.
-        for shader_name in BUILTIN_SHADERS:
+        for shader_name in _BG_TEST_SHADERS:
             with self.subTest(shader=shader_name):
                 with ReactiveShader(shader_name, width=32, height=32) as r:
                     out_black = r.render_frame_composited_rgb(
@@ -120,7 +124,7 @@ class TestBackgroundComposite(unittest.TestCase):
         # we hold it to a looser bar.
         bg = self._bright_bg()
         loose_shaders = {"synth_grid"}
-        for shader_name in BUILTIN_SHADERS:
+        for shader_name in _BG_TEST_SHADERS:
             if shader_name in loose_shaders:
                 continue
             with self.subTest(shader=shader_name):

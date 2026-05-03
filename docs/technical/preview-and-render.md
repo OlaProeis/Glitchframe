@@ -19,7 +19,7 @@ Both entry points share `_render_pipeline`:
 
 1. **Analysis (+ optional lyrics alignment)** via `orchestrate_analysis`. Cache-hits short-circuit this stage.
    - Preview: **0–25%**, Full: **0–20%**.
-2. **Background preparation** via `create_background_source(...).ensure()`. SDXL stills, Ken Burns, and AnimateDiff caches are all reused when present.
+2. **Background preparation** via `create_background_source(...).ensure()`. SDXL stills (including optional **RIFE** morph cache under `background/rife_timeline/`), Ken Burns, and AnimateDiff caches are all reused when present.
    - Preview: **25–45%**, Full: **20–40%**.
    - AnimateDiff: after segments are generated or loaded from disk, the diffusion **pipeline is unloaded** so the compositor does not share VRAM with SDXL (first compositor frame used to look “stuck” at 40% while memory was contended).
 3. **Compositor** via `render_full_video`.

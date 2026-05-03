@@ -16,17 +16,17 @@
 - **GPU:** CUDA 12.x, PyTorch 2.x (FP16/BF16)
 - **UI:** Gradio 4.x (`app.py` entry)
 - **Audio:** librosa, soundfile, BeatNet (madmom fallback), demucs, whisperx
-- **Diffusion:** diffusers, SDXL (+ optional AnimateDiff)
+- **Diffusion:** diffusers, SDXL keyframe stills; optional optical-flow morph (**RIFE**) between stills (`AnimateDiff` pipeline code remains for compatibility/tests but is not exposed in the Gradio UI)
 - **Graphics:** moderngl (reactive shaders), skia-python (kinetic type), Pillow, numpy
 - **Video:** ffmpeg with NVENC (`h264_nvenc`), raw BGR frame pipe from compositor
 - **Packaging:** `pyproject.toml` (hatchling, `pipeline` package) + `requirements.txt`; optional `GLITCHFRAME_*` paths in `.env` (legacy `MUSICVIDS_*`); see `.env.example`
 
 ## Architecture & Data Model
 
-- **Flow:** Gradio UI → orchestrator coordinates audio analysis, lyrics alignment, background generation (`BackgroundSource`: SDXL stills, static Ken Burns, optional AnimateDiff), reactive + typography layers → compositor blends frames → ffmpeg encodes `output.mp4`; thumbnail + `metadata.txt` alongside.
+- **Flow:** Gradio UI → orchestrator coordinates audio analysis, lyrics alignment, background generation (`BackgroundSource`: SDXL stills + optional RIFE morph + Ken Burns on stills, or static Ken Burns upload), reactive + typography layers → compositor blends frames → ffmpeg encodes `output.mp4`; thumbnail + `metadata.txt` alongside.
 - **Caching:** Per-song hash under `cache/<song_hash>/` — after ingest: `original.wav`, `analysis_mono.wav`; later: `analysis.json`, stems, `lyrics.aligned.json`, `background/`.
 - **Outputs:** `outputs/<run_id>/` with `output.mp4`, `thumbnail.png`, `metadata.txt`.
-- **Presets:** YAML in `presets/` (prompt, shader stem, typography style, hex palette); `config.py` loads and validates the registry; `pipeline/builtin_shaders.py` lists allowed shader stems without importing OpenGL.
+- **Visual style:** `pipeline/visual_style.py` (per-shader example prompts / palettes); optional YAML in `presets/`; `config.py` validates registry when files exist; `pipeline/builtin_shaders.py` allowlist; reactive **none** stem skips GL in `pipeline/compositor.py`.
 
 ## Conventions
 
@@ -46,8 +46,8 @@
 | Drop / build-up / band transients (analysis v2 `events` block) | `pipeline/musical_events.py`, `pipeline/beat_pulse.py` (`build_band_pulse_track`), `docs/technical/musical-events.md` |
 | M1 spectrum render → ffmpeg (`output.mp4` under `outputs/<run_id>/`) | `pipeline/renderer.py`, `config.new_run_id` |
 | Audio / lyrics / backgrounds / layers / encode | `pipeline/*.py` |
-| Background modes (factory + caches) | `pipeline/background.py`, `pipeline/background_stills.py`, `pipeline/background_kenburns.py`, `pipeline/background_animatediff.py`, `docs/technical/background-modes.md` |
-| Visual style presets | `presets/*.yaml`, `docs/technical/visual-style-presets.md` |
+| Background modes (factory + caches; AnimateDiff module retained, not Gradio UI) | `pipeline/background.py`, `pipeline/background_stills.py`, `pipeline/background_kenburns.py`, `pipeline/background_animatediff.py`, `docs/technical/background-modes.md` |
+| Visual style / shaders | `presets/*.yaml` (optional), `pipeline/visual_style.py`, `docs/technical/visual-style-presets.md` |
 | Bundled reactive shader stems (no GL import) | `pipeline/builtin_shaders.py` |
 | Reactive shader, background texture composite, Gradio reactive preview | `pipeline/reactive_shader.py`, `docs/technical/reactive-composite-and-gradio-preview.md` |
 | Logo overlay (Pillow + NumPy blend, Gradio Branding) | `pipeline/logo_composite.py`, `docs/technical/logo-composite.md` |

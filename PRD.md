@@ -16,7 +16,7 @@ Inputs:
 - Song metadata (artist, title, album, year, genre)
 - A logo PNG (optional, transparent background)
 - Lyrics text (optional, one line per lyric line)
-- A style/mood selection (preset + optional custom prompt)
+- Visual style selection: reactive shader (including **none** / passthrough), per-shader scene prompt text, typography + palette bundled in code (`pipeline/visual_style.py`; optional YAML overrides still supported)
 
 Outputs (written to `outputs/<run_id>/`):
 
@@ -69,8 +69,8 @@ Single-page layout, sections:
 - **Branding**: logo upload, logo position (4 corners / center), logo opacity slider.
 - **Lyrics**: large textarea (paste raw lyrics, one line per lyric line), checkbox "Enable kinetic typography".
 - **Visual style**:
-  - Preset dropdown: `neon-synthwave`, `minimal-mono`, `organic-liquid`, `glitch-vhs`, `cosmic`, `lofi-warm` (each preset bundles SD prompt, shader, typography style, color palette).
-  - "Custom prompt" text field (overrides preset's SD prompt).
+  - Reactive shader dropdown: **No reactive shader**, `void_ascii_bg`, `spectral_milkdrop`, `tunnel_flight`, `synth_grid`; each bundles default scene prompt text, typography style, palette, motion flavor (`style-<stem>` ids for cache/metadata).
+  - Scene prompt text field (AnimateDiff/stills backgrounds; prefilled per shader; empty falls back to the bundle example).
   - Background mode: `AI stills (fast)`, `AI animated (AnimateDiff, slow)`, `Static image upload`.
   - Reactive intensity slider (0–100%).
 - **Output**: resolution (1080p default, 4K optional), fps (30/60), filename prefix.
@@ -103,7 +103,7 @@ Results cached as `cache/<song_hash>/analysis.json` + stem WAVs so re-renders sk
 
 ### 3.4 Background generator
 
-- **AI stills mode (default)**: generate `N = ceil(duration / 8 s)` SDXL keyframes using the preset prompt + custom prompt, interpolate between them with `FILM` or simple crossfades synced to section boundaries. Each image 1920×1080, upscaled if needed. Runs in `diffusers` pipeline with FP16 on the 3090.
+- **AI stills mode (default)**: generate `N = ceil(duration / 8 s)` SDXL keyframes using the scene prompt resolved from Visual style (+ optional YAML preset when used), interpolate between them with `FILM` or simple crossfades synced to section boundaries. Each image 1920×1080, upscaled if needed. Runs in `diffusers` pipeline with FP16 on the 3090.
 - **AnimateDiff mode**: short motion loops (~2 s) generated per section, looped/crossfaded. Heavier VRAM/time but true motion.
 - **Static image mode**: use uploaded image with subtle Ken-Burns + parallax based on RMS envelope.
 
@@ -113,7 +113,7 @@ Results cached in `cache/<song_hash>/background/`.
 
 - GPU shader pass via `moderngl` (OpenGL, offscreen FBO) — draws on top of the background frame.
 - Uniforms per frame: `time`, `beat_phase`, `band_energies[8]`, `rms`, `onset_pulse`.
-- Shader library in `assets/shaders/`: spectrum rings, particle field, geometry pulses, liquid flow, glitch RGB-split. Preset picks one + tuning.
+- Shader library in `assets/shaders/`: bundled reactive fragments listed in `pipeline/builtin_shaders.py` (`void_ascii_bg`, `spectral_milkdrop`, `tunnel_flight`, `synth_grid`); **`none`** skips the GL pass so only the diffusion/static background shows through (plus typography, logo, FX).
 - Rendered at target resolution, alpha-composited onto background.
 
 ### 3.6 Kinetic typography layer
@@ -122,7 +122,7 @@ Results cached in `cache/<song_hash>/background/`.
 - Driven by `lyrics.aligned.json`.
 - Per-word motion presets: `pop-in`, `beat-shake`, `scale-pulse`, `slide`, `flicker`.
 - Line layout: centered lower-third by default, auto-resize to fit safe area, previous line fades as next starts.
-- Font: bundled open-license display fonts per preset (e.g. Inter, Bebas Neue, Syne, Space Mono).
+- Font: bundled open-license display font (defaults via `CompositorConfig`; override in UI/config).
 - Rendered as RGBA at target resolution, composited on top of the reactive layer.
 
 ### 3.7 Compositor & encoder
@@ -144,11 +144,11 @@ Results cached in `cache/<song_hash>/background/`.
 
 ### 3.8 Thumbnail & metadata
 
-- **Thumbnail**: pick the frame at the first chorus downbeat (or loudest 1-s window), overlay a big-text treatment of `Artist — Title` using the same typography preset. Save as `thumbnail.png` 1920×1080.
+- **Thumbnail**: pick the frame at the first chorus downbeat (or loudest 1-s window), overlay a big-text treatment of `Artist — Title` using the same typography/color bundle as the run. Save as `thumbnail.png` 1920×1080.
 - **metadata.txt**:
   - Title: `{Artist} — {Title} [Official Visualizer]`
   - Description: song info + optional lyric block + "Generated with Glitchframe" line.
-  - Tags: genre, artist, title, "music visualizer", plus tags derived from preset.
+  - Tags: genre, artist, title, "music visualizer", plus tags derived from visual style (`preset_id`, shader stem, hyphen segments).
   - Chapters (if instrumental sections detected): `00:00 Intro`, `00:32 Verse 1`, etc.
 
 ---
@@ -171,7 +171,7 @@ Results cached in `cache/<song_hash>/background/`.
 ```
 glitchframe/
 ├── app.py                  # Gradio entrypoint
-├── config.py               # Defaults, paths, preset registry
+├── config.py               # Defaults, paths; optional presets dir
 ├── orchestrator.py         # Pipeline coordinator
 ├── pipeline/
 │   ├── audio_analyzer.py
@@ -182,11 +182,9 @@ glitchframe/
 │   ├── compositor.py
 │   ├── thumbnail.py
 │   ├── metadata.py
+│   ├── visual_style.py       # Shader bundles & style-* ids
 │   └── renderer.py
-├── presets/
-│   ├── neon-synthwave.yaml
-│   ├── minimal-mono.yaml
-│   └── ...
+├── presets/                  # Optional YAML overrides (empty by default).
 ├── assets/
 │   ├── shaders/
 │   └── fonts/
@@ -201,10 +199,10 @@ glitchframe/
 ## 6. Milestones (phased build)
 
 - **M1 — Skeleton + audio analysis**: Gradio shell, upload, BeatNet + spectrum + RMS, render a plain 1080p video with a simple spectrum visualizer overlaid on a solid color, ffmpeg NVENC piping, audio muxed in. Proves the render pipeline end-to-end.
-- **M2 — Reactive shader layer**: `moderngl` offscreen rendering, 2–3 shaders, preset YAMLs, logo compositing, thumbnail + metadata generation.
+- **M2 — Reactive shader layer**: `moderngl` offscreen rendering, bundled reactive shaders (+ optional **`none`** passthrough), optional YAML presets, logo compositing, thumbnail + metadata generation.
 - **M3 — Lyrics alignment + typography**: Demucs + WhisperX + alignment, Skia typography layer with 3 motion presets.
 - **M4 — AI background (stills)**: SDXL integration, keyframe prompt planning from song sections, interpolation, caching.
-- **M5 — Polish**: AnimateDiff mode (optional), 4K support, preview-10s fast path, preset library expansion, error handling + resumable renders.
+- **M5 — Polish**: AnimateDiff mode (optional), 4K support, preview-10s fast path, shader/visual-style tweaks, error handling + resumable renders.
 
 Each milestone produces a usable tool; scope can stop at any milestone if priorities shift.
 

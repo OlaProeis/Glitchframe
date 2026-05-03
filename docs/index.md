@@ -18,7 +18,7 @@
 
 - `docs/technical/pinokio-package.md` - Pinokio scripts (`install.js` / `start.js` / `pinokio.js`); discover by searching **glitchframe** in Pinokio; venv `env`, optional `[all]`, `ffmpeg` prereq.
 - `docs/technical/pinokio-lyrics-align-windows-handover.md` - **Handover prompt:** Pinokio on Windows, Align lyrics / WhisperX / cuDNN, what we tried, open questions, revert notes.
-- `docs/technical/project-setup-and-config.md` - Repo layout, pyproject/requirements, config paths and preset registry.
+- `docs/technical/project-setup-and-config.md` - Repo layout, pyproject/requirements, config paths, optional `presets/*.yaml` registry.
 - `docs/technical/windows-venv-recovery-guide.md` - Windows: step-by-step venv recovery after PyTorch / WhisperX lyrics-align issues (weights_only, cuDNN DLL mismatches).
 - `docs/technical/gradio-ui.md` - Gradio `app.py` tabbed UI, inputs, queue, placeholder actions, and run log.
 - `docs/technical/audio-ingest-and-cache.md` - Upload ingest, `cache/<hash>/` WAV artifacts, and Gradio waveform preview.
@@ -44,7 +44,7 @@
 - `docs/technical/orchestrator-effects-timeline-wiring.md` - Preview/full render: load `effects_timeline.json` into `CompositorConfig`, `OrchestratorInputs` flags, merged auto-reactivity master.
 - `docs/technical/reactive-shader-layer.md` - Offscreen moderngl fragment-shader pass, bundled GLSL shaders, `analysis.json`→uniforms mapping (`onset_env`, `bar_phase`, `build_tension` samplers + compositor-injected `bass_hit`/`transient_*`/`drop_hold`), and the per-uniform shader authoring guide.
 - `docs/technical/reactive-composite-and-gradio-preview.md` - Reactive pass blended over RGB background in GLSL, strict shader resolution, intensity, and Gradio one-frame preview.
-- `docs/technical/visual-style-presets.md` - Preset YAML schema, `config` registry validation, `builtin_shaders` allowlist, and Gradio preset auto-fill.
+- `docs/technical/visual-style-presets.md` - Shader-first Visual style tab, `pipeline/visual_style.py` defaults per stem, `style-*` cache ids, `BUILTIN_SHADERS`, optional YAML presets.
 - `docs/technical/kinetic-typography.md` - Skia per-word typography layer, motion presets keyed by `typo_style`, and `lyrics.aligned.json`→RGBA frames.
 - `docs/technical/logo-composite.md` - Optional PNG logo load, resize, corner/center placement, and NumPy alpha blend onto RGB/RGBA frames; Gradio branding preview.
 - `docs/technical/logo-rim-lights-prep.md` - `compute_logo_rim_prep`: luma+edge line mask, alpha centroid, and stroke-vs-halo `use_line_features` fallback for future rim lighting.
@@ -56,6 +56,8 @@
 - `docs/technical/logo-rim-beams.md` - Pre-choreographed rim beams on drops + snare lead-ins: schedule algorithm, 10 s group gating, per-frame premultiplied RGBA patch, and `BeamConfig` tuning.
 - `docs/technical/rim-beams-bloom-handover.md` - Ongoing investigation handover: beam glow cutoff, rim attachment, tried fixes, and suggested next steps for a future session.
 - `docs/technical/background-stills.md` - SDXL FP16 keyframe generator, section-aware prompts, cached PNGs under `cache/<hash>/background/`, and smoothstep-crossfade `background_frame(t)` API.
+- `docs/technical/background-keyframes-editor.md` - Gradio **Background keyframes** tab: waveform timeline, per-clip prompts, regen/replace/crop, `keyframes_timeline.json`, auto-sync + `selected_target_id`, upload staging; no in-UI add-keyframe (fixed still count).
+- `docs/technical/rife-morph-background.md` - Optional RIFE optical-flow morph between SDXL keyframes (defaults, cache `manifest_rife.json` + `rife_timeline/`, CUDA bake, HF weights).
 - `docs/technical/background-modes.md` - `BackgroundSource` factory, Ken Burns + AnimateDiff caches, AnimateDiff seeded from SDXL stills (init-latent injection, sequential SDXL→AnimateDiff lifecycle, cross-segment prompt travel), Gradio/orchestrator mode wiring (cross-ref SDXL stills doc).
 - `docs/technical/frame-compositor.md` - Per-frame compositor pipeline: bg + reactive + typography + logo, compositor-scope shader uniforms (`bass_hit`, `transient_lo/mid/hi`, `drop_hold`) built once per render, bounded queue producer/consumer, `bgr24` ffmpeg stdin.
 - `docs/technical/audio-vignette.md` - Audio-pulsing dark-edge vignette post-pass (between shader composite and typography) — adds baseline SDXL/shader contrast and a subtle bass + drop_hold breath at the corners.

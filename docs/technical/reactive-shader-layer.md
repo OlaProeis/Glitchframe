@@ -11,21 +11,22 @@ GPU fragment-shader pass via **moderngl** running in a **standalone OpenGL 3.3+ 
 - **`ReactiveShader.reset_feedback()`** — zero the previous-frame texture and force `u_has_prev = 0` on the next draw. No-op when feedback wasn't enabled. Call this between independent render sessions (e.g. each Gradio preview click) so trails don't bleed across runs.
 - **`ReactiveShader.feedback_enabled`** / **`ReactiveShader.has_prev_frame`** — read-only view of the ping-pong state.
 - **`uniforms_at_time(analysis, t, *, num_bands, intensity, onset_decay)`** — translates an `analysis.json` dict into the uniform dict for wall-clock time `t` in seconds.
-- **`resolve_builtin_shader_stem(stem)`** — validates the stem against `BUILTIN_SHADERS` and the presence of `{stem}.frag` under `SHADERS_DIR`; raises on unknown or missing files (no fallback).
+- **`resolve_builtin_shader_stem(stem)`** — validates non-`none` stems against `BUILTIN_SHADERS` and `{stem}.frag` under `SHADERS_DIR`; raises on unknown or missing files. The stem **`none`** is allowlisted and skips the fragment file check (full frames use a CPU passthrough in `pipeline.compositor`, not `ReactiveShader`). **`ReactiveShader(..., shaders_dir=tmpdir)`** (tests) resolves arbitrary stems from that directory without the allowlist.
 - **`composite_premultiplied_rgba_over_rgb(rgba, rgb)`** — CPU alpha-blend matching the GPU premultiplied-over-RGB math (for tests or offline use).
 - **`ShaderUniforms`** — optional typed uniform bag (`.as_dict()` is what `render_frame` expects).
 - **`BUILTIN_SHADERS`** — tuple of bundled fragment-shader stems.
 
 ## Shader library (`assets/shaders/`)
 
-- **`passthrough.vert`** — shared fullscreen-quad vertex shader; feeds a `[0, 1]` `v_uv` to every fragment shader.
-- **`spectrum_bars.frag`** — 8 reactive bars, color shifts with `beat_phase`, glow pulses on `onset_pulse`.
-- **`particles.frag`** — cellular noise field; per-cell radius reacts to the mapped spectrum band; drift speed scales with `rms`.
-- **`geometry_pulse.frag`** — concentric rings pulsing on onsets; ring tone mixes on `rms`, spacing modulates with `time`.
-- **`tunnel_flight.frag`** — first-person wireframe tunnel (spiral lattice, corner nodes, dual-layer line glow); scroll and palette cross-fade with `rms` / `bass_hit`, sparks on high-band transients.
-- **`spectral_milkdrop.frag`** — Milkdrop-style hybrid: curl-noise *translation* feedback (no inward radial zoom — deliberately avoids the tunnel composition), 6 ↔ 8-fold polar-wedge kaleidoscope on the fresh layer, domain-warped FBM smoke filaments (`f(p + f(p + f(p)))`), audio-driven Lissajous waveform trace summed over all 8 `band_energies` and mirrored through the kaleidoscope, slow 5-slot hue-cycling palette ramp. Reactivity routes the same uniform stack as the rest of the library (`bass_hit` / `transient_*` / `onset_*` / `build_tension` / `drop_hold` / `bar_phase` / `beat_phase`) into flow speed, kaleidoscope step, palette hue, ridge brightness, waveform amplitude, and post-drop palette[4] bloom.
+Active stems match `pipeline.builtin_shaders.BUILTIN_SHADERS`. When the user picks **No reactive shader** (`none`), the compositor skips `ReactiveShader` and passes the background through unchanged (then typography, logo, effects, etc.).
 
-Every fragment shader expects the same uniform contract and writes premultiplied RGBA so downstream compositing can alpha-blend without further math.
+- **`passthrough.vert`** — shared fullscreen-quad vertex shader; feeds a `[0, 1]` `v_uv` to every fragment shader.
+- **`void_ascii_bg.frag`** — GPU void / grain field; the orchestrator also enables the CPU **ASCII** overlay in `pipeline/voidcat_ascii` for this stem.
+- **`tunnel_flight.frag`** — first-person wireframe tunnel (spiral lattice, corner nodes, dual-layer line glow); scroll and palette cross-fade with `rms` / `bass_hit`, sparks on high-band transients.
+- **`spectral_milkdrop.frag`** — Milkdrop-style hybrid: curl-noise *translation* feedback, polar-wedge kaleidoscope, domain-warped FBM, Lissajous waveform trace over `band_energies`, hue-cycling palette. Uses optional peak-tint uniforms for bright backgrounds.
+- **`synth_grid.frag`** — retrowave perspective grid and horizon; **`void main`** documents the intentional opaque ground plane.
+
+Every fragment shader expects the same uniform contract and writes premultiplied RGBA so downstream compositing can alpha-blend without further math (except **`none`**, where no fragment pass runs).
 
 ## Feedback / warp framebuffer (Milkdrop-style trails)
 
@@ -92,14 +93,9 @@ float audio_lift = 0.18 * bass_hit + 0.14 * hold;  // shader-specific
 float alpha      = clamp((content + audio_lift) * intensity, 0.0, 1.0);
 ```
 
-Reference implementations: ``particles.frag``, ``tunnel_flight.frag``,
-``geometry_pulse.frag``, ``spectral_milkdrop.frag`` (luma-driven with a
-small audio lift), ``vhs_tracking.frag``, ``paper_grain.frag``,
-``liquid_chrome.frag``, ``nebula_flow.frag`` / ``nebula_drift.frag``
-(``alpha`` is content-driven from the cloud field × vignette × ``intensity``;
-**2026-05** pass trimmed uniform fog / wash so SDXL backdrops stay visible).
-The one deliberate
-exception is ``synth_grid.frag``, where the synthwave ground plane is
+Reference implementations in-tree: ``void_ascii_bg.frag``, ``tunnel_flight.frag``,
+``spectral_milkdrop.frag`` (luma-driven with a small audio lift), ``synth_grid.frag``.
+The one deliberate exception is ``synth_grid.frag``, where the synthwave ground plane is
 explicitly opaque (``local_alpha = 1.0``) and only the sky bleeds
 through — the comment in the shader documents why.
 

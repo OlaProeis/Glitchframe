@@ -418,17 +418,48 @@ def _keyframe_path(cache_dir: Path, index: int) -> Path:
     return _background_dir(cache_dir) / KEYFRAME_FILENAME_FMT.format(index=index)
 
 
+def _atomic_replace_path(tmp: Path, dst: Path) -> None:
+    """Rename ``tmp`` over ``dst``.
+
+    On Windows, replacement fails if *dst* is still open (PIL read, browser
+    preview of ``/file=…``, antivirus). Close readers first; we also retry with
+    short backoff and a :func:`gc.collect` to drop stray image handles.
+    """
+    import gc
+    import time
+
+    tmp_p = Path(tmp)
+    dst_p = Path(dst)
+    delay = 0.05
+    last_err: OSError | None = None
+    for _ in range(16):
+        try:
+            tmp_p.replace(dst_p)
+            return
+        except OSError as exc:
+            last_err = exc
+            win = getattr(exc, "winerror", None)
+            if not isinstance(exc, PermissionError):
+                if win not in (5, 32) and exc.errno != 13:
+                    raise
+            gc.collect()
+            time.sleep(delay)
+            delay = min(delay * 1.35, 0.65)
+    assert last_err is not None
+    raise last_err
+
+
 def _atomic_write_png(img: Image.Image, dst: Path) -> None:
     tmp = dst.with_suffix(dst.suffix + ".tmp")
     img.save(str(tmp), format="PNG", optimize=False)
-    tmp.replace(dst)
+    _atomic_replace_path(tmp, dst)
 
 
 def _atomic_write_json(data: Mapping[str, Any], dst: Path) -> None:
     tmp = dst.with_suffix(dst.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8") as f:
         json.dump(data, f, separators=(",", ":"))
-    tmp.replace(dst)
+    _atomic_replace_path(tmp, dst)
 
 
 def _load_manifest(cache_dir: Path) -> BackgroundManifest | None:
@@ -507,13 +538,26 @@ def _persist_rife_timeline(
     frames: Sequence[np.ndarray],
     times: Sequence[float],
     manifest: RifeMorphManifest,
+    *,
+    report: ProgressFn | None = None,
 ) -> None:
     td = _rife_timeline_dir(cache_dir)
     td.mkdir(parents=True, exist_ok=True)
+    n = len(frames)
+    step = max(1, n // 25) if n else 1
     for i, arr in enumerate(frames):
         img = Image.fromarray(arr, mode="RGB")
         _atomic_write_png(img, _rife_frame_path(cache_dir, i))
+        if report is not None and n > 0:
+            if i == 0 or i == n - 1 or (i + 1) % step == 0:
+                p = 0.97 + 0.03 * (i + 1) / (n + 1)
+                report(
+                    p,
+                    f"Saving RIFE morph frames {i + 1}/{n} to cache (large songs = slower disk I/O)…",
+                )
     _atomic_write_json(manifest.to_dict(), _rife_manifest_path(cache_dir))
+    if report is not None:
+        report(1.0, "RIFE morph cache saved")
 
 
 # ---------------------------------------------------------------------------
@@ -932,11 +976,20 @@ class BackgroundStills:
 
     def _plan(self, analysis: Mapping[str, Any]) -> list[KeyframePlan]:
         if self._plans is None:
-            self._plans = plan_keyframes(
-                analysis,
-                self._preset_prompt,
-                interval=self._keyframe_interval,
+            from pipeline.keyframes_timeline import (
+                entries_to_keyframe_plans,
+                load_keyframes_timeline,
             )
+
+            kt = load_keyframes_timeline(self._cache_dir)
+            if kt is not None and kt.entries:
+                self._plans = entries_to_keyframe_plans(kt.entries, analysis)
+            else:
+                self._plans = plan_keyframes(
+                    analysis,
+                    self._preset_prompt,
+                    interval=self._keyframe_interval,
+                )
         return self._plans
 
     def _expected_manifest(
@@ -1061,7 +1114,13 @@ class BackgroundStills:
             frame_count=len(dense_frames),
             times=tuple(float(t) for t in dense_times),
         )
-        _persist_rife_timeline(self._cache_dir, dense_frames, dense_times, final_m)
+        _persist_rife_timeline(
+            self._cache_dir,
+            dense_frames,
+            dense_times,
+            final_m,
+            report=report,
+        )
         self._frames = dense_frames
         self._timeline_times = final_m.times
 
@@ -1081,12 +1140,17 @@ class BackgroundStills:
         *,
         force: bool = False,
         progress: ProgressFn | None = None,
+        apply_rife: bool = True,
+        force_regenerate_indices: set[int] | None = None,
     ) -> BackgroundManifest:
         """
         Ensure all keyframe PNGs + ``manifest.json`` are present and valid.
 
         Reuses cached outputs when the computed manifest key matches; otherwise
         regenerates via SDXL. ``force=True`` regenerates even on a key match.
+        ``apply_rife=False`` skips RIFE morph (leave SDXL keyframes as the
+        active timeline). ``force_regenerate_indices`` forces SDXL for those
+        indices even when a PNG exists.
         Returns the active manifest.
         """
         if self._closed:
@@ -1111,14 +1175,18 @@ class BackgroundStills:
                 )
                 existing = None
 
-            if existing is not None and existing.matches_key(
-                preset_id=expected.preset_id,
-                prompt_hash=expected.prompt_hash,
-                section_count=expected.section_count,
-                num_keyframes=expected.num_keyframes,
-                model_id=expected.model_id,
-                width=expected.width,
-                height=expected.height,
+            if (
+                existing is not None
+                and existing.matches_key(
+                    preset_id=expected.preset_id,
+                    prompt_hash=expected.prompt_hash,
+                    section_count=expected.section_count,
+                    num_keyframes=expected.num_keyframes,
+                    model_id=expected.model_id,
+                    width=expected.width,
+                    height=expected.height,
+                )
+                and not force_regenerate_indices
             ):
                 try:
                     frames = _load_keyframes(
@@ -1138,20 +1206,32 @@ class BackgroundStills:
                     self._manifest = existing
                     self._prepare_ken_burns_state(analysis)
                     _report(1.0, "Reused cached background keyframes")
-                    self._apply_rife_morph_if_needed(existing, force=force, report=_report)
+                    if apply_rife:
+                        self._apply_rife_morph_if_needed(
+                            existing, force=force, report=_report
+                        )
+                    else:
+                        self._timeline_times = None
                     return existing
 
-        frames = self._generate_and_persist(expected, _report)
+        frames = self._generate_and_persist(
+            expected, _report, force_regenerate_indices=force_regenerate_indices
+        )
         self._frames = frames
         self._manifest = expected
         self._prepare_ken_burns_state(analysis)
-        self._apply_rife_morph_if_needed(expected, force=force, report=_report)
+        if apply_rife:
+            self._apply_rife_morph_if_needed(expected, force=force, report=_report)
+        else:
+            self._timeline_times = None
         return expected
 
     def _generate_and_persist(
         self,
         manifest: BackgroundManifest,
         report: ProgressFn,
+        *,
+        force_regenerate_indices: set[int] | None = None,
     ) -> list[np.ndarray]:
         bg_dir = _background_dir(self._cache_dir)
         bg_dir.mkdir(parents=True, exist_ok=True)
@@ -1163,11 +1243,12 @@ class BackgroundStills:
         # Resume partial runs: reuse any keyframe PNGs already on disk so an
         # earlier crash (or a cancelled hang) doesn't force regenerating the
         # ones that already succeeded.
+        regen = force_regenerate_indices or set()
         missing_indices: list[int] = []
         missing_prompts: list[str] = []
         for i in range(total):
             path = _keyframe_path(self._cache_dir, i)
-            if path.is_file():
+            if i not in regen and path.is_file():
                 try:
                     with Image.open(path) as im:
                         frames[i] = _resize_rgb(im.convert("RGB"), self._width, self._height)

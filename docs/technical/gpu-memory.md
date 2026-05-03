@@ -2,7 +2,7 @@
 
 Feature: shared helpers that release CUDA VRAM between pipeline stages so
 heavyweight models (demucs, WhisperX faster-whisper, WhisperX wav2vec2
-align, SDXL, AnimateDiff) never stack on top of each other inside a
+align, SDXL, RIFE morph bake, AnimateDiff) never stack on top of each other inside a
 single Python process.
 
 ## Why

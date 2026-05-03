@@ -1,13 +1,13 @@
 # Glitchframe
 
-Local, GPU-accelerated **music video** generator: upload a track, analyze it, align lyrics, generate stylized backgrounds (**SDXL** keyframe stills by default — you steer the look with preset **prompt**s or your own **Custom prompt**), composite reactive shaders and kinetic type, and encode with **ffmpeg** (NVENC on NVIDIA GPUs by default).
+Local, GPU-accelerated **music video** generator: upload a track, analyze it, align lyrics, generate stylized backgrounds (**SDXL** keyframe stills by default — with optional **RIFE** morph and **Ken Burns** on those stills enabled by default), composite reactive shaders and kinetic type, and encode with **ffmpeg** (NVENC on NVIDIA GPUs by default).
 
 **Examples (progress log, newest = current state):** [voidcat on YouTube](https://www.youtube.com/@voidcatalog)
 
 - **Easiest install:** [Pinokio](https://pinokio.co/) — install the Pinokio app, search **glitchframe**, install Glitchframe from the listing, then run **Install** and **Start** in the sidebar. You still need **ffmpeg** on your `PATH` and a capable **NVIDIA GPU** for the intended experience — see [Requirements](#requirements) and [Pinokio](#pinokio).
 - **UI:** [Gradio](https://www.gradio.app/) — run `python -m app` and open the URL shown (default [http://127.0.0.1:7860](http://127.0.0.1:7860)).
 - **Manual setup (Windows CLI):** **[Getting started on Windows](docs/guides/getting-started-windows.md)** — order of installs: Python, optional Git, ffmpeg with winget, venv, PyTorch; or use Pinokio above instead.
-- **Deep dive:** [`docs/index.md`](docs/index.md) and [`docs/technical/project-setup-and-config.md`](docs/technical/project-setup-and-config.md).
+- **Deep dive:** [`docs/index.md`](docs/index.md) (includes [`background-keyframes-editor`](docs/technical/background-keyframes-editor.md), [`background-stills`](docs/technical/background-stills.md), effects/lyrics editors) and [`docs/technical/project-setup-and-config.md`](docs/technical/project-setup-and-config.md).
 
 **License:** [MIT](LICENSE) · **Repository:** [github.com/OlaProeis/Glitchframe](https://github.com/OlaProeis/Glitchframe)
 
@@ -15,8 +15,8 @@ Local, GPU-accelerated **music video** generator: upload a track, analyze it, al
 
 - **Ingest and analysis:** Per-song cache, waveform preview, beat/onset/spectrum features, optional **Demucs** vocal stem, segment/chapter hints.
 - **Lyrics:** **WhisperX** word timings plus alignment to pasted lyrics; visual per-word **timeline editor** for fixes (saved to cache so re-runs do not clobber your edits); optional **Export .srt** aligned to the same per-word timings.
-- **Backgrounds:** **SDXL** keyframe stills are the **default** background mode. Each preset supplies a scene **prompt**, or enter **Custom prompt** in the Visual style tab — when non-empty it **overrides** the preset for SDXL/AnimateDiff so you describe the visuals yourself (Ken Burns ignores prompt and uses your uploaded image instead). Alternatives: **Ken Burns** on a static image (**RMS**-driven motion), optional **AnimateDiff** loops (**broken** today; see *Known limitations*).
-- **Look and motion:** GLSL **reactive shaders** (audio-reactive passes), **Skia** kinetic typography, title/thumbnail text, optional **logo** placement with rim glow, beams, and branding-driven effects.
+- **Backgrounds:** **Background keyframes** tab — waveform timeline to edit SDXL still **timing** and **per-clip prompts**, **Generate SDXL stills** / **Regenerate** per slot, **Replace** / **Crop** with image upload (staging until **Save timeline**; crop selection is **locked to the output resolution** aspect ratio). Still **count** is fixed from analysis (~one per ~8 s); see [`docs/technical/background-keyframes-editor.md`](docs/technical/background-keyframes-editor.md). **SDXL + optional RIFE morph** is the supported AI background path (smooth optical-flow interpolation between keyframes; **Ken Burns on SDXL stills** stays **on by default**). **Static image + Ken Burns** uses your uploaded plate only (no SDXL). In **Visual style**, pick a **reactive shader** (or **none**); that pre-fills an example **scene prompt**, **typography style**, and **palette**. Use **Scene prompt** for defaults applied when generating stills; refine individual clips on the **Background keyframes** tab.
+- **Look and motion:** Optional GLSL **reactive shaders** (curated list + **no shader** for a clean background plate), **Skia** kinetic typography, title/thumbnail text, optional **logo** placement with rim glow, beams, and branding-driven effects.
 - **Effects timeline:** Per-clip post effects (e.g. screen shake, chromatic aberration, colour invert, zoom punch, scanline tear) with an in-UI editor and baked JSON under the song cache.
 - **Output:** Full-length render and **10 s preview** (loudest window), `output.mp4` + `thumbnail.png` + YouTube-oriented **`metadata.txt`**, with NVENC by default when available.
 
@@ -30,11 +30,14 @@ Local, GPU-accelerated **music video** generator: upload a track, analyze it, al
 
 ![Glitchframe effects timeline editor](screenshots/effect-timeline.png)
 
+**Background keyframes** matches the same interaction pattern (waveform, draggable clips, playhead, per-slot regenerate/replace/crop). See [`docs/technical/background-keyframes-editor.md`](docs/technical/background-keyframes-editor.md).
+
 ## Known limitations (read before you depend on it)
 
+- **Background keyframes** count is **fixed** from the analysis/plan (not open-ended in the UI). Edit timing and prompts for existing clips; **Save timeline** writes `keyframes_timeline.json` + `manifest.json` (and clears the RIFE morph cache when the manifest changes). [`docs/technical/background-keyframes-editor.md`](docs/technical/background-keyframes-editor.md)
 - **Vocal / lyrics matching** can be **unreliable** in places. Treat alignment as a draft: use the lyrics timeline and listen back **before** you commit time to a full render. Improving this area is a priority; do not assume perfect lip-sync or line timing yet.
-- **Rendering is effectively single-threaded** for the heavy pipeline. Full videos often take **on the order of 1–2+ hours** (sometimes more), depending on preset, length, resolution, and GPU. Plan batch work accordingly.
-- **AnimateDiff loops** (optional; also **broken** until the FP16/VAE issue is fixed) are **very VRAM-hungry**: plan for **about 20 GB VRAM** on the GPU. With less memory, expect **extreme slowness, swapping, or failed runs**. **SDXL stills** (default) or **Ken Burns** are the practical choices if you are VRAM-limited or want a reliable pipeline.
+- **Rendering is effectively single-threaded** for the heavy pipeline. Full videos often take **on the order of 1–2+ hours** (sometimes more), depending on chosen shader (or none), scene complexity, length, resolution, GPU, and whether **RIFE** morph bakes extra frames after SDXL. Plan batch work accordingly.
+- **RIFE morph (optional, default-on in the UI)** runs a **CUDA** bake after SDXL keyframes; it downloads **~24 MB** of weights from Hugging Face on first use (see [`docs/technical/rife-morph-background.md`](docs/technical/rife-morph-background.md)). GPU time scales with keyframe count and the **subdivisions** slider.
 - The app is under active development; UI labels and edge cases are still being hardened.
 
 ## Future (from project backlog)
@@ -42,7 +45,7 @@ Local, GPU-accelerated **music video** generator: upload a track, analyze it, al
 The following is a short, user-facing summary of work **not yet done** (also tracked in Taskmaster as `pending` / `deferred` in [`.taskmaster/tasks/tasks.json`](.taskmaster/tasks/tasks.json)):
 
 - **Unify “auto” effects with the timeline** — one control surface: analyser-driven glitch, beams, and related FX should not stack with the Effects timeline in confusing ways; timeline becomes authoritative where intended (*pending*).
-- **Faster preview backgrounds** — generate SDXL/AnimateDiff/Ken Burns assets only for the 10 s preview window (plus padding), then fill the rest on full render, with clearer cache keys so preview is much cheaper than today (*deferred*).
+- **Faster preview backgrounds** — generate SDXL (and optional RIFE) / Ken Burns assets only for the 10 s preview window (plus padding), then fill the rest on full render, with clearer cache keys so preview is much cheaper than today (*deferred*).
 - **Bass-driven logo pulse** — optional mode where logo motion follows low-frequency energy / kicks instead of a generic beat grid, with tunable sensitivity (*deferred*).
 - **Overnight / multi-song queue** — batch several full renders (CLI or Gradio) with stable paths and isolated failures (*deferred*).
 - **Single primary “export” affordance** — one obvious control that runs the full pipeline, while keeping optional Analyze/Align as precache steps (*deferred*).
@@ -142,7 +145,7 @@ Open the local URL printed in the console (default port **7860**).
 
 **Easiest path:** Install [Pinokio](https://pinokio.co/), open it, search **glitchframe**, and install Glitchframe from the listing — no need to paste a URL. **Alternative:** **Download from URL** and paste `https://github.com/OlaProeis/Glitchframe.git`.
 
-This repository includes Pinokio scripts (`install.js`, `start.js`, `reset.js`, `update.js`, `pinokio.js`, `icon.png`). The installer uses Python **3.11**, installs PyTorch **2.2.2+cu121** (CUDA **12.1** index) and the pinned WhisperX / ctranslate2 set (see `install.js`), then `requirements.txt`, `pip install -e .`, and the **`[all]`** extra — plus optional **`nvidia-cudnn-cu12`** and `scripts/windows_provision_cudnn_next_to_ctranslate2.py`. **Click Start** in Pinokio&rsquo;s sidebar after install. You still need **ffmpeg** on your `PATH` and a capable **NVIDIA** GPU. **On Windows**, `start.js` may still set ``GLITCHFRAME_WHISPERX_DEVICE=cpu`` as a safe default; remove it or set **cuda** in `.env` to try **GPU** alignment once the **cu121** stack is installed. Analyze/render still use the GPU when applicable. Technical details: [`docs/technical/pinokio-package.md`](docs/technical/pinokio-package.md). For GitHub discovery, the repo uses the **`pinokio`** topic.
+This repository includes Pinokio scripts (`install.js`, `start.js`, `reset.js`, `update.js`, `pinokio.js`, `icon.png`). The installer uses Python **3.11**, installs PyTorch **2.2.2+cu121** (CUDA **12.1** index) and the pinned WhisperX / ctranslate2 set (see `install.js`), then `requirements.txt`, `pip install -e .`, and the **`[all]`** extra — plus optional **`nvidia-cudnn-cu12`** and `scripts/windows_provision_cudnn_next_to_ctranslate2.py`. **No extra Pinokio step** is required for **RIFE** (weights ~24 MB download on first morph via Hugging Face, same hub + symlink behaviour as other models). **Click Start** in Pinokio&rsquo;s sidebar after install. You still need **ffmpeg** on your `PATH` and a capable **NVIDIA** GPU. **On Windows**, `start.js` may still set ``GLITCHFRAME_WHISPERX_DEVICE=cpu`` as a safe default; remove it or set **cuda** in `.env` to try **GPU** alignment once the **cu121** stack is installed. Analyze/render still use the GPU when applicable. Technical details: [`docs/technical/pinokio-package.md`](docs/technical/pinokio-package.md). For GitHub discovery, the repo uses the **`pinokio`** topic.
 
 ## Troubleshooting
 
@@ -156,13 +159,15 @@ This repository includes Pinokio scripts (`install.js`, `start.js`, `reset.js`, 
 
 - **Render is unexpectedly slow / "compositing" stuck around 40 %:** the orchestrator label parks on its outer status during compositing because individual frames are reported by an inner Gradio progress callback. Recent builds replaced the per-frame UI message with a richer one (`Compositing 1843/4923 (37.4%) - 1.23 fps - ETA 41m42s - layers=BG+SHADER+TYPO`) and update it from the request thread, so the bar now ticks live during long renders. After a render finishes, the run log appends a one-liner like `compositor: 4923 frames in 41m23s · avg 1.98 fps · encoder=h264_nvenc` — if `encoder=libx264` and you have an NVIDIA GPU, NVENC fell back to CPU; check the startup log for the `ffmpeg` candidate list and any `Cannot load nvEncodeAPI64.dll` / `Driver does not support the required nvenc API version` lines from the probe stderr. Multi-candidate ffmpeg discovery (env override → active env's `bin` → PATH → well-known dirs) means a working NVENC ffmpeg anywhere on your system will be picked up automatically, even if Pinokio's bundled one shadows it.
 
-- **Render fails with `Undefined constant or missing '(' in 'p5'` / `Unable to parse option value "p5"` after the SDXL/AnimateDiff phase:** your local ffmpeg is older than 4.4 (or NVENC SDK < 11) and doesn't understand the modern `p1..p7` preset family. Glitchframe now probes the chosen ffmpeg once and falls back to the legacy `slow` preset automatically, so **Update + Start** in Pinokio is enough to pick up the fix — no reinstall. Visual quality is essentially unchanged (`slow` is the closest legacy equivalent of `p5`). To get back to the modern preset family, install a recent ffmpeg (`winget install ffmpeg` on Windows, or `conda update -c conda-forge ffmpeg` inside Pinokio's env). Details: [`docs/technical/pinokio-lyrics-align-windows-handover.md`](docs/technical/pinokio-lyrics-align-windows-handover.md) § Bug H.
+- **Render fails with `Undefined constant or missing '(' in 'p5'` / `Unable to parse option value "p5"` after background generation:** your local ffmpeg is older than 4.4 (or NVENC SDK < 11) and doesn't understand the modern `p1..p7` preset family. Glitchframe now probes the chosen ffmpeg once and falls back to the legacy `slow` preset automatically, so **Update + Start** in Pinokio is enough to pick up the fix — no reinstall. Visual quality is essentially unchanged (`slow` is the closest legacy equivalent of `p5`). To get back to the modern preset family, install a recent ffmpeg (`winget install ffmpeg` on Windows, or `conda update -c conda-forge ffmpeg` inside Pinokio's env). Details: [`docs/technical/pinokio-lyrics-align-windows-handover.md`](docs/technical/pinokio-lyrics-align-windows-handover.md) § Bug H.
 
 - **Pinokio / Gradio conflicts after torch (`markupsafe` / `pillow`):** older install flows could break Gradio by upgrading those packages; current ``install.js`` avoids that. **Pull latest** and **Reinstall** (or **Install**) in Pinokio so deps are corrected without manual steps. Advanced: [`docs/technical/pinokio-package.md`](docs/technical/pinokio-package.md).
 
+- **Apply crop / Regenerate keyframe: `PermissionError` / `WinError 5` on `*.tmp` → `.png`:** Windows blocks replacing a PNG if it is still open (Gradio or the browser preview of the same file, Explorer thumbnails, antivirus scan). Current builds close PIL readers before overwrite and retry atomic replace briefly; if it still fails, wait a second and retry, or close anything previewing `cache/<hash>/background/` (see [`docs/technical/background-keyframes-editor.md`](docs/technical/background-keyframes-editor.md) § *Windows: saving PNGs*).
+
 ## Development
 
-- Smoke test config/presets: `python config.py`
+- Smoke test config (paths + optional preset YAML count): `python config.py`
 - Tests (after `pip install -e ".[dev]"`): `pytest`
 - In this repo, `uv sync` / `uv run pytest` is also used; see `ai-context.md` for maintainer notes.
 
@@ -174,4 +179,4 @@ Issues and pull requests are welcome. Please keep changes focused; match existin
 
 ## Legal
 
-This project is licensed under the [MIT License](LICENSE). Third-party assets (e.g. fonts under `assets/fonts/`) carry their own license files where applicable.
+This project is licensed under the [MIT License](LICENSE). Third-party assets (e.g. fonts under `assets/fonts/`) carry their own license files where applicable. **RIFE** inference code is derived from [Practical-RIFE](https://github.com/hzwer/Practical-RIFE) (MIT); runtime weights are downloaded from Hugging Face (`MonsterMMORPG/RIFE_4_26` — confirm license/terms for your use case). SDXL and other diffusion models have their own licenses (e.g. Open RAIL-M).

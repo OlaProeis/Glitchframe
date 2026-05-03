@@ -18,6 +18,7 @@ the producer thread so driver contexts do not leak across threads.
 from __future__ import annotations
 
 import errno
+from contextlib import contextmanager
 import hashlib
 import logging
 import math
@@ -29,7 +30,7 @@ import threading
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 import numpy as np
 import soundfile as sf
@@ -438,7 +439,7 @@ class CompositorConfig:
     auto_reactivity_master: float = 1.0
     # voidcat-ASCII: CPU grid layer (sides + hero-drop cat) over the reactive
     # pass, under lyrics and logo. Set by the orchestrator for preset
-    # ``voidcat-laser``; ``None`` skips the pass (default).
+    # ``void_ascii_bg`` reactive shader; ``None`` skips the pass (default).
     voidcat_ascii_ctx: VoidcatAsciiContext | None = None
     # When True with a voidcat context, the side cat (and * trace) is
     # composited again **after** the frame-effects stack (chroma, scanline,
@@ -454,6 +455,44 @@ class CompositorConfig:
     # output; ``audio_vignette_strength`` scales every contribution.
     audio_vignette_enabled: bool = True
     audio_vignette_strength: float = 1.0
+
+
+class _PassthroughReactive:
+    """Return the RGB background unchanged when reactive shader stem is ``none``."""
+
+    __slots__ = ()
+
+    def render_frame_composited_rgb(
+        self,
+        uniforms: Mapping[str, Any],
+        bg_rgb: np.ndarray,
+    ) -> np.ndarray:
+        _ = uniforms
+        return np.ascontiguousarray(bg_rgb)
+
+
+PASSTHROUGH_REACTIVE = _PassthroughReactive()
+
+
+def _reactive_layer_enabled(cfg: CompositorConfig) -> bool:
+    return str(cfg.shader_name or "").strip() != "none"
+
+
+@contextmanager
+def _reactive_shader_context(cfg: CompositorConfig) -> Iterator[Any]:
+    if not _reactive_layer_enabled(cfg):
+        yield PASSTHROUGH_REACTIVE
+        return
+    with ReactiveShader(
+        cfg.shader_name,
+        width=cfg.width,
+        height=cfg.height,
+        num_bands=cfg.num_bands,
+        palette=cfg.shader_palette,
+        shader_tint=cfg.shader_tint,
+        shader_tint_strength=cfg.shader_tint_strength,
+    ) as reactive:
+        yield reactive
 
 
 def _audio_duration(path: Path) -> float:
@@ -582,15 +621,12 @@ def _active_layers_label(
     has_logo: bool,
     has_pulse: bool,
     has_voidcat_ascii: bool = False,
+    has_reactive_shader: bool = True,
 ) -> str:
-    """Return e.g. ``bg+shader+ascii+typo+title+logo+pulse`` for progress messages.
-
-    The compositor always renders the background and reactive shader; the rest
-    are optional. A compact label lets the UI show which stages are active so
-    users can tell whether a slow run is from (say) kinetic typography or a
-    heavy shader, rather than guessing.
-    """
-    parts = ["bg", "shader"]
+    """Return e.g. ``bg+shader+ascii+typo+title+logo+pulse`` for progress messages."""
+    parts: list[str] = ["bg"]
+    if has_reactive_shader:
+        parts.append("shader")
     if has_voidcat_ascii:
         parts.append("ascii")
     if has_typography:
@@ -1657,7 +1693,8 @@ def render_single_frame(
             f"{cfg.width}×{cfg.height}"
         )
 
-    resolve_builtin_shader_stem(cfg.shader_name)
+    if _reactive_layer_enabled(cfg):
+        resolve_builtin_shader_stem(cfg.shader_name)
 
     logo_position_norm: str | None = None
     logo_rgba_prepared: np.ndarray | None = None
@@ -1700,15 +1737,7 @@ def render_single_frame(
 
     has_typography = bool(aligned_words)
 
-    with ReactiveShader(
-        cfg.shader_name,
-        width=cfg.width,
-        height=cfg.height,
-        num_bands=cfg.num_bands,
-        palette=cfg.shader_palette,
-        shader_tint=cfg.shader_tint,
-        shader_tint_strength=cfg.shader_tint_strength,
-    ) as reactive:
+    with _reactive_shader_context(cfg) as reactive:
         typo_layer: KineticTypographyLayer | None = None
         if has_typography:
             typo_layer = KineticTypographyLayer(
@@ -1862,8 +1891,8 @@ def render_full_video(
             f"{cfg.width}×{cfg.height}"
         )
 
-    # Raises on unknown/missing shader stem before we spawn any thread.
-    resolve_builtin_shader_stem(cfg.shader_name)
+    if _reactive_layer_enabled(cfg):
+        resolve_builtin_shader_stem(cfg.shader_name)
 
     logo_position_norm: str | None = None
     logo_rgba_prepared: np.ndarray | None = None
@@ -1999,6 +2028,7 @@ def render_full_video(
         has_logo=has_logo,
         has_pulse=has_pulse,
         has_voidcat_ascii=bool(cfg.voidcat_ascii_ctx is not None),
+        has_reactive_shader=_reactive_layer_enabled(cfg),
     )
     # Kinetic-typography renders roughly 1 Skia draw per visible word per
     # frame, so it dominates the per-frame cost by a lot on lyrics-heavy
@@ -2036,16 +2066,12 @@ def render_full_video(
             # runs on a daemon thread and Gradio drops cross-thread progress
             # calls. Update ``stats.phase`` instead -- the consumer (request
             # thread) polls stats and emits progress at ``_PROGRESS_TICK_SEC``.
-            stats.phase = "initializing GPU shader context"
-            with ReactiveShader(
-                cfg.shader_name,
-                width=cfg.width,
-                height=cfg.height,
-                num_bands=cfg.num_bands,
-                palette=cfg.shader_palette,
-                shader_tint=cfg.shader_tint,
-                shader_tint_strength=cfg.shader_tint_strength,
-            ) as reactive:
+            stats.phase = (
+                "initializing GPU shader context"
+                if _reactive_layer_enabled(cfg)
+                else "initializing compositor (no reactive shader)"
+            )
+            with _reactive_shader_context(cfg) as reactive:
                 typo_layer: KineticTypographyLayer | None = None
                 if has_typography:
                     stats.phase = (
@@ -2243,6 +2269,7 @@ def render_full_video(
                     if typo_layer is not None:
                         typo_layer.close()
         except BaseException as exc:  # noqa: BLE001 - re-raised on the main thread
+            LOGGER.exception("Compositor producer thread crashed")
             producer_error.append(exc)
         finally:
             frame_q.put(None)
@@ -2347,7 +2374,11 @@ def render_full_video(
         err_tail = stderr_file.read().decode("utf-8", errors="replace").strip()
 
     if producer_error:
-        raise RuntimeError("Compositor producer thread failed") from producer_error[0]
+        exc = producer_error[0]
+        raise RuntimeError(
+            f"Compositor producer thread failed: {exc}\n"
+            "See log line 'Compositor producer thread crashed' for full traceback."
+        ) from exc
 
     if code != 0:
         msg = f"ffmpeg exited with code {code}"

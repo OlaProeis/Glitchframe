@@ -42,9 +42,21 @@ any wall-clock time.
    cancel mid-run leaves valid PNGs on disk; the next call resumes by skipping
    any keyframe whose PNG is already readable and only invoking SDXL for the
    missing indices.
-6. `background_frame(t) -> np.ndarray (H, W, 3) uint8` clamps `t` to
-   `[t_0, t_{N-1}]`, finds the bracketing pair, and returns a crossfade blend
-   weighted by `smoothstep((t - t_i) / (t_{i+1} - t_i))`.
+6. `background_frame(t) -> np.ndarray (H, W, 3) uint8` clamps/finds a bracket
+   over the **active** time list: either `BackgroundManifest.keyframe_times`
+   (plain stills) or a denser list after **RIFE** (see below), then returns a
+   crossfade blend weighted by
+   `smoothstep((t - t_i) / (t_{i+1} - t_i))`.
+
+## Optional: RIFE morph (default-on in UI)
+
+When **Morph keyframes (RIFE)** is enabled (`BackgroundStills` /
+`sdxl_rife_morph=True`), after SDXL keyframes are ready the pipeline runs
+Practical-RIFE–style interpolation between each consecutive keyframe pair,
+writes `rife_timeline/rife_*.png` + `manifest_rife.json`, and samples
+`background_frame(t)` along that dense timeline. **Ken Burns on SDXL stills**
+still applies on top when enabled. Details, cache schema, and HF weights:
+[`rife-morph-background.md`](rife-morph-background.md).
 
 ## Cache layout
 
@@ -54,6 +66,10 @@ cache/<hash>/background/
   keyframe_0000.png       # native SDXL generation resolution (1344x768 by default)
   keyframe_0001.png
   ...
+  manifest_rife.json      # optional: when RIFE morph is enabled
+  rife_timeline/          # optional: RIFE densified frames
+    rife_000000.png
+    ...
 ```
 
 `manifest.json` schema (v1):
@@ -61,7 +77,7 @@ cache/<hash>/background/
 ```json
 {
   "schema_version": 1,
-  "preset_id": "neon-synthwave",
+  "preset_id": "style-spectral_milkdrop",
   "prompt_hash": "<sha256>",
   "section_count": 8,
   "num_keyframes": 27,
@@ -70,7 +86,7 @@ cache/<hash>/background/
   "width": 1344,
   "height": 768,
   "keyframe_times": [0.0, 8.17, 16.34, ...],
-  "prompts": ["<preset prompt>, scene 1 of 27, song section 1 of 8, t=0.0s", ...]
+  "prompts": ["<scene prompt from Visual style UI>, scene 1 of 27, song section 1 of 8, t=0.0s", ...]
 }
 ```
 
@@ -81,7 +97,7 @@ from pipeline.background_stills import BackgroundStills
 
 with BackgroundStills(
     cache_dir=cache / song_hash,
-    preset_id="neon-synthwave",
+    preset_id="style-spectral_milkdrop",
     preset_prompt=preset["prompt"],
 ) as bg:
     bg.ensure_keyframes()               # generate or reuse cache
@@ -108,6 +124,10 @@ rest of the pipeline.
 - Model weights download on first run under `MODEL_CACHE_DIR` (env overridable
   via `GLITCHFRAME_MODEL_CACHE` (legacy `MUSICVIDS_MODEL_CACHE`); HF also respects `HF_HOME` / `TORCH_HOME`).
 
+## Timeline editor (UI)
+
+The **Background keyframes** Gradio tab edits timing and prompts, runs single-slot SDXL regenerate, and stages upload crops before **Save timeline** updates this cache. See [`background-keyframes-editor.md`](background-keyframes-editor.md).
+
 ## Related files
 
 | File | Role |
@@ -115,5 +135,5 @@ rest of the pipeline.
 | `pipeline/background_stills.py` | `BackgroundStills`, `BackgroundManifest`, `plan_keyframes`, `prompt_hash` |
 | `pipeline/audio_analyzer.py` | Writes `analysis.json` with `duration_sec` + `segments` |
 | `config.py` | `MODEL_CACHE_DIR`, per-song `song_cache_dir` helper |
-| `presets/*.yaml` | Source of the `prompt` field fed into each keyframe |
+| `OrchestratorInputs.presets` / **Background keyframes** tab | Resolved scene prompts per clip (shader bundle default when unset; YAML optional) |
 | `cache/<hash>/background/` | Persisted keyframe PNGs + `manifest.json` |

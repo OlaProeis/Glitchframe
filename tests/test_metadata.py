@@ -112,7 +112,14 @@ class TestWriteRunMetadata(unittest.TestCase):
                 tmp,
                 inputs=OrchestratorInputs(
                     metadata={"artist": "A", "title": "B"},
-                    presets={"id": "minimal-mono"},
+                    presets={
+                        "preset": {
+                            "prompt": "",
+                            "shader": "synth_grid",
+                            "typo_style": "pop-in",
+                            "colors": ["#111111"],
+                        }
+                    },
                     lyrics_text="ignored when alignment set",
                 ),
                 analysis_doc=analysis,

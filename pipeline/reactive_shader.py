@@ -40,7 +40,7 @@ _GL_INFO_LOGGED = False
 DEFAULT_WIDTH = 1920
 DEFAULT_HEIGHT = 1080
 DEFAULT_NUM_BANDS = 8
-DEFAULT_SHADER = "spectrum_bars"
+DEFAULT_SHADER = "spectral_milkdrop"
 DEFAULT_VERTEX_SHADER = "passthrough.vert"
 
 # exp(-ONSET_DECAY_PER_SEC * dt) collapses to ~0 after roughly 0.5 s.
@@ -243,6 +243,8 @@ def resolve_builtin_shader_stem(
         raise ValueError(
             f"unknown reactive shader {stem!r}; expected one of {list(BUILTIN_SHADERS)}"
         )
+    if stem == "none":
+        return stem
     root = Path(shaders_dir) if shaders_dir is not None else SHADERS_DIR
     frag = root / f"{stem}.frag"
     if not frag.is_file():
@@ -746,7 +748,7 @@ class ReactiveShader:
     Parameters
     ----------
     shader_name:
-        Fragment-shader stem under :data:`SHADERS_DIR` (e.g. ``spectrum_bars``).
+        Fragment-shader stem under :data:`SHADERS_DIR` (e.g. ``spectral_milkdrop``).
     width, height:
         Output resolution in pixels (defaults to 1920×1080).
     num_bands:
@@ -791,10 +793,22 @@ class ReactiveShader:
         if num_bands <= 0:
             raise ValueError(f"num_bands must be positive, got {num_bands}")
 
+        root = Path(shaders_dir) if shaders_dir is not None else SHADERS_DIR
+        if shaders_dir is None:
+            stem = resolve_builtin_shader_stem(str(shader_name), shaders_dir=root)
+        else:
+            stem = str(shader_name).strip()
+            if not stem:
+                raise ValueError("shader stem must be non-empty")
+        if stem == "none":
+            raise ValueError(
+                "the 'none' shader disables the reactive GL pass; do not construct ReactiveShader"
+            )
+
         self._width = int(width)
         self._height = int(height)
         self._num_bands = int(num_bands)
-        self._shader_name = str(shader_name)
+        self._shader_name = stem
         # Parse palette up front so bad hex fails construction, not rendering.
         self._palette_flat, self._palette_size = _build_palette_uniform(palette)
         # Reused every frame in :meth:`_apply_uniforms` (avoid ``list(...)`` alloc).
@@ -807,8 +821,7 @@ class ReactiveShader:
             shader_tint, shader_tint_strength
         )
 
-        root = Path(shaders_dir) if shaders_dir is not None else SHADERS_DIR
-        frag_path = root / f"{shader_name}.frag"
+        frag_path = root / f"{stem}.frag"
         vert_path = root / vertex_shader
         if not frag_path.is_file():
             raise FileNotFoundError(f"Fragment shader not found: {frag_path}")

@@ -34,6 +34,7 @@ _sys.modules.setdefault("k2", _types.ModuleType("k2"))
 del _sys, _types
 # --- end speechbrain compat ---
 
+import asyncio
 import json
 import logging
 import sys
@@ -53,6 +54,31 @@ logging.basicConfig(
 LOGGER = logging.getLogger("glitchframe.app")
 
 
+class _SuppressAsyncioWinReset(logging.Filter):
+    """Suppress WinError 10054 noise from asyncio proactor pipes (Gradio/uvicorn on Windows)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+        if not record.name.startswith("asyncio"):
+            return True
+        msg = record.getMessage()
+        if "_call_connection_lost" in msg or "ProactorBasePipeTransport" in msg:
+            return False
+        if "ConnectionResetError" in msg or "10054" in msg or "forcibly closed" in msg:
+            return False
+        exc = record.exc_info[1] if record.exc_info else None
+        if exc is not None:
+            # WinError 10054 = connection reset by peer
+            if isinstance(exc, ConnectionResetError):
+                return False
+            if isinstance(exc, OSError) and getattr(exc, "winerror", None) == 10054:
+                return False
+        return True
+
+
+for _async_log in ("asyncio", "asyncio.proactor_events"):
+    logging.getLogger(_async_log).addFilter(_SuppressAsyncioWinReset())
+
+
 def _format_exception(label: str, exc: BaseException) -> str:
     """Return ``label: ExcType(msg)`` + last frame so the Gradio log has a hint."""
     tb = traceback.extract_tb(exc.__traceback__)
@@ -63,7 +89,7 @@ def _format_exception(label: str, exc: BaseException) -> str:
         origin = f" @ {fname}:{frame.lineno} in {frame.name}"
     return f"{label}: {type(exc).__name__}: {exc}{origin}"
 
-from config import ensure_runtime_dirs, get_preset, load_preset_registry, song_cache_dir
+from config import ensure_runtime_dirs, song_cache_dir
 from orchestrator import (
     OrchestratorInputs,
     RenderResult,
@@ -87,14 +113,40 @@ from pipeline.effects_timeline import (
     load as load_effects_timeline,
     save as save_effects_timeline,
 )
+from pipeline.background_stills import (
+    DEFAULT_GEN_HEIGHT,
+    DEFAULT_GEN_WIDTH,
+    DEFAULT_MODEL_ID,
+)
+from pipeline.keyframes_editor import (
+    apply_upload_crop,
+    build_crop_canvas_html,
+    build_keyframes_editor_html,
+    generate_sdxl_keyframes_for_cache,
+    keyframe_entry_id_at_index,
+    keyframe_id_choices,
+    keyframe_png_abs_path_for_index,
+    keyframe_prompt_for_entry_id,
+    load_keyframes_editor_state,
+    mark_keyframe_entry_as_upload,
+    persist_keyframes_timeline_from_loaded_state,
+    save_keyframes_editor_payload,
+)
+from pipeline.keyframes_timeline import (
+    load_keyframes_timeline,
+    refresh_manifest_from_timeline,
+    set_keyframe_entry_prompt,
+)
 from pipeline.background import (
-    BACKGROUND_MODES,
-    MODE_ANIMATEDIFF,
     MODE_SDXL_STILLS,
     MODE_STATIC_KENBURNS,
     normalize_background_mode,
 )
-from pipeline.builtin_shaders import BUILTIN_SHADERS
+from pipeline.visual_style import (
+    canonical_reactive_shader_stem,
+    shader_style_bundle,
+    style_preset_id,
+)
 from pipeline.beat_pulse import (
     build_bass_pulse_track,
     build_hi_transient_track,
@@ -120,15 +172,22 @@ from pipeline.reactive_shader import (
 )
 from pipeline.voidcat_ascii import build_voidcat_ascii_context, render_voidcat_ascii_rgba
 
-# PRD §3.1 preset ids when no YAML files are present yet
-_DEFAULT_PRESET_CHOICES: list[str] = [
-    "neon-synthwave",
-    "minimal-mono",
-    "organic-liquid",
-    "glitch-vhs",
-    "cosmic-flow",
-    "lofi-warm",
-]
+# Human label → stem; mirrors ``pipeline.visual_style.PRIMARY_REACTIVE_SHADER_ORDER``.
+_REACTIVE_SHADER_UI: tuple[tuple[str, str], ...] = (
+    ("No reactive shader", "none"),
+    ("Void ASCII field", "void_ascii_bg"),
+    ("Spectral Milkdrop", "spectral_milkdrop"),
+    ("Tunnel flight", "tunnel_flight"),
+    ("Synth grid", "synth_grid"),
+)
+DEFAULT_REACTIVE_SHADER = "spectral_milkdrop"
+
+
+def _apply_shader_choice(shader_dd: str | None) -> tuple[str, str, str]:
+    """When the user picks a shader, prefill example prompt, typography, palette."""
+    b = shader_style_bundle(canonical_reactive_shader_stem(shader_dd))
+    return b.example_prompt, b.typo_style, ", ".join(b.colors)
+
 
 _LOG_MAX_CHARS = 12_000
 
@@ -178,27 +237,6 @@ class _EtaProgress:
             desc = f"{msg} · elapsed {_format_eta(elapsed)} · ETA {_format_eta(eta)}"
         if self._progress is not None:
             self._progress(max(0.0, min(1.0, float(p))), desc=desc)
-
-
-def _preset_choices(reg: dict[str, dict] | None = None) -> list[str]:
-    r = reg if reg is not None else load_preset_registry()
-    return sorted(r.keys()) if r else list(_DEFAULT_PRESET_CHOICES)
-
-
-def _apply_preset(preset_id: str | None) -> tuple[str, str, str, str]:
-    """Fill prompt, shader, typography, and palette from the preset registry."""
-    if not preset_id:
-        return "", BUILTIN_SHADERS[0], "", ""
-    try:
-        p = get_preset(str(preset_id))
-    except KeyError:
-        return "", BUILTIN_SHADERS[0], "", ""
-    return (
-        str(p["prompt"]),
-        str(p["shader"]),
-        str(p["typo_style"]),
-        ", ".join(str(c) for c in p["colors"]),
-    )
 
 
 def _ts() -> str:
@@ -337,8 +375,10 @@ def _build_render_inputs(
     song_hash: str | None,
     bg_mode: str,
     static_bg: object,
-    preset_id: str | None,
+    reactive_shader_stem: str | None,
     custom_background_prompt: str | None,
+    typo_style_text: str | None,
+    palette_hex: str | None,
     reactive_intensity_pct: float,
     shader_tint: str | None,
     shader_tint_strength_pct: float,
@@ -402,6 +442,19 @@ def _build_render_inputs(
         "genre": (genre or "").strip(),
     }
 
+    stem = canonical_reactive_shader_stem(reactive_shader_stem)
+    bun = shader_style_bundle(stem)
+    colors = _parse_palette_hex(palette_hex or "")
+    if not colors:
+        colors = list(bun.colors)
+    typo = (typo_style_text or "").strip() or bun.typo_style
+    preset_dict = {
+        "prompt": bun.example_prompt,
+        "shader": stem,
+        "typo_style": typo,
+        "colors": colors,
+    }
+
     cbp = (custom_background_prompt or "").strip()
     rife_e = int(np.clip(int(rife_exp), 2, 6))
     use_rife = bool(sdxl_rife_morph) and mode == MODE_SDXL_STILLS
@@ -412,7 +465,8 @@ def _build_render_inputs(
         sdxl_ken_burns=bool(sdxl_ken_burns),
         sdxl_rife_morph=use_rife,
         rife_exp=rife_e,
-        preset_id=(preset_id or None),
+        preset_id=style_preset_id(stem),
+        presets={"preset": preset_dict},
         custom_background_prompt=cbp if cbp else None,
         reactive_intensity_pct=float(reactive_intensity_pct),
         shader_tint=(
@@ -510,8 +564,10 @@ def _run_preview(
     sdxl_ken_burns: bool,
     sdxl_rife_morph: bool,
     rife_exp: int,
-    preset_id: str | None,
+    reactive_shader_stem: str | None,
     custom_background_prompt: str,
+    typo_style: str | None,
+    palette_hex: str | None,
     reactive_intensity_pct: float,
     shader_tint: str | None,
     shader_tint_strength_pct: float,
@@ -563,8 +619,10 @@ def _run_preview(
             song_hash=song_hash,
             bg_mode=bg_mode,
             static_bg=static_bg,
-            preset_id=preset_id,
+            reactive_shader_stem=reactive_shader_stem,
             custom_background_prompt=custom_background_prompt,
+            typo_style_text=typo_style,
+            palette_hex=palette_hex,
             reactive_intensity_pct=reactive_intensity_pct,
             shader_tint=shader_tint,
             shader_tint_strength_pct=shader_tint_strength_pct,
@@ -633,8 +691,10 @@ def _run_render(
     sdxl_ken_burns: bool,
     sdxl_rife_morph: bool,
     rife_exp: int,
-    preset_id: str | None,
+    reactive_shader_stem: str | None,
     custom_background_prompt: str,
+    typo_style: str | None,
+    palette_hex: str | None,
     reactive_intensity_pct: float,
     shader_tint: str | None,
     shader_tint_strength_pct: float,
@@ -686,8 +746,10 @@ def _run_render(
             song_hash=song_hash,
             bg_mode=bg_mode,
             static_bg=static_bg,
-            preset_id=preset_id,
+            reactive_shader_stem=reactive_shader_stem,
             custom_background_prompt=custom_background_prompt,
+            typo_style_text=typo_style,
+            palette_hex=palette_hex,
             reactive_intensity_pct=reactive_intensity_pct,
             shader_tint=shader_tint,
             shader_tint_strength_pct=shader_tint_strength_pct,
@@ -869,6 +931,40 @@ def _preview_reactive_frame(
         progress(1.0, desc="Idle")
         return None, _append_log(log, "Reactive preview: pick a Reactive shader first.")
 
+    if stem_input == "none":
+        if not song_hash:
+            progress(1.0, desc="Idle")
+            return None, _append_log(log, "Reactive preview: ingest audio first.")
+        analysis_path = song_cache_dir(song_hash) / "analysis.json"
+        if not analysis_path.is_file():
+            progress(1.0, desc="Idle")
+            return None, _append_log(
+                log,
+                f"Reactive preview: missing {analysis_path} — run Analyze first.",
+            )
+        progress(0.5, desc="Reactive preview (no shader)")
+        w, h = 960, 540
+        rgb = _preview_background_rgb(h, w)
+        logo_path = getattr(logo_file, "name", logo_file) if logo_file else None
+        if logo_path and str(logo_path).strip():
+            rgb = composite_logo_from_path(
+                rgb,
+                logo_path,
+                logo_position,
+                logo_opacity,
+                max_size_pct=float(logo_max_size_pct),
+            )
+        progress(1.0, desc="Idle")
+        return rgb, _append_log(
+            log,
+            "Reactive preview — shader=none (background gradient only)"
+            + (
+                f" | logo={logo_position!r} @ {logo_opacity:.0f}%"
+                if logo_path and str(logo_path).strip()
+                else ""
+            ),
+        )
+
     try:
         try:
             stem = resolve_builtin_shader_stem(stem_input)
@@ -1017,6 +1113,46 @@ _EDITOR_EMPTY_HTML = (
 _EFFECTS_EDITOR_CONTAINER_ID = "mv_fx_root"
 _EFFECTS_EDITOR_AUDIO_ELEM_ID = "mv_fx_audio"
 _EFFECTS_EDITOR_STATE_JS_VAR = "_glitchframe_effects_state"
+_KEYFRAMES_EDITOR_CONTAINER_ID = "mv_kf_root"
+_KEYFRAMES_EDITOR_AUDIO_ELEM_ID = "mv_kf_audio"
+_KEYFRAMES_EDITOR_STATE_JS_VAR = "_glitchframe_keyframes_state"
+_KEYFRAMES_EDITOR_EMPTY_HTML = (
+    "<div style='color:#9ca3af;font-family:system-ui,sans-serif;padding:12px;'>"
+    "Ingest audio, run <b>Analyze</b>, then <b>Load timeline</b> to edit SDXL "
+    "background stills timing. Use <b>Generate SDXL stills</b> before rendering, or "
+    "upload crops and <b>Save timeline</b> to commit.</div>"
+)
+_KF_CROP_PLACEHOLDER_HTML = (
+    "<p style='color:#64748b;font-size:12px;margin:0'>"
+    "Cropper appears when you <b>Load image into cropper</b>, "
+    "<b>Replace with image</b>, or <b>Crop selected still</b>.</p>"
+)
+_CROP_APPLY_JS = (
+    "(song_hash, file, slot, res, preset, prompt, out_res, log, src, _prevRect, _buf) => {"
+    "const r = window._glitchframe_crop_rect || {nx:0,ny:0,nw:1,nh:1};"
+    "const st = JSON.stringify(window." + _KEYFRAMES_EDITOR_STATE_JS_VAR + " || {});"
+    "return [song_hash, file, slot, res, preset, prompt, out_res, log, src, JSON.stringify(r), st];"
+    "}"
+)
+_KF_REGEN_JS = (
+    "(song_hash, preset, cprompt, res, sel_idx, slot, ptxt, log, _buf) => ["
+    "song_hash, preset, cprompt, res, sel_idx, slot, ptxt, log, "
+    "JSON.stringify(window." + _KEYFRAMES_EDITOR_STATE_JS_VAR + " || {})"
+    "]"
+)
+_KF_GEN_JS = (
+    "(song_hash, preset, cprompt, res, regen_all, slot, log, _buf) => ["
+    "song_hash, preset, cprompt, res, regen_all, slot, log, "
+    "JSON.stringify(window." + _KEYFRAMES_EDITOR_STATE_JS_VAR + " || {})"
+    "]"
+)
+_KF_CROP_STILL_PREP_JS = (
+    "(song_hash, sel_idx, slot, log, _buf, preset, cprompt) => ["
+    "song_hash, sel_idx, slot, log, "
+    "JSON.stringify(window." + _KEYFRAMES_EDITOR_STATE_JS_VAR + " || {}), "
+    "preset, cprompt"
+    "]"
+)
 _EFFECTS_EDITOR_EMPTY_HTML = (
     "<div style='color:#9ca3af;font-family:system-ui,sans-serif;padding:12px;'>"
     "Click <b>Load timeline</b> after ingesting audio and running <b>Analyze</b> "
@@ -1324,16 +1460,655 @@ def _clear_effects_editor(song_hash: str | None, log: str) -> tuple[str, str]:
         )
 
 
-def build_ui() -> gr.Blocks:
-    preset_registry = load_preset_registry()
-    preset_choices = _preset_choices(preset_registry)
-    first_id = preset_choices[0] if preset_choices else None
-    first = preset_registry[first_id] if first_id and first_id in preset_registry else {}
-    shader0 = first.get("shader", BUILTIN_SHADERS[0])
-    if shader0 not in BUILTIN_SHADERS:
-        shader0 = BUILTIN_SHADERS[0]
+# ---------------------------------------------------------------------------
+# Background keyframes editor
+# ---------------------------------------------------------------------------
 
-    with gr.Blocks(title="Glitchframe") as demo:
+
+def _parse_kf_crop_rect_json(raw: str | None) -> tuple[float, float, float, float]:
+    try:
+        data = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    return (
+        float(data.get("nx", 0)),
+        float(data.get("ny", 0)),
+        float(data.get("nw", 1)),
+        float(data.get("nh", 1)),
+    )
+
+
+def _kf_resolve_prompt(shader_dd: str | None, custom_prompt: str) -> tuple[str, str]:
+    stem = canonical_reactive_shader_stem(shader_dd)
+    base = shader_style_bundle(stem).example_prompt
+    prompt = (custom_prompt or "").strip() or base
+    return style_preset_id(stem), prompt
+
+
+def _kf_try_flush_keyframes_browser(
+    song_hash: str | None,
+    edited_json: str | None,
+    shader_dd: str | None,
+    custom_prompt: str,
+) -> None:
+    """Persist in-browser timeline edits (incl. new clips) before slot-index ops hit disk."""
+    if not song_hash or not edited_json or not str(edited_json).strip():
+        return
+    raw = str(edited_json).strip()
+    if raw in ("{}", "null"):
+        return
+    try:
+        data = json.loads(raw)
+        if not isinstance(data, dict) or not data.get("keyframes"):
+            return
+    except json.JSONDecodeError:
+        return
+    try:
+        cache_dir = song_cache_dir(song_hash)
+        preset_id, preset_prompt = _kf_resolve_prompt(shader_dd, custom_prompt)
+        save_keyframes_editor_payload(
+            cache_dir,
+            raw,
+            song_hash_from_dir=song_hash,
+            preset_id=preset_id,
+            preset_prompt=preset_prompt,
+            model_id=DEFAULT_MODEL_ID,
+            gen_width=DEFAULT_GEN_WIDTH,
+            gen_height=DEFAULT_GEN_HEIGHT,
+        )
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("Keyframes browser → disk sync failed: %s", exc)
+
+
+def _kf_effective_target_slot(
+    slot_id: str | None,
+    edited_json: str | None,
+) -> str | None:
+    """Timeline selection from browser JSON (``selected_target_id``); fixes new ``ui-…`` clips."""
+    try:
+        data = json.loads(edited_json or "{}")
+        if isinstance(data, dict):
+            raw = data.get("selected_target_id")
+            if raw is not None and str(raw).strip():
+                return str(raw).strip()
+    except json.JSONDecodeError:
+        pass
+    sid = (slot_id or "").strip()
+    return sid or None
+
+
+def _kf_build_editor_refresh(
+    song_hash: str | None,
+    shader_dd: str | None,
+    custom_prompt: str,
+    out_resolution: str | None,
+    *,
+    preserve_slot: str | None = None,
+) -> tuple[str, object, str]:
+    """Rebuild keyframes ``gr.HTML``, dropdown, and prompt line for ``preserve_slot`` (or first slot)."""
+    if not song_hash:
+        return _KEYFRAMES_EDITOR_EMPTY_HTML, gr.update(), ""
+    try:
+        cache_dir = song_cache_dir(song_hash)
+        preset_id, preset_prompt = _kf_resolve_prompt(shader_dd, custom_prompt)
+        w, h = _parse_resolution(out_resolution)
+        state = load_keyframes_editor_state(
+            cache_dir,
+            preset_prompt=preset_prompt,
+            preset_id=preset_id,
+            target_width=w,
+            target_height=h,
+        )
+        audio_abs = _resolve_wav_path_for_effects_editor(cache_dir).resolve()
+        html_blob = build_keyframes_editor_html(
+            state,
+            audio_url=_editor_audio_url(audio_abs),
+            container_id=_KEYFRAMES_EDITOR_CONTAINER_ID,
+            state_js_var=_KEYFRAMES_EDITOR_STATE_JS_VAR,
+            audio_element_id=_KEYFRAMES_EDITOR_AUDIO_ELEM_ID,
+        )
+        choices = keyframe_id_choices(cache_dir)
+        sid = (preserve_slot or "").strip()
+        val: str | None
+        if sid and sid in choices:
+            val = sid
+        elif choices:
+            val = choices[0]
+        else:
+            val = None
+        dd_up = gr.update(choices=choices, value=val)
+        ptxt = keyframe_prompt_for_entry_id(cache_dir, val) if val else ""
+        return html_blob, dd_up, ptxt
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("Keyframes editor refresh failed: %s", exc)
+        return _KEYFRAMES_EDITOR_EMPTY_HTML, gr.update(), ""
+
+
+def _load_keyframes_editor(
+    song_hash: str | None,
+    shader_dd: str | None,
+    custom_prompt: str,
+    out_resolution: str | None,
+    log: str,
+) -> tuple[str, str, object, int | None, str, object, str, str | None]:
+    if not song_hash:
+        return (
+            _KEYFRAMES_EDITOR_EMPTY_HTML,
+            _append_log(log, "Background keyframes: ingest audio first."),
+            gr.update(choices=[], value=None),
+            None,
+            "",
+            gr.update(visible=False),
+            _KF_CROP_PLACEHOLDER_HTML,
+            None,
+        )
+    try:
+        cache_dir = song_cache_dir(song_hash)
+        preset_id, preset_prompt = _kf_resolve_prompt(shader_dd, custom_prompt)
+        w, h = _parse_resolution(out_resolution)
+        state = load_keyframes_editor_state(
+            cache_dir,
+            preset_prompt=preset_prompt,
+            preset_id=preset_id,
+            target_width=w,
+            target_height=h,
+        )
+        try:
+            persist_keyframes_timeline_from_loaded_state(cache_dir, state)
+        except Exception as persist_exc:  # noqa: BLE001
+            LOGGER.warning(
+                "Could not write keyframes_timeline.json on load: %s",
+                persist_exc,
+            )
+        choices = keyframe_id_choices(cache_dir)
+        n_png = 0
+        for i in range(len(choices)):
+            if keyframe_png_abs_path_for_index(cache_dir, i) is not None:
+                n_png += 1
+        html_blob, dd_up, ptxt = _kf_build_editor_refresh(
+            song_hash,
+            shader_dd,
+            custom_prompt,
+            out_resolution,
+            preserve_slot=choices[0] if choices else None,
+        )
+        msg = f"Keyframes editor ready — {len(choices)} slot(s), {n_png} PNG(s) on disk."
+        return (
+            html_blob,
+            _append_log(log, msg),
+            dd_up,
+            0 if choices else None,
+            ptxt,
+            gr.update(visible=False),
+            _KF_CROP_PLACEHOLDER_HTML,
+            None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return (
+            _KEYFRAMES_EDITOR_EMPTY_HTML,
+            _append_log(log, _format_exception("Keyframes load failed", exc)),
+            gr.update(choices=[], value=None),
+            None,
+            "",
+            gr.update(visible=False),
+            _KF_CROP_PLACEHOLDER_HTML,
+            None,
+        )
+
+
+def _save_keyframes_editor(
+    song_hash: str | None,
+    edited_json: str,
+    shader_dd: str | None,
+    custom_prompt: str,
+    out_resolution: str | None,
+    log: str,
+) -> tuple[str, str, object, int | None, str, object, str, str | None]:
+    if not song_hash:
+        return (
+            _KEYFRAMES_EDITOR_EMPTY_HTML,
+            _append_log(log, "Save keyframes: no song_hash."),
+            gr.update(),
+            None,
+            "",
+            gr.update(visible=False),
+            _KF_CROP_PLACEHOLDER_HTML,
+            None,
+        )
+    if not edited_json or not edited_json.strip():
+        return (
+            _KEYFRAMES_EDITOR_EMPTY_HTML,
+            _append_log(log, "Save keyframes: empty payload — load the editor first."),
+            gr.update(),
+            None,
+            "",
+            gr.update(visible=False),
+            _KF_CROP_PLACEHOLDER_HTML,
+            None,
+        )
+    try:
+        cache_dir = song_cache_dir(song_hash)
+        preset_id, preset_prompt = _kf_resolve_prompt(shader_dd, custom_prompt)
+        save_keyframes_editor_payload(
+            cache_dir,
+            edited_json,
+            song_hash_from_dir=song_hash,
+            preset_id=preset_id,
+            preset_prompt=preset_prompt,
+            model_id=DEFAULT_MODEL_ID,
+            gen_width=DEFAULT_GEN_WIDTH,
+            gen_height=DEFAULT_GEN_HEIGHT,
+        )
+        return _load_keyframes_editor(
+            song_hash,
+            shader_dd,
+            custom_prompt,
+            out_resolution,
+            _append_log(log, "Saved keyframes timeline + manifest (RIFE cache cleared)."),
+        )
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.exception("Save keyframes failed")
+        return (
+            _KEYFRAMES_EDITOR_EMPTY_HTML,
+            _append_log(log, _format_exception("Save keyframes failed", exc)),
+            gr.update(choices=[], value=None),
+            None,
+            "",
+            gr.update(visible=False),
+            _KF_CROP_PLACEHOLDER_HTML,
+            None,
+        )
+
+
+def _kf_resolve_gallery_index(
+    song_hash: str | None,
+    sel_idx: int | None,
+    slot_id: str | None,
+) -> int | None:
+    """Resolve manifest index from dropdown slot id (preferred) or gallery index."""
+    if not song_hash:
+        return None
+    cache_dir = song_cache_dir(song_hash)
+    choices = keyframe_id_choices(cache_dir)
+    if not choices:
+        return None
+    sid = (slot_id or "").strip()
+    if sid and sid in choices:
+        return int(choices.index(sid))
+    if sel_idx is not None:
+        ii = int(sel_idx)
+        if 0 <= ii < len(choices):
+            return ii
+    return None
+
+
+def _kf_on_slot_change(
+    song_hash: str | None,
+    slot_id: str | None,
+) -> tuple[object, object]:
+    if not song_hash or not (slot_id and str(slot_id).strip()):
+        return None, ""
+    cache_dir = song_cache_dir(song_hash)
+    sid = str(slot_id).strip()
+    choices = keyframe_id_choices(cache_dir)
+    if sid not in choices:
+        return None, ""
+    idx = int(choices.index(sid))
+    prompt = keyframe_prompt_for_entry_id(cache_dir, sid)
+    return idx, prompt
+
+
+def _kf_show_crop_section() -> object:
+    return gr.update(visible=True)
+
+
+def _kf_prep_keyframe_crop_still(
+    song_hash: str | None,
+    sel_idx: int | None,
+    slot_id: str | None,
+    log: str,
+    edited_json: str,
+    shader_dd: str | None,
+    custom_prompt: str,
+    out_resolution: str | None,
+) -> tuple[object, str, str, str | None]:
+    _kf_try_flush_keyframes_browser(song_hash, edited_json, shader_dd, custom_prompt)
+    effective = _kf_effective_target_slot(slot_id, edited_json)
+    idx = _kf_resolve_gallery_index(song_hash, sel_idx, effective)
+    if not song_hash or idx is None:
+        return (
+            gr.update(visible=False),
+            _KF_CROP_PLACEHOLDER_HTML,
+            _append_log(
+                log,
+                "Crop still: pick a **Target keyframe** slot (or click a thumbnail), then try again.",
+            ),
+            None,
+        )
+    cache_dir = song_cache_dir(song_hash)
+    p = keyframe_png_abs_path_for_index(cache_dir, idx)
+    if p is None:
+        return (
+            gr.update(visible=False),
+            _KF_CROP_PLACEHOLDER_HTML,
+            _append_log(
+                log,
+                "No PNG on disk for that slot yet — generate stills or pick another.",
+            ),
+            None,
+        )
+    ow, oh = _parse_resolution(out_resolution)
+    html = build_crop_canvas_html(
+        image_url=_editor_audio_url(p), target_width=ow, target_height=oh
+    )
+    return (
+        gr.update(visible=True),
+        html,
+        _append_log(log, "Cropper shows the selected keyframe — adjust, then Apply crop."),
+        str(p),
+    )
+
+
+def _prep_keyframe_crop(
+    upload: object,
+    song_hash: str | None,
+    log: str,
+    out_resolution: str | None,
+) -> tuple[object, str, str, str | None]:
+    path_s = _coerce_gradio_file_path(upload)
+    if not path_s or not song_hash:
+        return (
+            gr.update(),
+            "<p style='color:#94a3af'>Upload an image and ingest audio first.</p>",
+            _append_log(log, "Crop: need image file + ingested song."),
+            None,
+        )
+    p = Path(path_s).resolve()
+    if not p.is_file():
+        return (
+            gr.update(),
+            "<p style='color:#94a3af'>File not found.</p>",
+            _append_log(log, f"Crop: missing {p}"),
+            None,
+        )
+    ow, oh = _parse_resolution(out_resolution)
+    html = build_crop_canvas_html(
+        image_url=_editor_audio_url(p), target_width=ow, target_height=oh
+    )
+    return (
+        gr.update(visible=True),
+        html,
+        _append_log(log, "Cropper ready — drag on the canvas to select region."),
+        str(p),
+    )
+
+
+def _apply_keyframe_crop(
+    song_hash: str | None,
+    upload: object,
+    slot_id: str | None,
+    res_label: str | None,
+    shader_dd: str | None,
+    custom_prompt: str,
+    out_resolution: str | None,
+    log: str,
+    crop_src_path: str | None,
+    crop_rect_json: str | None,
+    edited_json: str,
+) -> tuple[str | object, str | None, str | object, object, str | object]:
+    _kf_try_flush_keyframes_browser(song_hash, edited_json, shader_dd, custom_prompt)
+    effective_id = _kf_effective_target_slot(slot_id, edited_json)
+    path_s = _coerce_gradio_file_path(upload)
+    if not path_s and crop_src_path and str(crop_src_path).strip():
+        cand = Path(str(crop_src_path).strip()).resolve()
+        path_s = str(cand) if cand.is_file() else None
+    if not song_hash or not path_s or not (effective_id and str(effective_id).strip()):
+        return (
+            _append_log(
+                log,
+                "Apply crop: need ingested song, an image (upload or cropper source), "
+                "and target slot.",
+            ),
+            None,
+            gr.update(),
+            gr.update(),
+            gr.update(),
+        )
+    nx, ny, nw, nh = _parse_kf_crop_rect_json(crop_rect_json)
+    try:
+        cache_dir = song_cache_dir(song_hash)
+        w, h = _parse_resolution(res_label)
+        apply_upload_crop(
+            cache_dir,
+            entry_id=str(effective_id).strip(),
+            image_path=path_s,
+            nx=float(nx),
+            ny=float(ny),
+            nw=float(nw),
+            nh=float(nh),
+            out_width=int(w),
+            out_height=int(h),
+        )
+        mark_keyframe_entry_as_upload(cache_dir, str(effective_id).strip())
+        html_blob, dd_up, ptxt = _kf_build_editor_refresh(
+            song_hash,
+            shader_dd,
+            custom_prompt,
+            out_resolution,
+            preserve_slot=str(effective_id).strip(),
+        )
+        return (
+            _append_log(
+                log,
+                f"Staged crop for {effective_id!r} at {w}x{h}. **Save timeline** to commit to "
+                "keyframes. Preview updated from staging.",
+            ),
+            None,
+            html_blob,
+            dd_up,
+            ptxt,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return (
+            _append_log(log, _format_exception("Apply crop failed", exc)),
+            None,
+            gr.update(),
+            gr.update(),
+            gr.update(),
+        )
+
+
+def _regenerate_selected_keyframe_sdxl(
+    song_hash: str | None,
+    shader_dd: str | None,
+    custom_prompt: str,
+    out_resolution: str | None,
+    sel_idx: int | None,
+    slot_id: str | None,
+    edited_prompt: str,
+    log: str,
+    edited_json: str,
+    progress: gr.Progress = gr.Progress(),
+) -> tuple[str, str, object, str | object]:
+    def _fail(msg: str) -> tuple[str, object, object, object]:
+        progress(1.0, desc="Idle")
+        return _append_log(log, msg), gr.update(), gr.update(), gr.update()
+
+    if not song_hash:
+        progress(1.0, desc="Idle")
+        return _fail("Regenerate: ingest audio first.")
+    _kf_try_flush_keyframes_browser(song_hash, edited_json, shader_dd, custom_prompt)
+    progress(0.0, desc="SDXL one slot")
+    cb = _EtaProgress(progress)
+    try:
+        cache_dir = song_cache_dir(song_hash)
+        effective = _kf_effective_target_slot(slot_id, edited_json)
+        resolved = _kf_resolve_gallery_index(song_hash, sel_idx, effective)
+        if resolved is None:
+            return _fail(
+                "Regenerate: pick a **Target keyframe** on the timeline (or dropdown) first.",
+            )
+        sel_idx = resolved
+        entry_id = keyframe_entry_id_at_index(cache_dir, sel_idx)
+        if not entry_id:
+            return _fail("Regenerate: invalid keyframe slot.")
+        preset_id, preset_prompt = _kf_resolve_prompt(shader_dd, custom_prompt)
+        w, h = _parse_resolution(out_resolution)
+        prompt = (edited_prompt or "").strip()
+        if not prompt:
+            return _fail("Regenerate: enter a prompt for the target clip (SDXL box on the timeline).")
+        if load_keyframes_timeline(cache_dir) is None:
+            editor_state = load_keyframes_editor_state(
+                cache_dir,
+                preset_prompt=preset_prompt,
+                preset_id=preset_id,
+                target_width=w,
+                target_height=h,
+            )
+            persist_keyframes_timeline_from_loaded_state(cache_dir, editor_state)
+        set_keyframe_entry_prompt(
+            cache_dir,
+            entry_id,
+            prompt,
+            source="sdxl",
+        )
+        refresh_manifest_from_timeline(
+            cache_dir,
+            preset_id=preset_id,
+            preset_prompt=preset_prompt,
+            model_id=DEFAULT_MODEL_ID,
+            gen_width=DEFAULT_GEN_WIDTH,
+            gen_height=DEFAULT_GEN_HEIGHT,
+        )
+        generate_sdxl_keyframes_for_cache(
+            cache_dir,
+            preset_id=preset_id,
+            preset_prompt=preset_prompt,
+            width=w,
+            height=h,
+            regenerate_indices={sel_idx},
+            progress=cb,
+        )
+        html_blob, dd_up, ptxt = _kf_build_editor_refresh(
+            song_hash,
+            shader_dd,
+            custom_prompt,
+            out_resolution,
+            preserve_slot=entry_id,
+        )
+        progress(1.0, desc="Idle")
+        return (
+            _append_log(
+                log,
+                f"Regenerated {entry_id!r} (SDXL). Timeline preview updated. **Save timeline** "
+                "if you changed timing in the waveform.",
+            ),
+            html_blob,
+            dd_up,
+            ptxt,
+        )
+    except Exception as exc:  # noqa: BLE001
+        progress(1.0, desc="Idle")
+        return (
+            _append_log(log, _format_exception("Regenerate selected keyframe failed", exc)),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+        )
+
+
+def _generate_keyframes_sdxl(
+    song_hash: str | None,
+    shader_dd: str | None,
+    custom_prompt: str,
+    out_resolution: str | None,
+    force_all: bool,
+    slot_id: str | None,
+    log: str,
+    edited_json: str,
+    progress: gr.Progress = gr.Progress(),
+) -> tuple[str, str, object, str | object]:
+    if not song_hash:
+        progress(1.0, desc="Idle")
+        return (
+            _append_log(log, "Generate keyframes: ingest audio first."),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+        )
+    _kf_try_flush_keyframes_browser(song_hash, edited_json, shader_dd, custom_prompt)
+    progress(0.0, desc="SDXL keyframes")
+    cb = _EtaProgress(progress)
+    try:
+        cache_dir = song_cache_dir(song_hash)
+        preset_id, preset_prompt = _kf_resolve_prompt(shader_dd, custom_prompt)
+        w, h = _parse_resolution(out_resolution)
+        generate_sdxl_keyframes_for_cache(
+            cache_dir,
+            preset_id=preset_id,
+            preset_prompt=preset_prompt,
+            width=w,
+            height=h,
+            force_regenerate_sdxl=bool(force_all),
+            progress=cb,
+        )
+        choices = keyframe_id_choices(cache_dir)
+        n_png = 0
+        for i in range(len(choices)):
+            if keyframe_png_abs_path_for_index(cache_dir, i) is not None:
+                n_png += 1
+        preserve = (slot_id or "").strip() or None
+        html_blob, dd_up, ptxt = _kf_build_editor_refresh(
+            song_hash,
+            shader_dd,
+            custom_prompt,
+            out_resolution,
+            preserve_slot=preserve,
+        )
+        progress(1.0, desc="Idle")
+        return (
+            _append_log(
+                log,
+                f"SDXL keyframes ready — {n_png} PNG(s) on disk. Full render still runs RIFE if enabled.",
+            ),
+            html_blob,
+            dd_up,
+            ptxt,
+        )
+    except Exception as exc:  # noqa: BLE001
+        progress(1.0, desc="Idle")
+        return (
+            _append_log(log, _format_exception("Generate SDXL keyframes failed", exc)),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+        )
+
+
+def build_ui() -> gr.Blocks:
+    _vs = shader_style_bundle(DEFAULT_REACTIVE_SHADER)
+
+    with gr.Blocks(
+        title="Glitchframe",
+        css=r"""
+/* Proxy controls for the keyframes HTML editor: must stay in the DOM (visible=True) so
+   timeline JS can sync the prompt and click Gradio buttons. Gradio omits visible=False
+   components from the tree, which breaks inline Regenerate / Replace / Crop. */
+.mv-kf-gradio-bridges {
+    position: fixed !important;
+    left: -9999px !important;
+    top: 0 !important;
+    width: 12rem !important;
+    height: auto !important;
+    max-height: 8rem !important;
+    overflow: hidden !important;
+    opacity: 0 !important;
+    z-index: -1 !important;
+}
+""",
+    ) as demo:
         gr.Markdown(
             "# Glitchframe\n"
             "Local music video generator — upload, analyze, style, and render."
@@ -1779,81 +2554,56 @@ def build_ui() -> gr.Blocks:
                     btn_clear_fx = gr.Button("Clear all")
 
             with gr.Tab("Visual style"):
-                preset_dd = gr.Dropdown(
-                    label="Preset",
-                    choices=preset_choices,
-                    value=first_id,
+                shader_dd = gr.Dropdown(
+                    label="Reactive shader",
+                    choices=list(_REACTIVE_SHADER_UI),
+                    value=DEFAULT_REACTIVE_SHADER,
                 )
-                with gr.Accordion("What is a preset? (read me)", open=False):
+                with gr.Accordion("How visual style maps to renders", open=False):
                     gr.Markdown(
                         """
-A **preset** is a coherent look made of four pieces that you can still tweak
-independently:
+Pick a **shader** or **none** for a bare SDXL (plus typography / logo) look.
+When you switch shaders we prefill an **example scene prompt**, **typography style**,
+and **palette** — change them freely.
 
-| Field | Drives | Used by |
-|---|---|---|
-| **Prompt** | Scene description | SDXL stills **and** AnimateDiff (prepended to per-loop motion language). Ignored by *Static image + Ken Burns*. |
-| **Reactive shader** | GPU overlay on top of the background | Every background mode. Reads the **palette** below for its colors. |
-| **Typography style** | Title/artist animation style | Every background mode. |
-| **Color palette** | Up to 5 `#RRGGBB` colors | Fed to the shader as `u_palette[5]`. Earlier slots = base tones, later slots = accents / beat flashes. |
+| Control | Purpose |
+|---------|---------|
+| **Scene prompt** | SDXL stills (ignored for static Ken Burns upload). Leave empty to fall back on the shader’s built-in example. Edit per-keyframe prompts in **Background keyframes**. |
+| **Reactive shader** | Audio-reactive GLSL layer on top of the background; **No reactive shader** skips the GPU overlay. |
+| **Typography style** | Kinetic lyric motion preset. |
+| **Palette** | Five ``#RRGGBB`` colours for shaders that read ``u_palette`` (skipped when reactive shader is none). |
 
-**How the backgrounds differ**
+Background caches record ``style-<shader_stem>`` together with prompt text.
 
-- *SDXL stills*: the prompt plus a structural hint (`scene N of M, t=X.Xs`) produces one keyframe per 8 s, cross-faded over the song. Optional **Ken Burns on SDXL stills** applies the same RMS-driven zoom/pan/tilt as static Ken Burns on each interpolated frame (no upload).
-- *Static image + Ken Burns*: the prompt is ignored — upload your own image and RMS drives zoom/pan/tilt.
-- *AnimateDiff loops*: the prompt is combined with a preset-specific **motion flavor** (e.g. `slow cosmic drift, subtle parallax…`) plus a pacing cue (`establishing shot` → `steady motion` → `slower fade-out motion`). Each song segment renders one short loop, cross-faded at boundaries.
-
-**The six built-in presets**
-
-- **cosmic-flow** — deep-space nebula + `nebula_flow` shader (bar-synced drift, pre-drop build and drop bloom, Milkdrop-style dynamics).
-- **glitch-vhs** — 90s tube TV + `vhs_tracking` shader (scanlines, RGB split, onset-triggered tracking bursts).
-- **lofi-warm** — cozy study at golden hour + `paper_grain` shader (soft bokeh, film grain, warm vignette).
-- **minimal-mono** — Swiss brutalist + `geometry_pulse` shader (concentric rings, clean monochrome).
-- **neon-synthwave** — 80s retrowave skyline + `synth_grid` shader (perspective grid, sliced sun, horizon glow).
-- **organic-liquid** — iridescent ink macro + `liquid_chrome` shader (domain-warped fluid, onset ripples).
-
-See `docs/technical/visual-style-presets.md` for the full schema and
-`docs/technical/background-modes.md` for the AnimateDiff prompt details.
+See [`docs/technical/background-stills.md`](docs/technical/background-stills.md) and [`docs/technical/rife-morph-background.md`](docs/technical/rife-morph-background.md).
 """
                     )
                 custom_prompt = gr.Textbox(
-                    label="Custom prompt (overrides preset SD prompt)",
+                    label="Scene prompt (SDXL stills; empty uses shader default)",
                     lines=3,
-                    value=first.get("prompt", ""),
+                    value=_vs.example_prompt,
                     interactive=True,
-                )
-                shader_dd = gr.Dropdown(
-                    label="Reactive shader",
-                    choices=list(BUILTIN_SHADERS),
-                    value=shader0,
                 )
                 typo_style = gr.Textbox(
                     label="Typography style",
-                    value=first.get("typo_style", ""),
+                    value=_vs.typo_style,
                 )
                 palette_hex = gr.Textbox(
                     label="Color palette (#RRGGBB, comma-separated)",
-                    value=", ".join(str(c) for c in first.get("colors", [])),
+                    value=", ".join(_vs.colors),
                 )
                 bg_mode = gr.Radio(
                     label="Background mode",
                     choices=[
                         ("SDXL AI stills", MODE_SDXL_STILLS),
                         ("Static image + Ken Burns (RMS)", MODE_STATIC_KENBURNS),
-                        (
-                            "AnimateDiff (animates SDXL stills, GPU)",
-                            MODE_ANIMATEDIFF,
-                        ),
                     ],
                     value=MODE_SDXL_STILLS,
                     info=(
-                        f"Canonical values: {', '.join(BACKGROUND_MODES)}. "
-                        "AnimateDiff first generates the SDXL stills, then "
-                        "unloads SDXL and reloads as AnimateDiff — each "
-                        "16-frame loop is *seeded* from the closest SDXL "
-                        "still, so the output is your keyframes with motion "
-                        "baked in (no overlay, no double-exposure). "
-                        "~5–10× slower than plain SDXL stills."
+                        "SDXL stills are planned on ingest/analyze (~one keyframe per ~8 s); refine timing, "
+                        "prompts, **Regenerate**, or **Replace** with uploads in **Background keyframes**. "
+                        "Optional **Morph keyframes (RIFE)** below smooths motion between stills (CUDA). "
+                        f"Canonical mode ids: {MODE_SDXL_STILLS}, {MODE_STATIC_KENBURNS}."
                     ),
                 )
                 static_bg_file = gr.File(
@@ -1863,7 +2613,7 @@ See `docs/technical/visual-style-presets.md` for the full schema and
                 )
                 sdxl_ken_burns_cb = gr.Checkbox(
                     label="Ken Burns on SDXL stills (RMS)",
-                    value=False,
+                    value=True,
                     info=(
                         "Adds zoom/pan/tilt from the track's loudness envelope on top "
                         "of AI keyframes — same motion recipe as static Ken Burns, "
@@ -1872,7 +2622,7 @@ See `docs/technical/visual-style-presets.md` for the full schema and
                 )
                 sdxl_rife_morph_cb = gr.Checkbox(
                     label="Morph keyframes (RIFE)",
-                    value=False,
+                    value=True,
                     info=(
                         "After SDXL keyframes are generated, runs Practical-RIFE "
                         "(MIT) optical-flow interpolation between each consecutive pair "
@@ -1941,6 +2691,65 @@ See `docs/technical/visual-style-presets.md` for the full schema and
                     info="Informational only; output path is outputs/<run_id>/output.mp4.",
                 )
 
+            with gr.Tab("Background keyframes"):
+                gr.Markdown(
+                    "Plan **SDXL background stills** (or uploads) on a **single waveform timeline** "
+                    "(preview, prompt, Regenerate / Replace / Crop live in the editor). **Load timeline** "
+                    "needs ingest + **Analyze**. **Save timeline** writes `keyframes_timeline.json` + "
+                    "`manifest.json` (clears RIFE cache). **Generate SDXL stills** fills missing slots. "
+                    "Staging uploads show in the timeline preview immediately; **Save timeline** commits them "
+                    "to `keyframe_*.png`."
+                )
+                btn_kf_load = gr.Button("Load timeline", variant="primary")
+                kf_editor_html = gr.HTML(value=_KEYFRAMES_EDITOR_EMPTY_HTML)
+                kf_state_buffer = gr.Textbox(visible=False, value="", interactive=True)
+                with gr.Row():
+                    btn_kf_save = gr.Button("Save timeline")
+                    btn_kf_gen = gr.Button("Generate SDXL stills", variant="primary")
+                kf_regen_all_cb = gr.Checkbox(
+                    label="Regenerate all SDXL slots (not uploads)",
+                    value=False,
+                )
+                kf_slot_dd = gr.Dropdown(
+                    label="Target slot id (for Apply crop — syncs when you click a clip)",
+                    choices=[],
+                    allow_custom_value=True,
+                    elem_id="mv_kf_slot_dd",
+                )
+                kf_sel_idx_state = gr.State(value=None)
+                kf_crop_src_state = gr.State(value=None)
+                with gr.Column(elem_classes=["mv-kf-gradio-bridges"]):
+                    kf_sel_prompt = gr.Textbox(
+                        elem_id="mv_kf_gr_prompt",
+                        label="Prompt bridge (timeline)",
+                        lines=2,
+                        interactive=True,
+                    )
+                    with gr.Row():
+                        btn_kf_regen_sel = gr.Button(
+                            "Regenerate (SDXL)",
+                            elem_id="mv_kf_btn_regen",
+                        )
+                        btn_kf_replace_img = gr.Button(
+                            "Replace with image…",
+                            elem_id="mv_kf_btn_replace",
+                        )
+                        btn_kf_crop_sel = gr.Button(
+                            "Crop keyframe",
+                            elem_id="mv_kf_btn_crop",
+                        )
+                with gr.Column(visible=False) as kf_crop_col:
+                    gr.Markdown("#### Upload + crop")
+                    kf_crop_file = gr.File(label="Image to crop", file_types=["image"])
+                    btn_kf_prep_crop = gr.Button("Load image into cropper")
+                    kf_crop_panel = gr.HTML(value=_KF_CROP_PLACEHOLDER_HTML)
+                    btn_kf_apply_crop = gr.Button("Apply crop to slot")
+                kf_crop_rect_json = gr.Textbox(
+                    visible=False,
+                    value='{"nx":0,"ny":0,"nw":1,"nh":1}',
+                    interactive=True,
+                )
+
             with gr.Tab("Actions"):
                 gr.Markdown(
                     "Long runs use **Queue**. Each action shows progress, elapsed time, and an ETA while running. "
@@ -1974,8 +2783,10 @@ See `docs/technical/visual-style-presets.md` for the full schema and
             sdxl_ken_burns_cb,
             sdxl_rife_morph_cb,
             rife_exp_slider,
-            preset_dd,
+            shader_dd,
             custom_prompt,
+            typo_style,
+            palette_hex,
             reactive_intensity,
             shader_tint_picker,
             shader_tint_strength_slider,
@@ -2127,6 +2938,146 @@ See `docs/technical/visual-style-presets.md` for the full schema and
             show_progress="full",
         )
 
+        btn_kf_load.click(
+            fn=_load_keyframes_editor,
+            inputs=[
+                song_hash_state,
+                shader_dd,
+                custom_prompt,
+                out_resolution,
+                run_log,
+            ],
+            outputs=[
+                kf_editor_html,
+                run_log,
+                kf_slot_dd,
+                kf_sel_idx_state,
+                kf_sel_prompt,
+                kf_crop_col,
+                kf_crop_panel,
+                kf_crop_src_state,
+            ],
+            show_progress="full",
+        )
+        btn_kf_save.click(
+            fn=_save_keyframes_editor,
+            inputs=[
+                song_hash_state,
+                kf_state_buffer,
+                shader_dd,
+                custom_prompt,
+                out_resolution,
+                run_log,
+            ],
+            outputs=[
+                kf_editor_html,
+                run_log,
+                kf_slot_dd,
+                kf_sel_idx_state,
+                kf_sel_prompt,
+                kf_crop_col,
+                kf_crop_panel,
+                kf_crop_src_state,
+            ],
+            show_progress="full",
+            js=(
+                "(song_hash, _buf, preset, prompt, res, log) => ["
+                "song_hash, "
+                "JSON.stringify(window." + _KEYFRAMES_EDITOR_STATE_JS_VAR + " || {}), "
+                "preset, prompt, res, log"
+                "]"
+            ),
+        )
+        btn_kf_gen.click(
+            fn=_generate_keyframes_sdxl,
+            inputs=[
+                song_hash_state,
+                shader_dd,
+                custom_prompt,
+                out_resolution,
+                kf_regen_all_cb,
+                kf_slot_dd,
+                run_log,
+                kf_state_buffer,
+            ],
+            outputs=[run_log, kf_editor_html, kf_slot_dd, kf_sel_prompt],
+            show_progress="full",
+            js=_KF_GEN_JS,
+        )
+        kf_slot_dd.change(
+            fn=_kf_on_slot_change,
+            inputs=[song_hash_state, kf_slot_dd],
+            outputs=[kf_sel_idx_state, kf_sel_prompt],
+        )
+        btn_kf_regen_sel.click(
+            fn=_regenerate_selected_keyframe_sdxl,
+            inputs=[
+                song_hash_state,
+                shader_dd,
+                custom_prompt,
+                out_resolution,
+                kf_sel_idx_state,
+                kf_slot_dd,
+                kf_sel_prompt,
+                run_log,
+                kf_state_buffer,
+            ],
+            outputs=[run_log, kf_editor_html, kf_slot_dd, kf_sel_prompt],
+            show_progress="full",
+            js=_KF_REGEN_JS,
+        )
+        btn_kf_replace_img.click(
+            fn=_kf_show_crop_section,
+            inputs=None,
+            outputs=[kf_crop_col],
+        )
+        btn_kf_crop_sel.click(
+            fn=_kf_prep_keyframe_crop_still,
+            inputs=[
+                song_hash_state,
+                kf_sel_idx_state,
+                kf_slot_dd,
+                run_log,
+                kf_state_buffer,
+                shader_dd,
+                custom_prompt,
+                out_resolution,
+            ],
+            outputs=[kf_crop_col, kf_crop_panel, run_log, kf_crop_src_state],
+            show_progress="full",
+            js=_KF_CROP_STILL_PREP_JS,
+        )
+        btn_kf_prep_crop.click(
+            fn=_prep_keyframe_crop,
+            inputs=[kf_crop_file, song_hash_state, run_log, out_resolution],
+            outputs=[kf_crop_col, kf_crop_panel, run_log, kf_crop_src_state],
+            show_progress="full",
+        )
+        btn_kf_apply_crop.click(
+            fn=_apply_keyframe_crop,
+            inputs=[
+                song_hash_state,
+                kf_crop_file,
+                kf_slot_dd,
+                out_resolution,
+                shader_dd,
+                custom_prompt,
+                out_resolution,
+                run_log,
+                kf_crop_src_state,
+                kf_crop_rect_json,
+                kf_state_buffer,
+            ],
+            outputs=[
+                run_log,
+                kf_crop_src_state,
+                kf_editor_html,
+                kf_slot_dd,
+                kf_sel_prompt,
+            ],
+            js=_CROP_APPLY_JS,
+        )
+
         btn_clear_log.click(fn=_clear_log, inputs=None, outputs=[run_log])
 
         audio_in.change(
@@ -2135,10 +3086,10 @@ See `docs/technical/visual-style-presets.md` for the full schema and
             outputs=[audio_preview, song_hash_state, run_log],
         )
 
-        preset_dd.change(
-            fn=_apply_preset,
-            inputs=[preset_dd],
-            outputs=[custom_prompt, shader_dd, typo_style, palette_hex],
+        shader_dd.change(
+            fn=_apply_shader_choice,
+            inputs=[shader_dd],
+            outputs=[custom_prompt, typo_style, palette_hex],
         )
         btn_logo_preview.click(
             fn=_preview_logo_on_test_frame,
@@ -2318,6 +3269,13 @@ def _log_runtime_python_and_optional_deps() -> None:
 
 
 def main() -> None:
+    if sys.platform == "win32":
+        # ProactorEventLoop logs noisy ConnectionResetError during Gradio client churn;
+        # Selector loop avoids the broken-pipe shutdown path for many local servers.
+        try:
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        except Exception:  # noqa: BLE001
+            pass
     ensure_runtime_dirs()
     _log_runtime_python_and_optional_deps()
     app = build_ui()

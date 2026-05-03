@@ -158,8 +158,15 @@ def _build_motion_prompt(
     off-topic frames. Here we skip the structural metadata and instead
     attach a preset-specific motion flavor plus a single pacing cue.
     """
+    from pipeline.visual_style import motion_flavor_for_style_preset
+
     base = (preset_prompt or "").strip()
-    flavor = MOTION_FLAVORS.get(preset_id, DEFAULT_MOTION_FLAVOR).strip()
+    style_flavor = motion_flavor_for_style_preset(preset_id)
+    flavor = (
+        style_flavor.strip()
+        if style_flavor is not None
+        else MOTION_FLAVORS.get(preset_id, DEFAULT_MOTION_FLAVOR).strip()
+    )
     pacing = _pacing_cue(index, total)
     tail = "cinematic, high detail, coherent frames"
     parts = [p for p in (base, flavor, pacing, tail) if p]
