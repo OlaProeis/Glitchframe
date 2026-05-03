@@ -819,7 +819,8 @@ def build_keyframes_editor_html(
   <audio class="mv-kf-audio" id="{html_lib.escape(audio_element_id)}"
     src="{audio_src}" controls preload="auto"></audio>
   <div class="mv-kf-help">
-    <b>Preview</b> follows the playhead while audio plays. <b>Click</b> a clip (no drag) to seek
+    <b>Preview</b> follows the playhead while audio plays; when paused, it shows the <b>selected</b>
+    slot (click a clip or use the slot dropdown). <b>Click</b> a clip (no drag) to seek
     and pick the slot for Regenerate / crop. Drag clips to move; drag <b>edges</b> to retime the next boundary.
     <b>Double-click</b> a clip for prompt / source. Use the panel below for image upload + Apply crop.
     <b>Space</b> play/pause; <b>+</b>/<b>−</b> zoom; <b>Esc</b> closes the keyframe dialog.
@@ -1023,10 +1024,21 @@ _KF_JS = r"""
     const t = (a && !isNaN(a.currentTime)) ? a.currentTime : 0;
     const idx = kfIndexAtTime(t);
     sortKf();
-    const k = idx >= 0 ? state.keyframes[idx] : null;
+    const playing = a && !a.paused && !a.ended;
+    // While paused, the playhead often sits at 0s while the first anchor is
+    // much later — kfIndexAtTime would stick on index 0 and every slot looked
+    // like the first still. Prefer the selected target when not playing so
+    // Regenerate / dropdown targeting matches the preview image.
+    let k = null;
+    if (playing) {
+      k = idx >= 0 ? state.keyframes[idx] : null;
+    } else if (selected) {
+      k = findKf(selected) || null;
+    } else {
+      k = idx >= 0 ? state.keyframes[idx] : null;
+    }
     if (previewCap) {
       if (k) {
-        const playing = a && !a.paused && !a.ended;
         const tag = playing ? "▶ " : "⏸ ";
         previewCap.textContent = tag + (k.source === "upload" ? "▣ " : "◆ ")
           + k.id + " @ " + k.t_start.toFixed(2) + "s — "
@@ -1051,7 +1063,6 @@ _KF_JS = r"""
           : "Generate SDXL stills (or save uploads) to see keyframe images here.";
       }
     }
-    const playing = a && !a.paused && !a.ended;
     row.querySelectorAll(".mv-kf-clip").forEach((el) => {
       const id = el.getAttribute("data-kf-id");
       const kk = findKf(id);
@@ -1328,6 +1339,22 @@ _KF_JS = r"""
       fillInlinePromptFromSelected();
     }
   });
+
+  (function bindSlotDropdownFollow() {
+    const wrap = document.getElementById("mv_kf_slot_dd");
+    if (!wrap) return;
+    const onPick = () => {
+      const sel = wrap.querySelector("select");
+      const inputEl = wrap.querySelector('input:not([type="hidden"])') || wrap.querySelector("input");
+      const v = sel ? String(sel.value || "") : inputEl ? String(inputEl.value || "") : "";
+      if (!v) return;
+      trackSelected(v);
+      renderKf();
+      fillInlinePromptFromSelected();
+    };
+    wrap.addEventListener("change", onPick, true);
+    wrap.addEventListener("input", onPick, true);
+  })();
 
   setStageWidth();
   requestAnimationFrame(tickPlayhead);

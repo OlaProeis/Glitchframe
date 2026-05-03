@@ -2269,6 +2269,7 @@ def render_full_video(
                     if typo_layer is not None:
                         typo_layer.close()
         except BaseException as exc:  # noqa: BLE001 - re-raised on the main thread
+            LOGGER.exception("Compositor producer thread crashed")
             producer_error.append(exc)
         finally:
             frame_q.put(None)
@@ -2373,7 +2374,11 @@ def render_full_video(
         err_tail = stderr_file.read().decode("utf-8", errors="replace").strip()
 
     if producer_error:
-        raise RuntimeError("Compositor producer thread failed") from producer_error[0]
+        exc = producer_error[0]
+        raise RuntimeError(
+            f"Compositor producer thread failed: {exc}\n"
+            "See log line 'Compositor producer thread crashed' for full traceback."
+        ) from exc
 
     if code != 0:
         msg = f"ffmpeg exited with code {code}"
