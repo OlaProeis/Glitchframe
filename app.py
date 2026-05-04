@@ -192,11 +192,13 @@ def _apply_shader_choice(shader_dd: str | None) -> tuple[str, str, str]:
 _LOG_MAX_CHARS = 12_000
 
 _RESOLUTION_CHOICES: tuple[tuple[str, tuple[int, int]], ...] = (
+    ("540p (960×540) — fast test", (960, 540)),
+    ("720p (1280×720)", (1280, 720)),
     ("1080p (1920×1080)", (1920, 1080)),
     ("4K (3840×2160)", (3840, 2160)),
 )
 _RESOLUTION_MAP: dict[str, tuple[int, int]] = dict(_RESOLUTION_CHOICES)
-_RESOLUTION_DEFAULT_LABEL = _RESOLUTION_CHOICES[0][0]
+_RESOLUTION_DEFAULT_LABEL = "1080p (1920×1080)"
 
 
 def _parse_resolution(label: str | None) -> tuple[int, int]:
@@ -2182,7 +2184,7 @@ def build_ui() -> gr.Blocks:
                     info=(
                         "Percent of the shorter frame edge the logo's longest side "
                         "is capped to. Keeps the logo the same visual size across "
-                        "720p / 1080p / 4K and prevents it from covering the "
+                        "540p / 720p / 1080p / 4K and prevents it from covering the "
                         "kinetic-type band. 30% ≈ ⅓ of the screen."
                     ),
                 )
