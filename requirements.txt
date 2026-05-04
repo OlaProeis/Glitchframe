@@ -1,6 +1,7 @@
-# Glitchframe — install PyTorch from *one* official CUDA wheel index, then the rest.
-#   Windows + Python 3.11/3.12 (stable Align lyrics / WhisperX stack): see README §2 — cu121 + pinned extras.
-#   Other setups:
+# Glitchframe — PyTorch first (match `torch.js` for parity with Pinokio, or use a legacy cu121 stack — see README §2), then the rest.
+#   Pinokio: `install.js` runs `requirements.txt`, `.[all]`, madmom/beatnet, then `torch.js` (e.g. NVIDIA: cu128 torch 2.7).
+#   Manual NVIDIA: after `.[all]`, install the same trio as in `torch.js` (see README).
+#   Legacy Windows + Python 3.11/3.12 (WhisperX 3.3 / ctranslate2 4.4): README §2 Path B — cu121 + pinned extras.
 #   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
 #   pip install -r requirements.txt
 #
@@ -11,18 +12,19 @@
 #   .venv\Scripts\python.exe -m pip install "markupsafe>=2.0,<3" "pillow>=10,<11"
 # If `pip` and `uv` are not on PATH (common on Windows), use the Python launcher:
 #   py -m pip install -r requirements.txt
+# Gradio in this file is **5.x** (matches Pinokio + manual installs). `pyproject.toml` may still bound Gradio 4 in `[project]` — install this file before `pip install -e .` when possible.
 # "Everything optional" from pyproject.toml (demucs + whisperx + deps), like Cargo extras:
 #   .venv\Scripts\python.exe -m pip install -e ".[all]"
 # Tests:  .venv\Scripts\python.exe -m pip install -e ".[dev]"
 
 gradio==5.50.0
-# gradio 4.x imports HfFolder from huggingface_hub, removed in hub >=1.0.
+# Gradio 5.x — pins compatible huggingface_hub / pydantic / fastapi below.
 huggingface_hub==0.36.2
-# gradio_client 1.3 can't parse pydantic>=2.10 schemas (additionalProperties: bool).
+# pydantic pins must stay compatible with gradio_client.
 pydantic==2.10.6
-# gradio 4.x is incompatible with starlette 1.0 / fastapi >= 0.116 (template API change).
+# fastapi / starlette versions aligned with Gradio 5.
 fastapi==0.122.0
-# gradio 4.x — torch/cu121 --force-reinstall must not upgrade these (see install.js / README troubleshooting).
+# After a torch reinstall, re-run `pip install -r requirements.txt` if an index bumps transitive UI deps unexpectedly.
 diffusers
 # SDXL pipeline in diffusers requires transformers + accelerate + sentencepiece.
 # transformers 5.x pins huggingface_hub>=1.0, which conflicts with gradio 4.x; pin 4.x.

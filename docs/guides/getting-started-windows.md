@@ -6,7 +6,9 @@ For most Windows users, **[Pinokio](#easiest-install-pinokio)** (search **glitch
 
 ## Easiest install: Pinokio
 
-The fastest way to get Glitchframe on Windows is **[Pinokio](https://pinokio.co/)**: install the Pinokio app, search **glitchframe**, install Glitchframe from the listing, run **Install** in the sidebar, then **Start**. Pinokio creates the Python environment and dependencies for you (see [Pinokio package notes](../technical/pinokio-package.md) and the [README Pinokio section](../../README.md#pinokio)).
+The fastest way to get Glitchframe on Windows is **[Pinokio](https://pinokio.co/)**: install the Pinokio app, search **glitchframe**, install Glitchframe from the listing, run **Install** in the sidebar, then **Start**. Pinokio creates the Python **3.11** environment and runs **`install.js`** (`uv pip`, **`.[all]`**, **madmom** / **beatnet**, then **`torch.js`** for PyTorch) — see [Pinokio package notes](../technical/pinokio-package.md) and the [README Pinokio section](../../README.md#pinokio).
+
+**Catalog installs** use your GitHub **default branch** (often **`master`**). To run **`dev`** before it is merged: open the Pinokio app folder (where `install.js` lives), run **`git checkout dev`** and **`git pull`**, then in Pinokio use **Reinstall**.
 
 You still need **ffmpeg** on your `PATH` (§3 below) and a capable **NVIDIA GPU** with recent drivers for the full pipeline. If you prefer a manual venv and `pip` install — or Pinokio is not an option — continue with the sections below.
 
@@ -182,16 +184,34 @@ When the venv is active, your prompt often starts with `(.venv)`.
 
 ### 7. PyTorch with CUDA (recommended on NVIDIA)
 
-For **GPU “Align lyrics”** on **Python 3.11 or 3.12**, prefer the **cu121** pinned stack from the [README](../../README.md) (Install §2 — `torch==2.2.2+cu121`, WhisperX **3.3.0**, ctranslate2 **4.4.0**). **Python 3.13** and the **cu124** path are also described there.
+**Order:** If you are using **Path A** below (Pinokio‑parity, **torch last**), complete **[§8](#8-project-dependencies)** and **[§9](#9-optional-full-analysis--lyrics-demucs-whisperx-vad)** first, then return here for the `cu128` install. **Path B** installs PyTorch **before** §8.
 
-Install **GPU** PyTorch **before** the rest of the project packages (generic **cu124** one-liner if you are not using the **cu121** lyrics stack):
+Pick **one** path — see [README §2](../../README.md#2-pytorch-with-cuda-recommended) for full detail.
+
+**Path A (recommended — matches Pinokio `torch.js` on NVIDIA Windows):** install **§8–§9** first (`requirements.txt`, `.`, `.[all]`). Then, with the venv activated:
+
+```powershell
+python -m pip install -U uv
+uv pip install torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 --index-url https://download.pytorch.org/whl/cu128 --force-reinstall --no-deps
+```
+
+**Path B (legacy — Python 3.11/3.12, cu121 WhisperX stack):** install **before** `requirements.txt`:
+
+```powershell
+python -m pip install --upgrade pip
+python -m pip install torch==2.2.2+cu121 torchvision==0.17.2+cu121 torchaudio==2.2.2+cu121 --index-url https://download.pytorch.org/whl/cu121
+```
+
+Then continue with §8–§9. Recovery: [windows-venv-recovery-guide.md](../technical/windows-venv-recovery-guide.md).
+
+**Path C (generic cu124 wheels):**
 
 ```powershell
 python -m pip install --upgrade pip
 python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
 ```
 
-Use the **same** `python` that belongs to the venv (after activation, `python` should point to `.venv\Scripts\python.exe`).
+Use the **same** `python` as your venv after activation.
 
 ---
 
@@ -202,7 +222,7 @@ python -m pip install -r requirements.txt
 python -m pip install -e .
 ```
 
----
+Install **`requirements.txt` first** so you get **Gradio 5.x** and the same pins Pinokio uses (`pip install -e .` alone resolves `pyproject.toml` core deps, which still list Gradio **4.x**).
 
 ### 9. Optional: full analysis + lyrics (Demucs, WhisperX, VAD)
 
@@ -210,15 +230,16 @@ python -m pip install -e .
 python -m pip install -e ".[all]"
 ```
 
-If CUDA stops working or WhisperX causes issues, see the recovery steps in [requirements.txt](../../requirements.txt) (comments at the top) and [windows-venv-recovery-guide.md](../technical/windows-venv-recovery-guide.md).
+If CUDA stops working or WhisperX causes issues, see [README](../../README.md) §2 and [windows-venv-recovery-guide.md](../technical/windows-venv-recovery-guide.md).
 
-Optional beat detectors (can be finicky to build):
+**BeatNet / madmom** (optional — Pinokio installs these after `.[all]`):
 
 ```powershell
-python -m pip install -e ".[beats]"
+python -m pip install madmom --no-build-isolation
+python -m pip install beatnet --no-build-isolation --no-deps
 ```
 
----
+Or try **`pip install -e ".[beats]"`** (can be finicky).
 
 ### 10. Optional: environment file
 

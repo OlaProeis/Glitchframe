@@ -58,7 +58,7 @@ module.exports = {
       method: "notify",
       params: {
         html:
-          "Python deps are installed (including <b>Demucs + WhisperX</b> on the <b>cu121</b> stack). Pinokio does <b>not</b> auto-launch the server &mdash; click <b>Start</b> in the sidebar. You need <code>ffmpeg</code> on your <code>PATH</code> for video encode; see README. Align lyrics defaults to <b>CPU</b> (slow but reliable); to try GPU, clear <code>GLITCHFRAME_WHISPERX_DEVICE=cpu</code> from <code>start.js</code>.",
+          "Python deps are installed (including <b>Demucs + WhisperX</b>; PyTorch was installed by <code>torch.js</code> for your GPU/OS). Pinokio does <b>not</b> auto-launch the server &mdash; click <b>Start</b> in the sidebar. You need <code>ffmpeg</code> on your <code>PATH</code> for video encode; see README. Align lyrics defaults to <b>CPU</b> (slow but reliable); to try GPU, clear <code>GLITCHFRAME_WHISPERX_DEVICE=cpu</code> from <code>start.js</code>.",
       },
     }
   ],

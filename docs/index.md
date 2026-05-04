@@ -16,7 +16,7 @@
 
 ## Technical Docs
 
-- `docs/technical/pinokio-package.md` - Pinokio scripts (`install.js` / `start.js` / `pinokio.js`); discover by searching **glitchframe** in Pinokio; venv `env`, optional `[all]`, `ffmpeg` prereq.
+- `docs/technical/pinokio-package.md` - Pinokio scripts (`install.js`, `torch.js`, `start.js`, `pinokio.js`); `uv pip` + platform PyTorch; venv `env`; `ffmpeg` prereq; optional `dev` branch note.
 - `docs/technical/pinokio-lyrics-align-windows-handover.md` - **Handover prompt:** Pinokio on Windows, Align lyrics / WhisperX / cuDNN, what we tried, open questions, revert notes.
 - `docs/technical/project-setup-and-config.md` - Repo layout, pyproject/requirements, config paths, optional `presets/*.yaml` registry.
 - `docs/technical/windows-venv-recovery-guide.md` - Windows: step-by-step venv recovery after PyTorch / WhisperX lyrics-align issues (weights_only, cuDNN DLL mismatches).

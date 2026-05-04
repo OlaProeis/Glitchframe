@@ -5,7 +5,7 @@ Local, GPU-accelerated **music video** generator: upload a track, analyze it, al
 **Examples (progress log, newest = current state):** [voidcat on YouTube](https://www.youtube.com/@voidcatalog)
 
 - **Easiest install:** [Pinokio](https://pinokio.co/) — install the Pinokio app, search **glitchframe**, install Glitchframe from the listing, then run **Install** and **Start** in the sidebar. You still need **ffmpeg** on your `PATH` and a capable **NVIDIA GPU** for the intended experience — see [Requirements](#requirements) and [Pinokio](#pinokio).
-- **UI:** [Gradio](https://www.gradio.app/) — run `python -m app` and open the URL shown (default [http://127.0.0.1:7860](http://127.0.0.1:7860)).
+- **UI:** [Gradio](https://www.gradio.app/) — run `python -m app` and open the URL shown (default [http://127.0.0.1:7860](http://127.0.0.1:7860)). **Pinokio** / **`requirements.txt`** tracks **Gradio 5.x**; `pyproject.toml` core metadata may still list Gradio **4.x** bounds — install **`requirements.txt`** before **`pip install -e .`** for parity (see [Install](#install)).
 - **Manual setup (Windows CLI):** **[Getting started on Windows](docs/guides/getting-started-windows.md)** — order of installs: Python, optional Git, ffmpeg with winget, venv, PyTorch; or use Pinokio above instead.
 - **Deep dive:** [`docs/index.md`](docs/index.md) (includes [`background-keyframes-editor`](docs/technical/background-keyframes-editor.md), [`background-stills`](docs/technical/background-stills.md), effects/lyrics editors) and [`docs/technical/project-setup-and-config.md`](docs/technical/project-setup-and-config.md).
 
@@ -55,12 +55,12 @@ The following is a short, user-facing summary of work **not yet done** (also tra
 
 - **Python** 3.11+ (3.12/3.13 may work; optional deps like `madmom` are pickier on newer Python)
 - **ffmpeg** on your `PATH` (encode/mux). On **Windows**, install with **winget** (see [Getting started on Windows](docs/guides/getting-started-windows.md)); on other systems use your package manager or [ffmpeg.org](https://ffmpeg.org/download.html) if needed
-- **NVIDIA GPU + CUDA 12.x** recommended for diffusers, analysis, and NVENC; CPU-only is possible for lighter paths but not the main focus
+- **NVIDIA GPU + CUDA** recommended for diffusers, analysis, and NVENC; **Pinokio** installs **PyTorch** builds from **`torch.js`** (e.g. **cu128** on Windows/Linux NVIDIA — see `torch.js`). CPU-only is possible for lighter paths but not the main focus
 - **Disk:** model and song caches under `.cache/` and `cache/` (large downloads on first use)
 
 ## Install
 
-**Recommended:** Use [Pinokio](https://pinokio.co/): install Pinokio, search **glitchframe**, install Glitchframe from the listing, then use **Install** / **Start** in the app. That flow runs the repo’s Pinokio scripts (`install.js`, `start.js`, …). Prerequisites: **ffmpeg** on your `PATH`, a suitable **NVIDIA** GPU, and recent drivers — see [Pinokio](#pinokio).
+**Recommended:** Use [Pinokio](https://pinokio.co/): install Pinokio, search **glitchframe**, install Glitchframe from the listing, then use **Install** / **Start** in the app. That flow runs the repo’s Pinokio scripts (`install.js`, **`torch.js`**, `start.js`, …). Prerequisites: **ffmpeg** on your `PATH`, a suitable **NVIDIA** GPU (for the full GPU path), and recent drivers — see [Pinokio](#pinokio). **Catalog installs** clone the repo’s **default Git branch**; to test **`dev`** before it is merged, `git checkout dev` in the Pinokio app folder then **Reinstall** (see [`docs/technical/pinokio-package.md`](docs/technical/pinokio-package.md)).
 
 **Windows, full walkthrough (command line):** [docs/guides/getting-started-windows.md](docs/guides/getting-started-windows.md).
 
@@ -86,16 +86,25 @@ Then activate the venv:
 
 ### 2. PyTorch with CUDA (recommended)
 
-**Windows (Python 3.11 or 3.12) — stable GPU “Align lyrics” stack:** the optional extras `all` / `lyrics` / `analysis` pin **PyTorch 2.2.2+cu121**, **WhisperX 3.3.0**, **faster-whisper 1.1.0**, and **ctranslate2 4.4.0** so CTranslate2 and PyTorch ship a **matching** cuDNN layout (avoids common `cudnn_ops_infer64_8.dll` issues next to newer cu124 wheels). Install the **CUDA 12.1** index **before** `requirements.txt` / `pip install -e .` / `pip install -e ".[all]"`:
+**Path A — match Pinokio / `torch.js` (good default for NVIDIA on Windows):** after creating the venv and upgrading `pip`, install project deps (§3) **or** at minimum `requirements.txt`, then install **`[all]`**, then run the **same** `uv pip` / `pip` line as in `torch.js` for your platform. **NVIDIA + Windows** (from `torch.js`):
+
+```bash
+python -m pip install -U uv
+uv pip install torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 --index-url https://download.pytorch.org/whl/cu128 --force-reinstall --no-deps
+```
+
+(Use the **`cpu`**, **DirectML**, **ROCm**, or **macOS** blocks inside `torch.js` for other platforms.) **Order:** Pinokio runs **`torch.js` last**, after `requirements.txt`, `.[all]`, **madmom**, and **beatnet** — mirror that if you hit resolver issues.
+
+**Path B — legacy Windows “Align lyrics” stack (Python 3.11–3.12, cu121):** optional extras **`all` / `lyrics` / `analysis`** in `pyproject.toml` still document a coherent **PyTorch 2.2.2+cu121** + **WhisperX 3.3.0** + **ctranslate2 4.4.0** set for DLL alignment. Install the **CUDA 12.1** index **before** the rest if you use this path:
 
 ```bash
 python -m pip install --upgrade pip
 python -m pip install torch==2.2.2+cu121 torchvision==0.17.2+cu121 torchaudio==2.2.2+cu121 --index-url https://download.pytorch.org/whl/cu121
 ```
 
-Then continue with §3–§4. Optionally run `python scripts/windows_provision_cudnn_next_to_ctranslate2.py` after `pip install nvidia-cudnn-cu12` to copy CUDNN DLLs next to `ctranslate2` (see `docs/technical/windows-venv-recovery-guide.md`).
+Then continue with §3–§4. **`scripts/windows_provision_cudnn_next_to_ctranslate2.py`** and **`windows-venv-recovery-guide.md`** apply mainly to this **cu121** + **ctranslate2 4.4** layout.
 
-**All other platforms (and Windows on Python 3.13+):** install PyTorch **first** from the official **CUDA 12.4** wheel index so you get a GPU build (adjust if you use a different CUDA index from [pytorch.org](https://pytorch.org/)):
+**Path C — generic CUDA 12.4 wheels (`cu124`)** for setups not using Path A or B (e.g. some **Python 3.13** flows):
 
 ```bash
 python -m pip install --upgrade pip
@@ -106,12 +115,14 @@ On Windows, if `python` is not on `PATH`, use the launcher: `py -3.11 -m pip ...
 
 ### 3. Project dependencies
 
+**Install `requirements.txt` before** `pip install -e .` so you get the **Gradio 5.x** stack and the pins tested with Pinokio (`pyproject.toml` `[project]` dependencies still target Gradio **4.x** unless you pull everything from `requirements.txt` first):
+
 ```bash
 python -m pip install -r requirements.txt
 python -m pip install -e .
 ```
 
-`requirements.txt` pins a few Gradio-related packages; see the comments at the top of that file if `pip` pulls incompatible versions.
+`requirements.txt` pins Gradio **5.x**, `fastapi`, `huggingface_hub`, and related packages; see the comments at the top of that file if `pip` conflicts.
 
 ### 4. Optional: full analysis + lyrics stack
 
@@ -121,9 +132,16 @@ For vocal stem separation (Demucs) and lyrics alignment (WhisperX + Silero VAD):
 python -m pip install -e ".[all]"
 ```
 
-If after installing `whisperx` CUDA **disappears** from PyTorch, reinstall the CUDA wheels from the same `cu124` index as in step 2, then re-pin Gradio’s friends if needed — recovery commands are in [`requirements.txt`](requirements.txt) comments.
+If after installing `whisperx` CUDA **disappears** from PyTorch, reinstall the CUDA wheels from the **same** index you chose in [§2](#2-pytorch-with-cuda-recommended), then re-run **`pip install -r requirements.txt`** if `pip` upgraded MarkupSafe / Pillow past Gradio’s expectations — recovery patterns are in [`requirements.txt`](requirements.txt) comments and [`docs/technical/windows-venv-recovery-guide.md`](docs/technical/windows-venv-recovery-guide.md).
 
-**Optional beat detectors** (BeatNet + madmom) are available via `pip install -e ".[beats]"` but can be finicky to build; the analyzer falls back to librosa without them.
+**Optional beat detectors:** Pinokio runs **`madmom`** and **`beatnet`** with `--no-build-isolation` after **`.[all]`**. For a manual venv, mirror Pinokio:
+
+```bash
+python -m pip install madmom --no-build-isolation
+python -m pip install beatnet --no-build-isolation --no-deps
+```
+
+Or use **`pip install -e ".[beats]"`** (can be finicky to build); the analyzer falls back to librosa without them.
 
 ### 5. Optional: environment overrides
 
@@ -145,7 +163,9 @@ Open the local URL printed in the console (default port **7860**).
 
 **Easiest path:** Install [Pinokio](https://pinokio.co/), open it, search **glitchframe**, and install Glitchframe from the listing — no need to paste a URL. **Alternative:** **Download from URL** and paste `https://github.com/OlaProeis/Glitchframe.git`.
 
-This repository includes Pinokio scripts (`install.js`, `start.js`, `reset.js`, `update.js`, `pinokio.js`, `icon.png`). The installer uses Python **3.11**, installs PyTorch **2.2.2+cu121** (CUDA **12.1** index) and the pinned WhisperX / ctranslate2 set (see `install.js`), then `requirements.txt`, `pip install -e .`, and the **`[all]`** extra — plus optional **`nvidia-cudnn-cu12`** and `scripts/windows_provision_cudnn_next_to_ctranslate2.py`. **No extra Pinokio step** is required for **RIFE** (weights ~24 MB download on first morph via Hugging Face, same hub + symlink behaviour as other models). **Click Start** in Pinokio&rsquo;s sidebar after install. You still need **ffmpeg** on your `PATH` and a capable **NVIDIA** GPU. **On Windows**, `start.js` may still set ``GLITCHFRAME_WHISPERX_DEVICE=cpu`` as a safe default; remove it or set **cuda** in `.env` to try **GPU** alignment once the **cu121** stack is installed. Analyze/render still use the GPU when applicable. Technical details: [`docs/technical/pinokio-package.md`](docs/technical/pinokio-package.md). For GitHub discovery, the repo uses the **`pinokio`** topic.
+This repository includes Pinokio scripts (`install.js`, **`torch.js`**, `start.js`, `reset.js`, `update.js`, `pinokio.js` **`version` 3.7**, `icon.png`). **`install.js`** (Python **3.11** venv **`env`**): **`uv pip install -r requirements.txt`**, **`uv pip install -e ".[all]"`**, **`madmom`** / **`beatnet`**, then **`script.start` → `torch.js`** for **platform-specific PyTorch** (**NVIDIA** Windows/Linux: **cu128** **`torch==2.7.0`** trio by default — see `torch.js`). **`start.js`** sets `GLITCHFRAME_WHISPERX_VAD_METHOD=silero`, **`GLITCHFRAME_WHISPERX_DEVICE=cpu`**, and **`HF_HUB_DISABLE_SYMLINKS=1`** (+ warning silencer) for reliable defaults on Windows; change or remove **`GLITCHFRAME_WHISPERX_DEVICE`** in **`start.js`** or `.env` to try **GPU** Align lyrics. **No extra Pinokio step** is required for **RIFE** (~24 MB on first morph). **Click Start** after install. **ffmpeg** must be on **`PATH`**. Technical details: [`docs/technical/pinokio-package.md`](docs/technical/pinokio-package.md). Repo topic **`pinokio`** for GitHub discovery.
+
+**Stale or custom clones:** **Update** runs `git pull` on the **current** branch — use **`master`** vs **`dev`** intentionally (see pinokio-package doc).
 
 ## Troubleshooting
 
@@ -153,7 +173,7 @@ This repository includes Pinokio scripts (`install.js`, `start.js`, `reset.js`, 
 - **Align lyrics** fails with `Weights only load failed` / `omegaconf` / `ListConfig`: PyTorch **2.6+** defaults `torch.load` to a stricter mode that breaks some WhisperX/pyannote checkpoints. **Prefer updating Glitchframe** to a revision that includes `pipeline/torch_checkpoint_compat.py` and keeping a **current** `torch` / `torchvision` / `torchaudio` trio from the same CUDA index ([Install §2](#2-pytorch-with-cuda-recommended)). Downgrading only `torch` to “fix” this often causes the cuDNN mismatch below.
 - **`Could not load library cudnn_ops_infer64_8.dll` / `Could not locate cudnn_ops_infer64_8.dll` / error `1920` (often **after** `Performing voice activity detection using Silero`):** the **VAD** line is misleading — Silero runs first; the crash is usually **faster-whisper / CTranslate2** loading **cuDNN** DLLs. **Windows + Python 3.11/3.12:** use one coherent stack — **PyTorch 2.2.2+cu121** + **WhisperX 3.3.0** + **ctranslate2 4.4.0** + **faster-whisper 1.1.0** (see [Install §2](#2-pytorch-with-cuda-recommended) and ``pyproject.toml`` extras). Run ``python scripts/windows_provision_cudnn_next_to_ctranslate2.py`` after ``pip install nvidia-cudnn-cu12``. The app calls ``os.add_dll_directory`` for ``torch\lib`` before WhisperX (`pipeline/win_cuda_path.py`). **Windows + Python 3.13** or **Linux/macOS:** prefer **PyTorch cu124** with **ctranslate2 4.5+** and current WhisperX (see ``pyproject.toml`` markers). **If it still fails:** reinstall the **torch + torchvision + torchaudio** trio from **one** CUDA index in a single command, then ``pip install -e ".[all]"`` again; try ``GLITCHFRAME_WHISPERX_DEVICE=cpu``; last resort — manual cuDNN copy per [NVIDIA cuDNN for CUDA 12](https://developer.nvidia.com/cudnn).
 
-- **Pinokio / Windows:** ``install.js`` installs the **cu121** stack above; ``start.js`` may still default **CPU** WhisperX — remove ``GLITCHFRAME_WHISPERX_DEVICE`` or set **cuda** to try GPU alignment after install. Even with GPU enabled, Align lyrics auto-retries once on **CPU** if it hits any cuDNN/CTranslate2 load error, so a broken cuDNN install no longer blocks the render path.
+- **Pinokio / Windows:** **`install.js`** installs **`requirements.txt`** + **`.[all]`** + **madmom/beatnet**, then **`torch.js`** (typically **cu128** PyTorch on NVIDIA). **`start.js`** may still default **CPU** WhisperX — remove **`GLITCHFRAME_WHISPERX_DEVICE`** or set **cuda** to try GPU alignment; Align lyrics can still fall back to CPU on DLL/load errors.
 
 - **Align lyrics fails with `[WinError 1314] A required privilege is not held by the client` while writing into `cache\HF_HOME\hub\models--…\snapshots\…`:** `huggingface_hub` tries to **symlink** model snapshot files to the content-addressed `blobs/` directory, but Windows requires admin rights or **Developer Mode** to create symlinks. Glitchframe patches `huggingface_hub.are_symlinks_supported` at startup so it copies blobs instead — **Update** + **Start** in Pinokio (no full reinstall) is enough to pick up the fix. If the cache ended up half-populated before updating, delete `C:\pinokio\api\Glitchframe.git\cache\HF_HOME\` from Explorer and the next Align run will re-download cleanly. Details: [`docs/technical/pinokio-lyrics-align-windows-handover.md`](docs/technical/pinokio-lyrics-align-windows-handover.md) § Bug F.
 
@@ -161,7 +181,7 @@ This repository includes Pinokio scripts (`install.js`, `start.js`, `reset.js`, 
 
 - **Render fails with `Undefined constant or missing '(' in 'p5'` / `Unable to parse option value "p5"` after background generation:** your local ffmpeg is older than 4.4 (or NVENC SDK < 11) and doesn't understand the modern `p1..p7` preset family. Glitchframe now probes the chosen ffmpeg once and falls back to the legacy `slow` preset automatically, so **Update + Start** in Pinokio is enough to pick up the fix — no reinstall. Visual quality is essentially unchanged (`slow` is the closest legacy equivalent of `p5`). To get back to the modern preset family, install a recent ffmpeg (`winget install ffmpeg` on Windows, or `conda update -c conda-forge ffmpeg` inside Pinokio's env). Details: [`docs/technical/pinokio-lyrics-align-windows-handover.md`](docs/technical/pinokio-lyrics-align-windows-handover.md) § Bug H.
 
-- **Pinokio / Gradio conflicts after torch (`markupsafe` / `pillow`):** older install flows could break Gradio by upgrading those packages; current ``install.js`` avoids that. **Pull latest** and **Reinstall** (or **Install**) in Pinokio so deps are corrected without manual steps. Advanced: [`docs/technical/pinokio-package.md`](docs/technical/pinokio-package.md).
+- **Pinokio / Gradio or dependency conflicts after updates:** **Update** (`git pull`) then **Reinstall** so **`install.js`** re-runs **`uv pip`** against the current **`requirements.txt`**. If you mix **`pip install -e .`** without **`requirements.txt`**, you can drift back to **`pyproject.toml`** Gradio **4.x** bounds — see [Install §3](#3-project-dependencies). Advanced: [`docs/technical/pinokio-package.md`](docs/technical/pinokio-package.md).
 
 - **Apply crop / Regenerate keyframe: `PermissionError` / `WinError 5` on `*.tmp` → `.png`:** Windows blocks replacing a PNG if it is still open (Gradio or the browser preview of the same file, Explorer thumbnails, antivirus scan). Current builds close PIL readers before overwrite and retry atomic replace briefly; if it still fails, wait a second and retry, or close anything previewing `cache/<hash>/background/` (see [`docs/technical/background-keyframes-editor.md`](docs/technical/background-keyframes-editor.md) § *Windows: saving PNGs*).
 
