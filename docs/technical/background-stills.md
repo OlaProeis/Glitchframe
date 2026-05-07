@@ -54,7 +54,7 @@ When **Morph keyframes (RIFE)** is enabled (`BackgroundStills` /
 `sdxl_rife_morph=True`), after SDXL keyframes are ready the pipeline runs
 Practical-RIFE–style interpolation between each consecutive keyframe pair,
 writes `rife_timeline/rife_*.png` + `manifest_rife.json`, and samples
-`background_frame(t)` along that dense timeline. **Ken Burns on SDXL stills**
+`background_frame(t)` along that dense timeline. **Subdivision depth** (`rife_exp`, **N** in **[2, 8]** in the UI — see [`rife-morph-background.md`](rife-morph-background.md)). **Ken Burns on SDXL stills**
 still applies on top when enabled. Details, cache schema, and HF weights:
 [`rife-morph-background.md`](rife-morph-background.md).
 

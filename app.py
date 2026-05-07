@@ -37,12 +37,15 @@ del _sys, _types
 import asyncio
 import json
 import logging
+import os
+import subprocess
 import sys
 import time
 import traceback
 import urllib.parse
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import gradio as gr
 import numpy as np
@@ -458,7 +461,7 @@ def _build_render_inputs(
     }
 
     cbp = (custom_background_prompt or "").strip()
-    rife_e = int(np.clip(int(rife_exp), 2, 6))
+    rife_e = int(np.clip(int(rife_exp), 2, 8))
     use_rife = bool(sdxl_rife_morph) and mode == MODE_SDXL_STILLS
     return OrchestratorInputs(
         song_hash=song_hash,
@@ -559,6 +562,38 @@ def _summarise_render(result: RenderResult) -> str:
     return " | ".join(parts)
 
 
+def _open_dir_in_os_file_manager(path: Path) -> None:
+    """Reveal ``path`` (must be an existing directory) in the desktop file manager."""
+    if sys.platform == "win32":
+        os.startfile(str(path))
+    elif sys.platform == "darwin":
+        subprocess.run(["open", str(path)], check=False)
+    else:
+        subprocess.run(["xdg-open", str(path)], check=False)
+
+
+def _open_last_output_folder(
+    output_dir: str | None,
+    log: str,
+) -> str:
+    if output_dir is None or not str(output_dir).strip():
+        return _append_log(
+            log,
+            "Open output folder: run **Preview 10 s** or **Render full video** first.",
+        )
+    p = Path(output_dir).expanduser().resolve()
+    if not p.is_dir():
+        return _append_log(
+            log,
+            f"Open output folder: not a directory or missing ({p}).",
+        )
+    try:
+        _open_dir_in_os_file_manager(p)
+    except OSError as exc:
+        return _append_log(log, f"Open output folder failed: {exc}")
+    return _append_log(log, f"Opened output folder: {p}")
+
+
 def _run_preview(
     song_hash: str | None,
     bg_mode: str,
@@ -614,7 +649,7 @@ def _run_preview(
     genre: str,
     log: str,
     progress: gr.Progress = gr.Progress(),
-) -> str:
+) -> tuple[str, Any, Any]:
     progress(0.0, desc="Preview 10 s")
     try:
         inputs = _build_render_inputs(
@@ -673,7 +708,7 @@ def _run_preview(
         )
     except ValueError as exc:
         progress(1.0, desc="Idle")
-        return _append_log(log, f"Preview: {exc}")
+        return _append_log(log, f"Preview: {exc}"), gr.update(), gr.update()
 
     cb = _EtaProgress(progress)
     try:
@@ -681,9 +716,18 @@ def _run_preview(
     except Exception as exc:
         progress(1.0, desc="Idle")
         LOGGER.exception("Preview pipeline failed")
-        return _append_log(log, _format_exception("Preview failed", exc))
+        return (
+            _append_log(log, _format_exception("Preview failed", exc)),
+            gr.update(),
+            gr.update(),
+        )
     progress(1.0, desc="Idle")
-    return _append_log(log, _summarise_render(result))
+    mp4 = result.compositor.output_mp4
+    return (
+        _append_log(log, _summarise_render(result)),
+        str(mp4),
+        str(mp4.parent),
+    )
 
 
 def _run_render(
@@ -741,7 +785,7 @@ def _run_render(
     genre: str,
     log: str,
     progress: gr.Progress = gr.Progress(),
-) -> str:
+) -> tuple[str, Any, Any]:
     progress(0.0, desc="Render full video")
     try:
         inputs = _build_render_inputs(
@@ -800,7 +844,7 @@ def _run_render(
         )
     except ValueError as exc:
         progress(1.0, desc="Idle")
-        return _append_log(log, f"Render: {exc}")
+        return _append_log(log, f"Render: {exc}"), gr.update(), gr.update()
 
     cb = _EtaProgress(progress)
     try:
@@ -808,9 +852,18 @@ def _run_render(
     except Exception as exc:
         progress(1.0, desc="Idle")
         LOGGER.exception("Render pipeline failed")
-        return _append_log(log, _format_exception("Render failed", exc))
+        return (
+            _append_log(log, _format_exception("Render failed", exc)),
+            gr.update(),
+            gr.update(),
+        )
     progress(1.0, desc="Idle")
-    return _append_log(log, _summarise_render(result))
+    mp4 = result.compositor.output_mp4
+    return (
+        _append_log(log, _summarise_render(result)),
+        str(mp4),
+        str(mp4.parent),
+    )
 
 
 def _toggle_bg_dependent_controls(mode: str):
@@ -2123,6 +2176,7 @@ def build_ui() -> gr.Blocks:
                     file_types=[".mp3", ".wav", ".flac", ".ogg", ".m4a"],
                 )
                 song_hash_state = gr.State(value=None)
+                last_output_dir_state = gr.State(value=None)
                 gr.Markdown(
                     "Upload writes **`cache/<hash>/original.wav`** (native rate, stereo preserved) "
                     "and **`analysis_mono.wav`** (44.1 kHz mono). Preview uses the mono file."
@@ -2637,7 +2691,7 @@ See [`docs/technical/background-stills.md`](docs/technical/background-stills.md)
                 rife_exp_slider = gr.Slider(
                     label="RIFE subdivisions (2^N steps between keyframes)",
                     minimum=2,
-                    maximum=6,
+                    maximum=8,
                     value=4,
                     step=1,
                     info="Higher = smoother morphs and slower RIFE bake. Ignored when RIFE is off.",
@@ -2674,23 +2728,6 @@ See [`docs/technical/background-stills.md`](docs/technical/background-stills.md)
                 reactive_preview_image = gr.Image(
                     label="Reactive + test background (GPU)",
                     type="numpy",
-                )
-
-            with gr.Tab("Output"):
-                out_resolution = gr.Dropdown(
-                    label="Resolution",
-                    choices=[label for label, _ in _RESOLUTION_CHOICES],
-                    value=_RESOLUTION_DEFAULT_LABEL,
-                )
-                out_fps = gr.Radio(
-                    label="FPS",
-                    choices=[30, 60],
-                    value=30,
-                )
-                gr.Textbox(
-                    label="Filename prefix",
-                    value="musicvid",
-                    info="Informational only; output path is outputs/<run_id>/output.mp4.",
                 )
 
             with gr.Tab("Background keyframes"):
@@ -2752,15 +2789,42 @@ See [`docs/technical/background-stills.md`](docs/technical/background-stills.md)
                     interactive=True,
                 )
 
-            with gr.Tab("Actions"):
+            with gr.Tab("Preview & render"):
                 gr.Markdown(
-                    "Long runs use **Queue**. Each action shows progress, elapsed time, and an ETA while running. "
-                    "Preview renders ~10 s starting at the loudest RMS window; full render writes "
+                    "Long runs use **Queue** — progress, elapsed time, and an ETA show on the bar while a job runs. "
+                    "**Preview 10 s** renders the loudest RMS window; **Render full video** writes "
                     "`outputs/<run_id>/output.mp4`, `thumbnail.png`, and `metadata.txt`, then runs an ffprobe A/V sync check."
+                )
+                out_resolution = gr.Dropdown(
+                    label="Resolution",
+                    choices=[label for label, _ in _RESOLUTION_CHOICES],
+                    value=_RESOLUTION_DEFAULT_LABEL,
+                )
+                out_fps = gr.Radio(
+                    label="FPS",
+                    choices=[30, 60],
+                    value=30,
+                )
+                gr.Textbox(
+                    label="Filename prefix",
+                    value="musicvid",
+                    info="Informational only; output path is outputs/<run_id>/output.mp4.",
                 )
                 with gr.Row():
                     btn_preview = gr.Button("Preview 10 s")
                     btn_render = gr.Button("Render full video", variant="stop")
+                gr.Markdown(
+                    "When a run **finishes**, the **MP4 plays below** (same file on disk under `outputs/<run_id>/`). "
+                    "**Open output folder** launches your file manager — the player has no download button."
+                )
+                output_result_video = gr.Video(
+                    label="Last preview / full render",
+                    height=400,
+                    autoplay=False,
+                    show_download_button=False,
+                )
+                with gr.Row():
+                    btn_open_output_folder = gr.Button("Open output folder")
 
         gr.Markdown("### Progress & log")
         run_log = gr.Textbox(
@@ -2836,14 +2900,19 @@ See [`docs/technical/background-stills.md`](docs/technical/background-stills.md)
         btn_preview.click(
             fn=_run_preview,
             inputs=render_inputs,
-            outputs=[run_log],
+            outputs=[run_log, output_result_video, last_output_dir_state],
             show_progress="full",
         )
         btn_render.click(
             fn=_run_render,
             inputs=render_inputs,
-            outputs=[run_log],
+            outputs=[run_log, output_result_video, last_output_dir_state],
             show_progress="full",
+        )
+        btn_open_output_folder.click(
+            fn=_open_last_output_folder,
+            inputs=[last_output_dir_state, run_log],
+            outputs=[run_log],
         )
         bg_mode.change(
             fn=_toggle_bg_dependent_controls,

@@ -52,8 +52,14 @@ readable error to the run log.
 - **Backgrounds** cache frames/keyframes under `cache/<hash>/background/` (see `background-modes.md`).
 - **Output MP4** is re-encoded per run into `outputs/<run_id>/output.mp4`; `run_id` uses a timestamp prefix so repeated renders never collide, and failures do not clobber previously-successful artifacts.
 
+## Gradio playback (Preview & render tab)
+
+- After **Preview 10 s** or **Render full video** succeeds, `app.py` updates the **`gr.Video`** on the **Preview & render** tab with the absolute path to `outputs/<run_id>/output.mp4` (the same path summarized in the run log). **`show_download_button=False`** avoids implying a second browser download — the authoritative file stays on disk.
+- **Open output folder** resolves the current run directory and opens it in the desktop file manager (Windows Explorer, Finder, `xdg-open`).
+
 ## Related docs
 
+- `docs/technical/gradio-ui.md` — Preview & render tab (**Open output folder**, playback).
 - `docs/technical/pipeline-orchestrator.md` — stage order and cache-key rules.
 - `docs/technical/frame-compositor.md` — per-frame render + NVENC pipe.
 - `docs/technical/spectrum-renderer-ffmpeg.md` — ffmpeg args reused by the compositor, including the new optional `audio_start_sec` / `audio_duration_sec`.

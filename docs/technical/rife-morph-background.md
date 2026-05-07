@@ -12,7 +12,7 @@ Optional **optical-flow** interpolation (Practical-RIFE–style IFNet) between c
 | Control | Effect |
 |--------|--------|
 | **Morph keyframes (RIFE)** | After SDXL keyframes exist, runs RIFE between each adjacent pair and replaces the sampling timeline with a denser control set. |
-| **RIFE subdivisions (2^N steps between keyframes)** | Integer **N** in **[2, 6]**; **2^N** uniform samples between each keyframe pair. Higher = smoother morphs and **longer** RIFE bake. Default **4** → 16 internal steps per segment. |
+| **RIFE subdivisions (2^N steps between keyframes)** | Integer **N** in **[2, 8]**; **2^N** uniform timestep steps between each keyframe pair (plus endpoints). Higher = smoother morphs and **longer** RIFE bake. Default **4** → 16 steps per segment; **N=8** → 256 steps (heavy). Wall-clock sampling along each morph is uniform; perceived “ease” near the destination still comes from optical flow settling—more subdivisions usually soften that before the hold. |
 
 Ken Burns (if enabled) is applied **after** the background sample at time `t`, unchanged from pre-RIFE behaviour.
 

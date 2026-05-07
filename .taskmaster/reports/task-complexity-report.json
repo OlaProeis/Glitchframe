@@ -1,9 +1,9 @@
 {
 	"meta": {
-		"generatedAt": "2026-04-28T21:15:58.654Z",
-		"tasksAnalyzed": 14,
-		"totalTasks": 69,
-		"analysisCount": 14,
+		"generatedAt": "2026-05-07T07:36:27.532Z",
+		"tasksAnalyzed": 17,
+		"totalTasks": 72,
+		"analysisCount": 17,
 		"thresholdScore": 5,
 		"projectName": "Task Master",
 		"usedResearch": true
@@ -14,104 +14,104 @@
 			"taskTitle": "Unify analyser-timed FX under the effects timeline (single control surface)",
 			"complexityScore": 8,
 			"recommendedSubtasks": 4,
-			"expansionPrompt": "Divide into: 1) Compositor changes for clip-authoritative LOGO_GLITCH and BEAM (remove duplicate auto paths, update envelope logic); 2) Gradio UI cleanup (remove/relocate Branding controls, wire effects_editor auto generation); 3) Audit remaining effect kinds (ZOOM/SCREEN_SHAKE/etc.) for consistency; 4) Tests, docs updates, and migration handling for existing projects.",
-			"reasoning": "High complexity due to refactoring multiple interconnected systems (compositor, Gradio UI, effects editor) with risk of breaking existing renders. Requires careful handling of backward compatibility, multiple effect types, and comprehensive testing across UI/render paths. Dependencies on prior effects timeline work add coordination overhead."
+			"expansionPrompt": "Break down into: 1) Remove duplicate LOGO_GLITCH controls from Branding and update compositor to use timeline clips only; 2) Implement BEAM timeline authority with auto clip generation from ghost schedule; 3) Audit and align remaining effect kinds (ZOOM, SCREEN_SHAKE, etc.); 4) Update UX flows, documentation, migration handling, and comprehensive testing.",
+			"reasoning": "High complexity due to refactoring multiple interconnected systems (compositor, Gradio UI, effects editor, timeline model) with risk of breaking existing render behavior. Multiple dependencies (49, 53) and detailed migration requirements increase effort. Strong test strategy mitigates some risk but implementation spans UI, backend logic, and data model changes."
 		},
 		{
 			"taskId": 57,
 			"taskTitle": "GLSL Background Mode Implementation",
 			"complexityScore": 7,
 			"recommendedSubtasks": 3,
-			"expansionPrompt": "Divide into: 1) Implement GLSLBackground class with moderngl rendering and audio uniforms; 2) Integrate into background factory, mode normalization, and Gradio dropdown; 3) Tests (unit + integration) and documentation.",
-			"reasoning": "Involves OpenGL shader integration with audio reactivity, moderngl context management, and factory/UI wiring. Moderate complexity from GL resource handling and uniform synchronization, but well-scoped with clear protocol interface and no external dependencies beyond existing pipeline."
+			"expansionPrompt": "Divide into: 1) Implement GLSLBackground class with moderngl rendering and audio-reactive uniforms; 2) Integrate into background factory, mode normalization, and Gradio UI dropdown; 3) Create comprehensive unit/integration tests and documentation.",
+			"reasoning": "Moderate-high complexity involving OpenGL shader integration (moderngl Context/FBO management), audio uniform mapping, and factory/UI integration. Dependencies on multiple prior tasks (8,36,40,67). Well-defined protocol implementation but requires careful GL resource lifecycle management and testing."
 		},
 		{
 			"taskId": 58,
 			"taskTitle": "Vendor Butterchurn JavaScript Assets and Headless Browser Shim",
 			"complexityScore": 5,
 			"recommendedSubtasks": 2,
-			"expansionPrompt": "Divide into: 1) Download/validate assets, create VERSIONS.md/LICENSES.md, and build fetch script; 2) Implement HTML/JS shim with GLITCHFRAME_BC API and manual testing.",
-			"reasoning": "Primarily asset management and shim creation. Moderate effort for JS API implementation matching Butterchurn docs, but straightforward vendoring process with idempotent script. Low technical risk, mainly coordination and documentation."
+			"expansionPrompt": "Split into: 1) Download, validate, and organize Butterchurn JS assets, presets, licenses, and create fetch script; 2) Implement HTML/JS shim with GLITCHFRAME_BC API and manual testing.",
+			"reasoning": "Medium complexity: primarily asset management and HTML/JS shim creation. Fetch script needs idempotency and hash validation. API contract is well-defined but requires understanding Butterchurn internals for time-deterministic rendering."
 		},
 		{
 			"taskId": 59,
 			"taskTitle": "ButterchurnRuntime Playwright-Driven Frame Pumping Class",
-			"complexityScore": 9,
-			"recommendedSubtasks": 4,
-			"expansionPrompt": "Divide into: 1) Playwright browser/page setup and preset loading; 2) Frame advancement with audio uniforms and time determinism; 3) Canvas pixel extraction (RGBA→BGR numpy); 4) Tests for determinism, perf (<50ms/frame), and resource cleanup.",
-			"reasoning": "High complexity from Playwright automation, canvas pixel extraction, audio uniform serialization, and frame determinism requirements. Performance targets and bit-identical reproducibility across runs add significant testing burden. Chromium resource management critical."
+			"complexityScore": 8,
+			"recommendedSubtasks": 3,
+			"expansionPrompt": "Divide into: 1) Playwright browser/page setup and preset loading; 2) Frame advance with audio uniforms and deterministic time advancement; 3) Canvas pixel extraction to numpy arrays with determinism testing.",
+			"reasoning": "High complexity due to browser automation (Playwright), canvas pixel extraction, audio uniform serialization, and strict determinism requirements. Performance target (<50ms/frame) adds challenge. Dependencies on task 58."
 		},
 		{
 			"taskId": 60,
 			"taskTitle": "Python Butterchurn Preset Index with Sort, Search, and Author Filter",
 			"complexityScore": 4,
 			"recommendedSubtasks": 1,
-			"expansionPrompt": "Implement parsing logic, dataclass, index class with search/filter/sort methods, and singleton pattern; add comprehensive unit tests for author parsing edge cases.",
-			"reasoning": "Straightforward data processing and indexing task. Author parsing regex patterns add minor complexity, but well-defined scope with clear test coverage. Pure Python, no external dependencies or performance concerns."
+			"expansionPrompt": "Break into: 1) Implement PresetEntry dataclass, author parsing regex patterns, and ButterchurnPresetIndex class with search/filter/sort methods; 2) Add comprehensive unit tests for parsing, filtering, and sorting.",
+			"reasoning": "Low-medium complexity: pure Python data processing with regex parsing and list filtering/sorting. Well-scoped with clear data model and test strategy. Singleton pattern adds minor state management."
 		},
 		{
 			"taskId": 61,
 			"taskTitle": "Butterchurn BackgroundSource Implementation and Factory Integration",
 			"complexityScore": 7,
 			"recommendedSubtasks": 3,
-			"expansionPrompt": "Divide into: 1) ButterchurnBackground class implementing BackgroundSource protocol with runtime pooling; 2) Factory/mode/UI integration (dropdown, OrchestratorInputs); 3) Tests, docs, and preset validation.",
-			"reasoning": "Integrates prior Butterchurn work into established BackgroundSource protocol. Moderate complexity from runtime pooling, error wrapping, and Gradio state wiring. Dependencies on multiple prior tasks require coordination."
+			"expansionPrompt": "Split into: 1) Implement ButterchurnBackground class implementing BackgroundSource protocol; 2) Update background factory and mode normalization; 3) Gradio UI integration, state management, and documentation.",
+			"reasoning": "Moderate-high complexity integrating new background mode into existing factory/UI architecture. Multiple dependencies (58,59,60,13). Runtime pooling adds resource management complexity."
 		},
 		{
 			"taskId": 62,
 			"taskTitle": "Pre-render Static PNG Thumbnails for Butterchurn Presets",
 			"complexityScore": 5,
 			"recommendedSubtasks": 2,
-			"expansionPrompt": "Divide into: 1) Thumbnail generation script with fixture audio and PNG optimization; 2) Path helpers, gitattributes, and repo integration.",
-			"reasoning": "Batch processing script with image optimization. Straightforward given ButterchurnRuntime exists, but ~760 presets require robust progress tracking and idempotency. Git LFS/binary handling adds minor ops overhead."
+			"expansionPrompt": "Divide into: 1) Implement thumbnail generation script using ButterchurnRuntime with fixture audio; 2) Add thumbnail path helpers, gitattributes configuration, and documentation.",
+			"reasoning": "Medium complexity: script processes ~760 presets with image optimization. Dependencies on core Butterchurn infrastructure. Idempotency and resume capability add minor complexity."
 		},
 		{
 			"taskId": 63,
 			"taskTitle": "Butterchurn Animated WebP Preview Generator",
-			"complexityScore": 8,
-			"recommendedSubtasks": 4,
-			"expansionPrompt": "Divide into: 1) Cache key computation and WebP rendering with Pillow; 2) Runtime pooling and fixture/real audio handling; 3) LRU eviction policy; 4) Async wrapper and comprehensive tests.",
-			"reasoning": "Complex async caching system with LRU eviction, WebP animation encoding, and runtime pooling. Performance-critical for Gradio (on-demand previews), multiple edge cases (cache hit/miss, eviction, fixture vs real audio)."
+			"complexityScore": 7,
+			"recommendedSubtasks": 3,
+			"expansionPrompt": "Break down into: 1) Implement cache key computation and WebP rendering with RuntimePool; 2) LRU eviction policy and async wrapper; 3) Comprehensive testing including cache hit/miss scenarios.",
+			"reasoning": "Moderate-high complexity with caching, LRU eviction, async integration, and WebP animation encoding. Performance optimization and pool management add challenge."
 		},
 		{
 			"taskId": 64,
 			"taskTitle": "Gradio Butterchurn Background Browser Tab",
 			"complexityScore": 7,
 			"recommendedSubtasks": 3,
-			"expansionPrompt": "Divide into: 1) Gradio UI components (tab, filters, gallery, selection panel); 2) gallery.py handlers (filtering, favourites, preview triggering); 3) State management and auto-mode switching.",
-			"reasoning": "Full Gradio tab implementation with filtering, gallery, and preview integration. Moderate UI/state complexity, but leverages prior preset/preview work. Gallery performance (~760 thumbs) requires lazy loading optimization."
+			"expansionPrompt": "Divide into: 1) Implement gallery handlers (filtering, search, favourites); 2) Gradio UI layout with gallery, controls, and selection panel; 3) State management and integration with background mode switching.",
+			"reasoning": "Moderate-high complexity for rich Gradio UI with filtering, gallery, async previews, and state synchronization. Dependencies on multiple prior Butterchurn tasks."
 		},
 		{
 			"taskId": 65,
 			"taskTitle": "Final Butterchurn + GLSL Background Tests, Docs, and Integration Polish",
 			"complexityScore": 4,
 			"recommendedSubtasks": 2,
-			"expansionPrompt": "Divide into: 1) Comprehensive smoke/E2E tests for all background modes; 2) Documentation cross-linking, ai-context updates, and README enhancements.",
-			"reasoning": "Pure testing/documentation cleanup. Low implementation risk, high value for integration stability. Env-gated E2E tests add minor setup complexity."
+			"expansionPrompt": "Split into: 1) Comprehensive smoke and E2E tests for all background modes; 2) Complete documentation cross-linking and README enhancements.",
+			"reasoning": "Low-medium complexity: testing and documentation. Benefits from prior detailed test strategies but requires coordination across multiple components."
 		},
 		{
 			"taskId": 66,
 			"taskTitle": "Hybrid SDXL Anchor + Butterchurn Background Mode",
 			"complexityScore": 8,
 			"recommendedSubtasks": 3,
-			"expansionPrompt": "Divide into: 1) HybridAnchorBackground class with anchor selection and crossfade logic; 2) Factory/UI integration and reactive_intensity contract; 3) Tests for frame blending and transition math.",
-			"reasoning": "Sophisticated blending logic combining two background systems with analysis-driven anchor points. Complex frame-time math, crossfade envelopes, and sub-system coordination. High visual quality expectations."
+			"expansionPrompt": "Divide into: 1) Implement HybridAnchorBackground with anchor selection and crossfade logic; 2) Factory and Gradio UI integration; 3) Testing of blending behavior and reactive intensity.",
+			"reasoning": "High complexity combining two complex background systems with sophisticated timeline-based blending logic. Anchor selection from analysis.json adds analysis dependency."
 		},
 		{
 			"taskId": 67,
 			"taskTitle": "Track A2: torch 2.7+cu128, WhisperX 3.3.6+, ctranslate2 4.5+ (RTX 50 / Pinokio)",
 			"complexityScore": 6,
 			"recommendedSubtasks": 2,
-			"expansionPrompt": "Divide into: 1) Update pyproject.toml/requirements/Pinokio install.js with new pins; 2) Windows/Pinokio validation (lyrics align, Demucs, SDXL) and docs updates.",
-			"reasoning": "Dependency upgrade with platform-specific validation (Windows/Pinokio/RTX 50). Risk of compatibility regressions across GPU/CPU paths, but methodical validation plan mitigates. Pinokio scripting adds deployment complexity."
+			"expansionPrompt": "Break into: 1) Update dependency pins in pyproject.toml, requirements.txt, and Pinokio install.js; 2) Validate core pipeline (lyrics alignment, SDXL, etc.) on Windows/Pinokio and update docs.",
+			"reasoning": "Medium complexity dependency upgrade with platform-specific validation (Windows/Pinokio/RTX 50). Risk of compatibility regressions but well-defined validation strategy."
 		},
 		{
 			"taskId": 68,
 			"taskTitle": "Track A2 follow-up: remove obsolete torch compat shims and cudnn copy hacks",
 			"complexityScore": 4,
 			"recommendedSubtasks": 1,
-			"expansionPrompt": "Audit and remove Track A shims (torch_xpu_compat, cudnn scripts, speechbrain hacks); update tests and comments; validate no regressions.",
-			"reasoning": "Cleanup task post-upgrade validation. Low risk with comprehensive testing, mainly grep/find-replace and validation. Value in reducing tech debt."
+			"expansionPrompt": "Identify and remove: 1) torch_xpu_compat.py patches; 2) windows_provision_cudnn script; 3) speechbrain_compat simplifications; 4) stale comments. Validate no regressions.",
+			"reasoning": "Low-medium complexity cleanup task dependent on successful Track A2 migration. Primarily code removal with validation testing."
 		},
 		{
 			"taskId": 69,
@@ -119,7 +119,31 @@
 			"complexityScore": 3,
 			"recommendedSubtasks": 0,
 			"expansionPrompt": "",
-			"reasoning": "Coordination/documentation task. Minimal technical implementation, mainly external verification and docs. Low complexity, process-oriented."
+			"reasoning": "Low complexity coordination/documentation task. Primarily verification and documentation updates rather than implementation."
+		},
+		{
+			"taskId": 70,
+			"taskTitle": "Pinokio: absorb RTX 5080 installer feedback (post Track A2)",
+			"complexityScore": 4,
+			"recommendedSubtasks": 1,
+			"expansionPrompt": "Incorporate tester feedback: 1) Refine install.js/start.js based on torch.js patterns; 2) Remove duplicate torch resolution; 3) Validate clean reinstall behavior.",
+			"reasoning": "Low-medium complexity incorporating external feedback into installer scripts. Dependent on prior Pinokio tasks."
+		},
+		{
+			"taskId": 71,
+			"taskTitle": "BeatNet/madmom strategy for Python 3.11 plus",
+			"complexityScore": 5,
+			"recommendedSubtasks": 2,
+			"expansionPrompt": "Evaluate options: 1) Test community forks/alternatives (Essentia); 2) Implement librosa-only fallback with documentation; 3) Update analysis pipeline to handle missing beat detectors gracefully.",
+			"reasoning": "Medium complexity dependency resolution for Python 3.11 compatibility. Requires evaluation of alternatives and graceful degradation path."
+		},
+		{
+			"taskId": 72,
+			"taskTitle": "Investigate Align lyrics empty Whisper textarea",
+			"complexityScore": 4,
+			"recommendedSubtasks": 1,
+			"expansionPrompt": "Debug investigation: 1) Reproduce in torch 2.7+cu128 Pinokio; 2) Audit Gradio handler return wiring and exception handling; 3) Add logging and fix root cause.",
+			"reasoning": "Low-medium complexity debugging task. Primarily investigation and small fix once root cause identified."
 		}
 	]
 }

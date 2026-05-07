@@ -19,7 +19,7 @@ Visual editor for **SDXL background stills**: one waveform timeline with draggab
 
 ### Crop tool (`build_crop_canvas_html`)
 
-- The red selection rectangle is **locked to the Output resolution** aspect ratio (`Output resolution` dropdown in the Visual style tab → parsed width×height passed into the cropper). Dragging resizes with that fixed ratio so **Apply crop** resizes into `out_width×out_height` **without non-uniform stretch**.
+- The red selection rectangle is **locked to the output resolution** aspect ratio (**Resolution** dropdown on the **Preview & render** tab → parsed width×height passed into the cropper). Dragging resizes with that fixed ratio so **Apply crop** resizes into `out_width×out_height` **without non-uniform stretch**.
 - The initial crop after load is the **largest centered** rectangle with that aspect ratio that fits the displayed image (not necessarily full-bleed when the image aspect differs).
 
 ### Windows: saving PNGs (`*.tmp` → final path)

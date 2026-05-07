@@ -53,7 +53,7 @@ class OrchestratorInputs:
     sdxl_ken_burns: bool = True
     # Optical-flow morph between SDXL keyframes (RIFE). SDXL stills only.
     sdxl_rife_morph: bool = True
-    # RIFE depth: ``2**exp`` uniform steps between each keyframe pair (clamped 2–6).
+    # RIFE depth: ``2**exp`` uniform steps between each keyframe pair (clamped 2–8 in UI).
     rife_exp: int = 4
     # Cosmetic render settings (never influence the song cache key).
     preset_id: str | None = None
