@@ -55,6 +55,7 @@ readable error to the run log.
 ## Gradio playback (Preview & render tab)
 
 - After **Preview 10 s** or **Render full video** succeeds, `app.py` updates the **`gr.Video`** on the **Preview & render** tab with the absolute path to `outputs/<run_id>/output.mp4` (the same path summarized in the run log). **`show_download_button=False`** avoids implying a second browser download — the authoritative file stays on disk.
+- Encodes use explicit **BT.709 / sRGB transfer / MPEG range** metadata (see `_ffmpeg_mp4_browser_color_metadata` in `pipeline/renderer.py`) so HTML5 players agree with desktop apps; if an old **ffmpeg** rejects those flags, set `GLITCHFRAME_FFMPEG_COLOR_METADATA=off` or override with `GLITCHFRAME_FFMPEG_COLOR_METADATA_ARGS` (see `.env.example`).
 - **Open output folder** resolves the current run directory and opens it in the desktop file manager (Windows Explorer, Finder, `xdg-open`).
 
 ## Related docs

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from pipeline.renderer import _build_ffmpeg_cmd
 
@@ -53,6 +55,36 @@ class TestBuildFfmpegCmd(unittest.TestCase):
     def test_non_positive_duration_raises(self) -> None:
         with self.assertRaises(ValueError):
             _build_ffmpeg_cmd(audio_duration_sec=0.0, **self._base_kwargs())
+
+    def test_includes_mp4_browser_color_metadata(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "GLITCHFRAME_FFMPEG_COLOR_METADATA": "",
+                "GLITCHFRAME_FFMPEG_COLOR_METADATA_ARGS": "",
+            },
+        ):
+            cmd = _build_ffmpeg_cmd(**self._base_kwargs())
+        self.assertIn("-color_primaries:v", cmd)
+        i = cmd.index("-color_primaries:v")
+        self.assertEqual(cmd[i + 1], "bt709")
+        self.assertIn("-color_trc:v", cmd)
+        j = cmd.index("-color_trc:v")
+        self.assertEqual(cmd[j + 1], "iec61966-2-1")
+        self.assertIn("-pix_fmt:v", cmd)
+        self.assertEqual(cmd[cmd.index("-pix_fmt:v") + 1], "yuv420p")
+
+    def test_color_metadata_can_be_disabled_by_env(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "GLITCHFRAME_FFMPEG_COLOR_METADATA": "off",
+                "GLITCHFRAME_FFMPEG_COLOR_METADATA_ARGS": "",
+            },
+        ):
+            cmd = _build_ffmpeg_cmd(**self._base_kwargs())
+        self.assertNotIn("-color_primaries:v", cmd)
+        self.assertNotIn("-color_trc:v", cmd)
 
 
 if __name__ == "__main__":

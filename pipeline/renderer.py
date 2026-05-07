@@ -129,6 +129,41 @@ def _audio_duration(path: Path) -> float:
     return float(info.duration)
 
 
+def _ffmpeg_mp4_browser_color_metadata() -> list[str]:
+    """Emit H.264/MP4 VUI-style tags so browsers match desktop players.
+
+    Chrome and other HTML5 stacks often infer matrix/range incorrectly when tags
+    are missing; VLC is more forgiving, which yields “green” or mismatched previews
+    in ``gr.Video`` while the same file looks fine in an external player.
+
+    Set ``GLITCHFRAME_FFMPEG_COLOR_METADATA=off`` (or ``0``, ``false``, ``no``) to skip.
+    Set ``GLITCHFRAME_FFMPEG_COLOR_METADATA_ARGS`` to a space-separated arg list to
+    override entirely (passed after ``-c:v`` encoder args).
+
+    References: https://richardssam.github.io/ffmpeg-tests/WebColorPreservation.html
+    """
+    flag = os.environ.get("GLITCHFRAME_FFMPEG_COLOR_METADATA", "").strip().lower()
+    if flag in ("0", "false", "no", "off"):
+        return []
+    custom = os.environ.get("GLITCHFRAME_FFMPEG_COLOR_METADATA_ARGS", "").strip()
+    if custom:
+        return custom.split()
+    # Transfer iec61966-2-1 (sRGB) is the recommendation for predictable web playback;
+    # gamut/matrix stay BT.709 for HD SDR, range TV (MPEG narrow) matches typical mp4 practice.
+    return [
+        "-pix_fmt:v",
+        "yuv420p",
+        "-colorspace:v",
+        "bt709",
+        "-color_primaries:v",
+        "bt709",
+        "-color_trc:v",
+        "iec61966-2-1",
+        "-color_range:v",
+        "tv",
+    ]
+
+
 def _ffmpeg_video_args(codec: str, *, ffmpeg_bin: str | None = None) -> list[str]:
     """Encoder-specific args for *codec*, adapting to the active ffmpeg build.
 
@@ -214,6 +249,7 @@ def _build_ffmpeg_cmd(
         "-c:v",
         video_codec,
         *_ffmpeg_video_args(video_codec, ffmpeg_bin=ffmpeg_bin),
+        *_ffmpeg_mp4_browser_color_metadata(),
         "-c:a",
         "aac",
         "-b:a",

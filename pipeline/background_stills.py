@@ -805,7 +805,11 @@ def _crossfade(a: np.ndarray, b: np.ndarray, alpha: float) -> np.ndarray:
 
 
 def _interpolate_frame(
-    frames: Sequence[np.ndarray], times: Sequence[float], t: float
+    frames: Sequence[np.ndarray],
+    times: Sequence[float],
+    t: float,
+    *,
+    smooth_blend: bool = True,
 ) -> np.ndarray:
     n = len(frames)
     if n != len(times) or n == 0:
@@ -823,7 +827,8 @@ def _interpolate_frame(
         if t0 <= t <= t1:
             span = max(1e-6, t1 - t0)
             raw_alpha = (t - t0) / span
-            return _crossfade(frames[i], frames[i + 1], _smoothstep(raw_alpha))
+            alpha = _smoothstep(raw_alpha) if smooth_blend else raw_alpha
+            return _crossfade(frames[i], frames[i + 1], alpha)
     # Unreachable given the bounds checks above; fall back defensively.
     return frames[-1].copy()
 
@@ -936,8 +941,8 @@ class BackgroundStills:
         re = int(rife_exp)
         if re < 2:
             re = 2
-        elif re > 6:
-            re = 6
+        elif re > 8:
+            re = 8
         self._rife_morph = bool(rife_morph)
         self._rife_exp = re
         self._rife_repo = str(rife_repo_id).strip() or "MonsterMMORPG/RIFE_4_26"
@@ -1362,15 +1367,21 @@ class BackgroundStills:
                 "background_frame called before ensure_keyframes(); "
                 "generate or load keyframes first"
             )
+        rife_dense = self._timeline_times is not None
         times_src = (
             self._timeline_times
-            if self._timeline_times is not None
+            if rife_dense
             else self._manifest.keyframe_times
         )
+        # Sparse SDXL-only keyframes benefit from smoothstep crossfades. RIFE
+        # timelines are already flow-dense; smoothstep between samples adds an
+        # extra ease that slows perceived motion near every sample and lingers
+        # in the last blend (approximate IFNet frame → exact endpoint still).
         base = _interpolate_frame(
             self._frames,
             times_src,
             float(t),
+            smooth_blend=not rife_dense,
         )
         if not self._ken_burns:
             return base

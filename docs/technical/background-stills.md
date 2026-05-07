@@ -44,9 +44,10 @@ any wall-clock time.
    missing indices.
 6. `background_frame(t) -> np.ndarray (H, W, 3) uint8` clamps/finds a bracket
    over the **active** time list: either `BackgroundManifest.keyframe_times`
-   (plain stills) or a denser list after **RIFE** (see below), then returns a
-   crossfade blend weighted by
-   `smoothstep((t - t_i) / (t_{i+1} - t_i))`.
+   (plain stills) or a denser list after **RIFE** (see below), then blends
+   between the two bracketing samples: **smoothstep** for sparse stills-only
+   keyframes, **linear** between RIFE samples (see
+   [`rife-morph-background.md`](rife-morph-background.md)).
 
 ## Optional: RIFE morph (default-on in UI)
 
