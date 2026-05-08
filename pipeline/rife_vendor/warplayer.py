@@ -5,20 +5,25 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-_backwarp_grid: dict[tuple[str, str], torch.Tensor] = {}
+# Cache key includes ``dtype`` so FP16 and FP32 callers get a grid that
+# matches the flow tensor's dtype — ``F.grid_sample`` requires ``input`` and
+# ``grid`` to share dtype since PyTorch 1.10, so an FP32 cached grid would
+# raise on FP16 flow inputs.
+_backwarp_grid: dict[tuple[str, str, str], torch.Tensor] = {}
 
 
 def warp(tenInput: torch.Tensor, tenFlow: torch.Tensor) -> torch.Tensor:
     dev = tenInput.device
-    k = (str(dev), str(tenFlow.size()))
+    dtype = tenFlow.dtype
+    k = (str(dev), str(tenFlow.size()), str(dtype))
     if k not in _backwarp_grid:
         h, w = tenFlow.shape[2], tenFlow.shape[3]
-        ten_horizontal = torch.linspace(-1.0, 1.0, w, device=dev).view(
-            1, 1, 1, w
-        ).expand(tenFlow.shape[0], -1, h, -1)
-        ten_vertical = torch.linspace(-1.0, 1.0, h, device=dev).view(
-            1, 1, h, 1
-        ).expand(tenFlow.shape[0], -1, -1, w)
+        ten_horizontal = torch.linspace(
+            -1.0, 1.0, w, device=dev, dtype=dtype
+        ).view(1, 1, 1, w).expand(tenFlow.shape[0], -1, h, -1)
+        ten_vertical = torch.linspace(
+            -1.0, 1.0, h, device=dev, dtype=dtype
+        ).view(1, 1, h, 1).expand(tenFlow.shape[0], -1, -1, w)
         _backwarp_grid[k] = torch.cat([ten_horizontal, ten_vertical], 1)
 
     scaled = torch.cat(

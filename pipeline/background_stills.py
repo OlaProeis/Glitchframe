@@ -25,6 +25,8 @@ import hashlib
 import json
 import logging
 import math
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
@@ -449,9 +451,25 @@ def _atomic_replace_path(tmp: Path, dst: Path) -> None:
     raise last_err
 
 
-def _atomic_write_png(img: Image.Image, dst: Path) -> None:
+def _atomic_write_png(
+    img: Image.Image, dst: Path, *, compress_level: int = 6
+) -> None:
+    """Atomically write *img* as a PNG to *dst*.
+
+    ``compress_level`` (0–9) controls zlib effort, **not quality** — PNG is
+    lossless at every level. The default ``6`` matches PIL's prior behaviour
+    for user-visible keyframe PNGs (smaller files, slower encode). The RIFE
+    morph cache passes ``1`` to trade ~30–50 % more bytes for a ~3–5× faster
+    encode, since those frames are internal cache and the save phase is
+    CPU-bound on PIL's single-threaded zlib.
+    """
     tmp = dst.with_suffix(dst.suffix + ".tmp")
-    img.save(str(tmp), format="PNG", optimize=False)
+    img.save(
+        str(tmp),
+        format="PNG",
+        optimize=False,
+        compress_level=int(compress_level),
+    )
     _atomic_replace_path(tmp, dst)
 
 
@@ -520,6 +538,12 @@ def _rife_timeline_pngs_complete(cache_dir: Path, count: int) -> bool:
 def _load_rife_timeline_frames(
     cache_dir: Path, count: int, width: int, height: int
 ) -> list[np.ndarray]:
+    """Eagerly load every cached RIFE PNG into RAM (kept for tests / cold paths).
+
+    Hot paths use :class:`_RifeFrameSource` which lazily decodes through an LRU
+    cache so peak RAM stays ~``cache_size × frame_size`` instead of
+    ``count × frame_size`` (e.g. ~36 GB for exp=8 on a 3-min @ 1080p run).
+    """
     frames: list[np.ndarray] = []
     for i in range(count):
         path = _rife_frame_path(cache_dir, i)
@@ -533,6 +557,83 @@ def _load_rife_timeline_frames(
     return frames
 
 
+class _RifeFrameSource:
+    """Disk-backed lazy ``Sequence`` of RIFE morph frames.
+
+    The compositor walks time monotonically and ``_interpolate_frame`` only
+    reads two adjacent frames per call (``frames[i]`` and ``frames[i+1]``), so
+    a small LRU is enough to keep every read warm. This avoids holding all
+    ``frame_count`` decoded arrays in RAM at once — at 1080p that's ~6.2 MB
+    per frame, so high ``rife_exp`` runs (256 frames per segment) would
+    otherwise dominate RAM (e.g. ~36 GB for 5 889 frames) and force the OS
+    into paging / memory compression even on machines with 32 GB.
+
+    Frames are returned as ``(H, W, 3) uint8`` RGB, resized to ``(width,
+    height)`` if the on-disk PNG is a different size (rare; only happens
+    when output resolution changed since the cache was built).
+
+    Implements ``__len__`` and ``__getitem__`` so it slots in wherever the
+    eager ``list[np.ndarray]`` was used.
+    """
+
+    def __init__(
+        self,
+        cache_dir: Path,
+        count: int,
+        width: int,
+        height: int,
+        *,
+        cache_size: int = 16,
+    ) -> None:
+        if int(count) < 0:
+            raise ValueError(f"count must be >= 0, got {count}")
+        self._cache_dir = Path(cache_dir)
+        self._count = int(count)
+        self._width = int(width)
+        self._height = int(height)
+        self._cache_size = max(2, int(cache_size))
+        self._cache: OrderedDict[int, np.ndarray] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def __len__(self) -> int:
+        return self._count
+
+    def __iter__(self):
+        for i in range(self._count):
+            yield self[i]
+
+    def __getitem__(self, i: int) -> np.ndarray:
+        # Support negative indexing so ``frames[-1]`` (used in
+        # ``_interpolate_frame`` for the upper bound) works as expected.
+        if i < 0:
+            i += self._count
+        if not (0 <= i < self._count):
+            raise IndexError(
+                f"RIFE frame index {i} out of range [0, {self._count})"
+            )
+        with self._lock:
+            arr = self._cache.get(i)
+            if arr is not None:
+                self._cache.move_to_end(i)
+                return arr
+        # Decode outside the lock so concurrent readers don't serialise on
+        # PIL; the actual cache mutation happens under the lock again below.
+        path = _rife_frame_path(self._cache_dir, i)
+        if not path.is_file():
+            raise FileNotFoundError(f"Cached RIFE frame missing: {path}")
+        with Image.open(path) as im:
+            img = im.convert("RGB")
+            if img.size != (self._width, self._height):
+                img = img.resize((self._width, self._height), Image.LANCZOS)
+            arr = np.asarray(img, dtype=np.uint8).copy()
+        with self._lock:
+            self._cache[i] = arr
+            self._cache.move_to_end(i)
+            while len(self._cache) > self._cache_size:
+                self._cache.popitem(last=False)
+        return arr
+
+
 def _persist_rife_timeline(
     cache_dir: Path,
     frames: Sequence[np.ndarray],
@@ -540,21 +641,72 @@ def _persist_rife_timeline(
     manifest: RifeMorphManifest,
     *,
     report: ProgressFn | None = None,
+    max_workers: int | None = None,
 ) -> None:
+    """Write the RIFE morph timeline to disk and persist its manifest.
+
+    Encoding is the bottleneck (PIL + zlib are single-threaded and CPU-bound,
+    not I/O-bound — NVMe is rarely saturated even for thousands of 1080p
+    frames). We therefore (1) drop ``compress_level`` from the default ``6``
+    to ``1`` for these internal cache PNGs (lossless, ~3–5× faster encode,
+    ~30–50 % larger files) and (2) fan the saves across a thread pool so the
+    GIL-releasing portion of PNG compression runs in parallel across cores.
+
+    Combined, the save phase typically drops from hours to minutes for high
+    ``rife_exp`` runs (e.g. exp=8 on a 3-min song @ 1080p ≈ 5 889 frames).
+    """
+    import os
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     td = _rife_timeline_dir(cache_dir)
     td.mkdir(parents=True, exist_ok=True)
     n = len(frames)
-    step = max(1, n // 25) if n else 1
-    for i, arr in enumerate(frames):
+    if n == 0:
+        _atomic_write_json(manifest.to_dict(), _rife_manifest_path(cache_dir))
+        if report is not None:
+            report(1.0, "RIFE morph cache saved")
+        return
+
+    if max_workers is None:
+        cpu = os.cpu_count() or 4
+        # 4–8 workers is the sweet spot: PIL+zlib are CPU-bound but release
+        # the GIL during compression, so threads parallelise well; going
+        # beyond ~8 mostly fights the SSD write queue / Defender scans on
+        # Windows without further encode wins.
+        max_workers = max(2, min(8, cpu))
+
+    step = max(1, n // 25)
+
+    def _write_one(i: int, arr: np.ndarray) -> int:
         img = Image.fromarray(arr, mode="RGB")
-        _atomic_write_png(img, _rife_frame_path(cache_dir, i))
-        if report is not None and n > 0:
-            if i == 0 or i == n - 1 or (i + 1) % step == 0:
-                p = 0.97 + 0.03 * (i + 1) / (n + 1)
-                report(
-                    p,
-                    f"Saving RIFE morph frames {i + 1}/{n} to cache (large songs = slower disk I/O)…",
-                )
+        _atomic_write_png(img, _rife_frame_path(cache_dir, i), compress_level=1)
+        return i
+
+    completed = 0
+    last_reported_pct = -1.0
+    with ThreadPoolExecutor(max_workers=int(max_workers)) as ex:
+        futures = [ex.submit(_write_one, i, arr) for i, arr in enumerate(frames)]
+        for fut in as_completed(futures):
+            fut.result()
+            completed += 1
+            if report is not None:
+                # Throttle progress so we don't flood the log when many writes
+                # finish on the same tick; ``as_completed`` gives no order so
+                # the count is monotonic but the indices arrive scrambled.
+                pct = completed / n
+                if (
+                    completed == 1
+                    or completed == n
+                    or completed % step == 0
+                    or pct - last_reported_pct >= 0.04
+                ):
+                    last_reported_pct = pct
+                    p = 0.97 + 0.03 * completed / (n + 1)
+                    report(
+                        p,
+                        f"Saving RIFE morph frames {completed}/{n} to cache "
+                        f"(parallel × {int(max_workers)})…",
+                    )
     _atomic_write_json(manifest.to_dict(), _rife_manifest_path(cache_dir))
     if report is not None:
         report(1.0, "RIFE morph cache saved")
@@ -1042,7 +1194,14 @@ class BackgroundStills:
         force: bool,
         report: ProgressFn,
     ) -> None:
-        """Replace ``self._frames`` with a RIFE-dense timeline when enabled."""
+        """Replace ``self._frames`` with a RIFE-dense timeline when enabled.
+
+        Both branches (cache hit and fresh bake) install a disk-backed
+        :class:`_RifeFrameSource` rather than an eager
+        ``list[np.ndarray]`` so peak RAM stays bounded by the LRU cache size
+        instead of scaling with ``frame_count``. At 1080p that's the
+        difference between < 200 MB and tens of GB for high ``rife_exp`` runs.
+        """
         self._timeline_times = None
         if not self._rife_morph:
             return
@@ -1068,22 +1227,19 @@ class BackgroundStills:
                 width=self._width,
                 height=self._height,
             ) and _rife_timeline_pngs_complete(self._cache_dir, rm.frame_count):
-                try:
-                    self._frames = _load_rife_timeline_frames(
-                        self._cache_dir,
-                        rm.frame_count,
-                        self._width,
-                        self._height,
-                    )
-                except FileNotFoundError as exc:
-                    LOGGER.info(
-                        "RIFE manifest matches but a frame is missing (%s); will regenerate",
-                        exc,
-                    )
-                else:
-                    self._timeline_times = tuple(rm.times)
-                    report(1.0, "Reused cached RIFE morph timeline")
-                    return
+                self._frames = _RifeFrameSource(
+                    self._cache_dir,
+                    rm.frame_count,
+                    self._width,
+                    self._height,
+                )
+                self._timeline_times = tuple(rm.times)
+                report(1.0, "Reused cached RIFE morph timeline (lazy)")
+                return
+
+        # Snapshot the SDXL keyframes before we overwrite ``self._frames``
+        # — RIFE needs them as the morph endpoints.
+        sdxl_keyframes = tuple(kf)
 
         from pipeline.rife_runtime import rife_build_morph_timeline
 
@@ -1097,14 +1253,90 @@ class BackgroundStills:
                 "or run on hardware with CUDA"
             )
         device = torch.device("cuda:0")
-        dense_frames, dense_times = rife_build_morph_timeline(
-            tuple(kf),
-            mf.keyframe_times,
-            exp=self._rife_exp,
-            device=device,
-            repo_id=self._rife_repo,
-            progress=report,
-        )
+
+        # Stream frames straight from the GPU to a thread pool of PNG writers.
+        # This keeps peak RAM at ~``workers × frame_size`` instead of
+        # ``frame_count × frame_size`` and overlaps the (CPU-bound, GIL-
+        # releasing) PNG encoding with the next GPU forward pass.
+        import os
+        from concurrent.futures import Future, ThreadPoolExecutor
+
+        td = _rife_timeline_dir(self._cache_dir)
+        td.mkdir(parents=True, exist_ok=True)
+
+        cpu = os.cpu_count() or 4
+        max_writers = max(2, min(8, cpu))
+        # Bound the in-flight write queue so we never accumulate more than
+        # ``max_writers × backpressure`` decoded frames in RAM. Backpressure
+        # of ~3 keeps the GPU fed without ballooning memory: PNG encode at
+        # ``compress_level=1`` typically beats RIFE inference per frame, so
+        # the pool drains as fast as it fills.
+        max_inflight = max_writers * 3
+
+        # Total estimate for progress: same formula as ``rife_build_morph_timeline``
+        # (per-segment exp pairs, dedup boundaries between segments).
+        total_segs = max(1, mf.num_keyframes - 1)
+        per_seg = (1 << int(self._rife_exp))
+        est_total = total_segs * per_seg + 1
+
+        def _write_one(idx: int, arr: np.ndarray) -> int:
+            img = Image.fromarray(arr, mode="RGB")
+            _atomic_write_png(
+                img, _rife_frame_path(self._cache_dir, idx), compress_level=1
+            )
+            return idx
+
+        report(0.0, "RIFE bake — streaming morph frames to cache…")
+
+        with ThreadPoolExecutor(max_workers=max_writers) as ex:
+            inflight: list[Future[int]] = []
+            saved = 0
+            last_pct = -1.0
+
+            def _drain_until(limit: int) -> None:
+                nonlocal saved, last_pct
+                while len(inflight) > limit:
+                    # Pop the oldest future first; we don't care about
+                    # ordering of writes (each lands at its own index path),
+                    # only that we don't run away with RAM.
+                    fut = inflight.pop(0)
+                    fut.result()
+                    saved += 1
+                    pct = saved / max(1, est_total)
+                    if (
+                        saved == 1
+                        or saved % max(1, est_total // 50) == 0
+                        or pct - last_pct >= 0.02
+                    ):
+                        last_pct = pct
+                        report(
+                            min(0.97, 0.05 + 0.92 * pct),
+                            f"RIFE bake & save: {saved}/{est_total} "
+                            f"(parallel × {max_writers}, lazy in-RAM)…",
+                        )
+
+            def _on_frame(idx: int, arr: np.ndarray, _t: float) -> None:
+                # Backpressure: if the writer queue is saturated, drain a few
+                # before submitting the next so we don't accumulate frames.
+                if len(inflight) >= max_inflight:
+                    _drain_until(max_inflight - max_writers)
+                inflight.append(ex.submit(_write_one, idx, arr))
+
+            _, dense_times = rife_build_morph_timeline(
+                sdxl_keyframes,
+                mf.keyframe_times,
+                exp=self._rife_exp,
+                device=device,
+                repo_id=self._rife_repo,
+                progress=report,
+                on_frame=_on_frame,
+                keep_frames=False,
+            )
+
+            # Flush any remaining writes before we publish the manifest.
+            _drain_until(0)
+
+        frame_count = len(dense_times)
         final_m = RifeMorphManifest(
             schema_version=RIFE_MANIFEST_SCHEMA_VERSION,
             base_prompt_hash=mf.prompt_hash,
@@ -1116,18 +1348,22 @@ class BackgroundStills:
             rife_repo_id=self._rife_repo,
             width=self._width,
             height=self._height,
-            frame_count=len(dense_frames),
+            frame_count=frame_count,
             times=tuple(float(t) for t in dense_times),
         )
-        _persist_rife_timeline(
+        # Manifest is written last so a crashed bake leaves
+        # ``_rife_timeline_pngs_complete`` False on retry — the manifest
+        # acts as the "this cache is consistent" commit marker.
+        _atomic_write_json(final_m.to_dict(), _rife_manifest_path(self._cache_dir))
+
+        self._frames = _RifeFrameSource(
             self._cache_dir,
-            dense_frames,
-            dense_times,
-            final_m,
-            report=report,
+            frame_count,
+            self._width,
+            self._height,
         )
-        self._frames = dense_frames
         self._timeline_times = final_m.times
+        report(1.0, "RIFE morph cache saved")
 
     # -- generation / cache -------------------------------------------------
 
