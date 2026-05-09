@@ -1088,6 +1088,7 @@ class BackgroundStills:
         rife_morph: bool = False,
         rife_exp: int = 4,
         rife_repo_id: str = "MonsterMMORPG/RIFE_4_26",
+        ken_burns_rms_drive_at: Callable[[float], float] | None = None,
     ) -> None:
         cache = Path(cache_dir)
         if not cache.is_dir():
@@ -1140,6 +1141,7 @@ class BackgroundStills:
         self._rife_morph = bool(rife_morph)
         self._rife_exp = re
         self._rife_repo = str(rife_repo_id).strip() or "MonsterMMORPG/RIFE_4_26"
+        self._ken_burns_rms_drive_at = ken_burns_rms_drive_at
 
         self._plans: list[KeyframePlan] | None = None
         self._frames: list[np.ndarray] | None = None
@@ -1687,6 +1689,10 @@ class BackgroundStills:
             )
         from pipeline.background_kenburns import apply_ken_burns_to_rgb_array
 
+        mul = 1.0
+        if self._ken_burns_rms_drive_at is not None:
+            mul = float(self._ken_burns_rms_drive_at(float(t)))
+            mul = max(0.0, min(2.0, mul))
         return apply_ken_burns_to_rgb_array(
             base,
             width=self._width,
@@ -1695,6 +1701,7 @@ class BackgroundStills:
             t=float(t),
             duration_sec=self._kb_duration,
             analysis=self._kb_analysis,
+            rms_drive_mul=mul,
         )
 
     # -- lifecycle ----------------------------------------------------------

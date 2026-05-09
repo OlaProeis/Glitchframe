@@ -232,10 +232,14 @@ def apply_ken_burns_to_rgb_array(
     t: float,
     duration_sec: float,
     analysis: Mapping[str, Any],
+    rms_drive_mul: float = 1.0,
 ) -> np.ndarray:
     """
     Apply the same RMS-driven Ken Burns zoom / pan / tilt used for static
     uploads to a full-frame RGB still (e.g. an interpolated SDXL keyframe).
+
+    ``rms_drive_mul`` scales the loudness-driven component only (0 = no RMS
+    motion; 1 = full; >1 allowed, clamped into the transform).
     """
     if base_rgb.ndim != 3 or int(base_rgb.shape[2]) != 3:
         raise ValueError(f"expected HxWx3 RGB, got {base_rgb.shape}")
@@ -252,6 +256,8 @@ def apply_ken_burns_to_rgb_array(
     )
     rms_n = float(raw_rms) / rms_max if rms_max > 0 else 0.0
     rms_n = float(np.clip(rms_n, 0.0, 1.0))
+    mul = max(0.0, min(2.0, float(rms_drive_mul)))
+    rms_n = float(np.clip(rms_n * mul, 0.0, 1.0))
     img = Image.fromarray(base_rgb, mode="RGB")
     work = _cover_canvas(img, width, height, margin)
     return _ken_burns_transform(

@@ -98,6 +98,7 @@ def create_background_source(
     ken_burns_margin: float | None = None,
     sdxl_rife_morph: bool = False,
     rife_exp: int = 4,
+    ken_burns_rms_drive_at: Callable[[float], float] | None = None,
 ) -> BackgroundSource:
     """
     Construct the background implementation for ``mode`` (use
@@ -126,6 +127,7 @@ def create_background_source(
             ken_burns_margin=kb_margin,
             rife_morph=bool(sdxl_rife_morph),
             rife_exp=int(rife_exp),
+            ken_burns_rms_drive_at=ken_burns_rms_drive_at,
         )
     if m == MODE_STATIC_KENBURNS:
         return StaticKenBurnsBackground(

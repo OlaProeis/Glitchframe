@@ -12,6 +12,7 @@ from pipeline.effects_timeline import (
     EffectClip,
     EffectKind,
     EffectsTimeline,
+    interp_ken_burns_rms_automation,
     load,
     save,
     validate_effects_timeline,
@@ -52,7 +53,30 @@ class TestEffectsTimeline(unittest.TestCase):
             self.assertEqual(t1.auto_reactivity_master, 0.5)
             self.assertIs(t1.auto_enabled[EffectKind.BEAM], True)
 
-    def test_unknown_settings_key_rejected(self) -> None:
+    def test_interp_ken_burns_automation(self) -> None:
+        self.assertEqual(interp_ken_burns_rms_automation([], 1.0), 1.0)
+        self.assertAlmostEqual(
+            interp_ken_burns_rms_automation([(0.0, 0.0), (10.0, 2.0)], 5.0),
+            1.0,
+        )
+        self.assertAlmostEqual(
+            interp_ken_burns_rms_automation([(0.0, 0.5)], 99.0),
+            0.5,
+        )
+
+    def test_ken_burns_automation_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            t0 = EffectsTimeline(
+                clips=[],
+                ken_burns_rms_automation=[(0.0, 0.25), (4.0, 1.5), (8.0, 0.25)],
+            )
+            save(tmp_path, t0)
+            t1 = load(tmp_path)
+            self.assertEqual(
+                t1.ken_burns_rms_automation,
+                [(0.0, 0.25), (4.0, 1.5), (8.0, 0.25)],
+            )
         with self.assertRaisesRegex(ValueError, "Unknown settings keys"):
             EffectClip(
                 id="x",

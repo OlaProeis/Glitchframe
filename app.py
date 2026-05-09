@@ -427,6 +427,7 @@ def _build_render_inputs(
     year: str,
     genre: str,
     sdxl_ken_burns: bool,
+    sdxl_ken_burns_rms_reactivity_pct: float,
     sdxl_rife_morph: bool,
     rife_exp: int,
 ) -> OrchestratorInputs:
@@ -468,6 +469,10 @@ def _build_render_inputs(
         background_mode=mode,
         static_background_image=static_path,
         sdxl_ken_burns=bool(sdxl_ken_burns),
+        sdxl_ken_burns_rms_reactivity=float(
+            np.clip(sdxl_ken_burns_rms_reactivity_pct, 0.0, 200.0)
+        )
+        / 100.0,
         sdxl_rife_morph=use_rife,
         rife_exp=rife_e,
         preset_id=style_preset_id(stem),
@@ -599,6 +604,7 @@ def _run_preview(
     bg_mode: str,
     static_bg: object,
     sdxl_ken_burns: bool,
+    sdxl_ken_burns_rms_reactivity_pct: float,
     sdxl_rife_morph: bool,
     rife_exp: int,
     reactive_shader_stem: str | None,
@@ -703,6 +709,7 @@ def _run_preview(
             year=year,
             genre=genre,
             sdxl_ken_burns=sdxl_ken_burns,
+            sdxl_ken_burns_rms_reactivity_pct=sdxl_ken_burns_rms_reactivity_pct,
             sdxl_rife_morph=sdxl_rife_morph,
             rife_exp=rife_exp,
         )
@@ -735,6 +742,7 @@ def _run_render(
     bg_mode: str,
     static_bg: object,
     sdxl_ken_burns: bool,
+    sdxl_ken_burns_rms_reactivity_pct: float,
     sdxl_rife_morph: bool,
     rife_exp: int,
     reactive_shader_stem: str | None,
@@ -839,6 +847,7 @@ def _run_render(
             year=year,
             genre=genre,
             sdxl_ken_burns=sdxl_ken_burns,
+            sdxl_ken_burns_rms_reactivity_pct=sdxl_ken_burns_rms_reactivity_pct,
             sdxl_rife_morph=sdxl_rife_morph,
             rife_exp=rife_exp,
         )
@@ -874,6 +883,7 @@ def _toggle_bg_dependent_controls(mode: str):
     sdxl = m == MODE_SDXL_STILLS
     return (
         gr.update(visible=(m == MODE_STATIC_KENBURNS)),
+        gr.update(visible=sdxl),
         gr.update(visible=sdxl),
         gr.update(visible=sdxl),
         gr.update(visible=sdxl),
@@ -2704,6 +2714,18 @@ See [`docs/technical/background-stills.md`](docs/technical/background-stills.md)
                         "without uploading an image. Cached SDXL PNGs are unchanged."
                     ),
                 )
+                sdxl_kb_rms_reactivity = gr.Slider(
+                    label="SDXL Ken Burns RMS reactivity",
+                    minimum=0,
+                    maximum=200,
+                    value=100,
+                    step=1,
+                    info=(
+                        "0% = no loudness-driven motion (only slow base pan/zoom). "
+                        "100% = default. Up to 200% for heavier swings. "
+                        "Optional timeline automation multiplies this (Effects timeline tab)."
+                    ),
+                )
                 sdxl_rife_morph_cb = gr.Checkbox(
                     label="Morph keyframes (RIFE)",
                     value=True,
@@ -2875,6 +2897,7 @@ See [`docs/technical/background-stills.md`](docs/technical/background-stills.md)
             bg_mode,
             static_bg_file,
             sdxl_ken_burns_cb,
+            sdxl_kb_rms_reactivity,
             sdxl_rife_morph_cb,
             rife_exp_slider,
             shader_dd,
@@ -2948,6 +2971,7 @@ See [`docs/technical/background-stills.md`](docs/technical/background-stills.md)
             outputs=[
                 static_bg_file,
                 sdxl_ken_burns_cb,
+                sdxl_kb_rms_reactivity,
                 sdxl_rife_morph_cb,
                 rife_exp_slider,
             ],

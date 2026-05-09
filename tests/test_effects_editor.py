@@ -113,7 +113,8 @@ class TestEffectsEditor(unittest.TestCase):
             self.assertIn("ghost_events", st)
             self.assertIn("clips", st)
             self.assertIn("auto_enabled", st)
-            # Kick + hat ghost sources should always be present given the
+            self.assertIn("ken_burns_rms_automation", st)
+            self.assertEqual(st["ken_burns_rms_automation"], [])
             # spectrum spikes injected by ``_write_minimal_analysis``.
             kinds = {e.get("kind") for e in st["ghost_events"]}
             self.assertIn("SCREEN_SHAKE", kinds)
@@ -378,6 +379,8 @@ class TestEffectsEditor(unittest.TestCase):
                 self.assertIn(f'data-mv-fx-row="{kind}"', html)
                 self.assertIn(f'data-mv-fx-add="{kind}"', html)
                 self.assertIn(f'data-mv-fx-auto="{kind}"', html)
+            self.assertIn("data-mv-fx-kb-auto", html)
+            self.assertIn("SDXL KB RMS", html)
             # Master reactivity slider is the top-bar knob required by the PRD.
             self.assertIn("data-mv-fx-master", html)
 

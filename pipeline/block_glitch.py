@@ -3,11 +3,11 @@ Per-frame macroblock displacement ("JPEG corruption") from
 :class:`EffectKind.BLOCK_GLITCH` clips.
 
 Splits the frame into a grid of square blocks of size ``block_size_px`` and
-randomly displaces a fraction of those blocks by per-axis offsets bounded by
-``displace_frac * block_size_px``. The visual reads as discrete rectangular
-chunks of the frame jumping around — distinct from the band-level sliding of
-``SCANLINE_TEAR`` (which only shifts horizontal slices by N pixels) and the
-sub-pixel R/B drift of ``CHROMATIC_ABERRATION``.
+displaces a fraction of those blocks. Roughly half the time, blocks are
+chosen as **full macroblock rows** (strip coherence) with a shared horizontal
+and vertical shift per row — the look of broken motion vectors — otherwise
+scattered blocks stay chaotic. **Source slip** reads horizontal slices from a
+misaligned offset inside the frame, producing tearing inside tiles.
 
 Determinism: per-frame seed is derived from ``song_hash``, ``clip.id``, and
 ``round(t * 1000)``. Multiple active clips compose by running each clip's
@@ -24,9 +24,9 @@ import numpy as np
 
 from pipeline.effects_timeline import EffectClip, EffectKind
 
-_DEFAULT_INTENSITY = 0.35
-_DEFAULT_BLOCK_SIZE_PX = 32
-_DEFAULT_DISPLACE_FRAC = 0.6
+_DEFAULT_INTENSITY = 0.38
+_DEFAULT_BLOCK_SIZE_PX = 28
+_DEFAULT_DISPLACE_FRAC = 0.85
 
 
 def _float_setting(settings: dict[str, object], key: str, default: float) -> float:
@@ -81,6 +81,44 @@ def _active_block_glitch_clips(
     return out
 
 
+def _pick_block_indices(
+    rng: np.random.Generator,
+    rows: int,
+    cols: int,
+    total_blocks: int,
+    n_pick: int,
+) -> tuple[np.ndarray, bool]:
+    """Return ``n_pick`` flat indices and whether picks are strip-coherent (full MB rows).
+
+    When strip-coherent, every block in a given macro-row shares the same random
+    motion vector — closer to broken MPEG predictions than scattered tiles.
+    """
+    strip_mode = bool(rng.random() < 0.52) and rows >= 2
+    if strip_mode:
+        min_rows = max(1, min(rows, n_pick // max(cols // 2, 1)))
+        n_strip_rows = min(rows, max(min_rows, int(round(min_rows * rng.uniform(0.75, 1.25)))))
+        br_pick = rng.choice(rows, size=n_strip_rows, replace=False)
+        candidates = np.array(
+            [br * cols + bc for br in br_pick.tolist() for bc in range(cols)],
+            dtype=np.int64,
+        )
+        if candidates.size <= n_pick:
+            flat_idx = candidates
+            if flat_idx.size < n_pick:
+                pool = np.arange(total_blocks, dtype=np.int64)
+                mask = np.ones(total_blocks, dtype=bool)
+                mask[flat_idx] = False
+                rest = pool[mask]
+                need = n_pick - flat_idx.size
+                extra = rng.choice(rest, size=min(need, rest.size), replace=False)
+                flat_idx = np.concatenate([flat_idx, extra])
+        else:
+            flat_idx = rng.choice(candidates, size=n_pick, replace=False)
+        return flat_idx, True
+
+    return rng.choice(total_blocks, size=n_pick, replace=False), False
+
+
 def _apply_one_clip(
     out: np.ndarray, clip: EffectClip, t: float, song_hash: str
 ) -> np.ndarray:
@@ -111,15 +149,17 @@ def _apply_one_clip(
 
     seed = _frame_seed(song_hash, clip.id, t)
     rng = np.random.Generator(np.random.PCG64(seed & (2**64 - 1)))
-    flat_idx = rng.choice(total_blocks, size=n_pick, replace=False)
+
+    flat_idx, row_coherent = _pick_block_indices(rng, rows, cols, total_blocks, n_pick)
 
     max_dx = max(1, int(round(displace_frac * block_size)))
 
-    # ``buf`` stays as the source of truth so picked-block reads come from
-    # the un-displaced frame; writes land on a fresh copy so neighbouring
-    # blocks don't cascade-displace into each other.
     src = out
     buf = out.copy()
+
+    dx_cache: dict[int, int] = {}
+    dy_cache: dict[int, int] = {}
+
     for idx in flat_idx.tolist():
         br = idx // cols
         bc = idx % cols
@@ -131,16 +171,30 @@ def _apply_one_clip(
         bw = sx1 - sx0
         if bh <= 0 or bw <= 0:
             continue
-        dx = int(rng.integers(-max_dx, max_dx + 1))
-        dy = int(rng.integers(-max_dx, max_dx + 1))
+
+        if row_coherent:
+            if br not in dx_cache:
+                dx_cache[br] = int(rng.integers(-max_dx, max_dx + 1))
+            if br not in dy_cache:
+                dy_cache[br] = int(rng.integers(-max_dx, max_dx + 1))
+            dx = dx_cache[br]
+            dy = dy_cache[br]
+        else:
+            dx = int(rng.integers(-max_dx, max_dx + 1))
+            dy = int(rng.integers(-max_dx, max_dx + 1))
+
         if dx == 0 and dy == 0:
             continue
+
+        slip_max = max(1, min(max_dx, max(1, bw // 2)))
+        slip_roll = float(rng.random())
+        slip_x = int(rng.integers(-slip_max, slip_max + 1)) if slip_roll < 0.72 else 0
+
         dy0 = sy0 + dy
         dx0 = sx0 + dx
         dy1 = dy0 + bh
         dx1 = dx0 + bw
-        # Clamp the destination patch to the frame; trim the source to match
-        # so partial off-screen displacements still look correct.
+
         if dy0 < 0:
             sy0 += -dy0
             dy0 = 0
@@ -155,7 +209,14 @@ def _apply_one_clip(
             dx1 = w
         if dy1 - dy0 <= 0 or dx1 - dx0 <= 0:
             continue
-        buf[dy0:dy1, dx0:dx1, :] = src[sy0:sy1, sx0:sx1, :]
+
+        bw_src = sx1 - sx0
+        read_lo = sx0 + slip_x
+        read_lo = max(0, min(read_lo, w - bw_src))
+        read_hi = read_lo + bw_src
+
+        buf[dy0:dy1, dx0:dx1, :] = src[sy0:sy1, read_lo:read_hi, :]
+
     return buf
 
 

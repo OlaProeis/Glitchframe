@@ -30,6 +30,7 @@ Mirrors `pipeline.lyrics_editor.build_editor_html` exactly so the Gradio tab can
 │ 0 ───────█────── 200%     100%                                       │
 ├ Labels ─┬─ scroller (horizontal) ────────────────────────────────────┤
 │ wave    │ waveform canvas (from state.peaks)                         │
+│ SDXL KB │ SDXL Ken Burns RMS automation lane (`ken_burns_rms_automation`) │
 │ Beam  ☑ │ ░░░░ BEAM clips + ghost ticks                              │
 │ Glitch☑ │ ░░░░ LOGO_GLITCH clips + ghost ticks                       │
 │ Shake ☑ │ ░░░░ SCREEN_SHAKE clips                                    │

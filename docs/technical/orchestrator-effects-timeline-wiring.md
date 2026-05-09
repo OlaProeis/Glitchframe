@@ -6,6 +6,7 @@ End-to-end preview and full render load the per-song effects schedule from the c
 
 - **`effects_timeline_enabled`** (default `true`) — when `false`, the compositor receives `effects_timeline=None` and `auto_reactivity_master=1.0` (legacy behaviour, no user JSON on that path).
 - **`auto_reactivity_master`** (default `1.0`) — per-run trim, combined with the value stored in the loaded timeline file (see below).
+- **`sdxl_ken_burns_rms_reactivity`** (default `1.0`, Gradio 0–200%) — scales loudness-driven Ken Burns on SDXL stills; multiplied by the automation envelope from `effects_timeline.json` when present.
 
 ## Loading and `CompositorConfig`
 
@@ -13,6 +14,8 @@ After `orchestrate_analysis` sets `state.cache_dir`, `_effects_compositor_config
 
 - **`effects_timeline`** — the loaded model (or `None` if disabled).
 - **`auto_reactivity_master`** — **effective** scalar: `max(0, OrchestratorInputs.auto_reactivity_master) * EffectsTimeline.auto_reactivity_master` from disk. The file’s field is what the editor saves; the orchestrator field scales that for the current render. The compositor’s `_auto_reactivity_master` reads only `CompositorConfig.auto_reactivity_master`, not a second copy from the timeline object.
+
+**SDXL Ken Burns RMS:** :func:`pipeline.effects_timeline.load` runs again on the same cache directory so `ken_burns_rms_automation` is available even when ``effects_timeline_enabled`` is ``false``. Per-frame drive is `sdxl_ken_burns_rms_reactivity` × interpolated automation (see `OrchestratorInputs`).
 
 ## Tests and related docs
 

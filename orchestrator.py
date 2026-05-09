@@ -20,7 +20,11 @@ from pipeline.audio_analyzer import AnalysisResult, analyze_song
 from pipeline.audio_ingest import IngestResult, ingest_audio_file
 from pipeline.lyrics_aligner import AlignmentResult, align_lyrics
 from pipeline.metadata import write_metadata_txt
-from pipeline.effects_timeline import EffectsTimeline, load as load_effects_timeline
+from pipeline.effects_timeline import (
+    EffectsTimeline,
+    interp_ken_burns_rms_automation,
+    load as load_effects_timeline,
+)
 from pipeline.preset_colors import resolve_text_colors
 from pipeline.preview import DEFAULT_PREVIEW_WINDOW_SEC
 
@@ -51,6 +55,10 @@ class OrchestratorInputs:
     # When True and background_mode is SDXL stills, apply RMS-driven Ken Burns
     # zoom/pan/tilt on top of interpolated keyframes (no extra uploads).
     sdxl_ken_burns: bool = True
+    # Scales RMS-driven Ken Burns motion (0–200%). Multiplied by the optional
+    # piecewise automation in ``effects_timeline.json`` (see
+    # ``ken_burns_rms_automation``).
+    sdxl_ken_burns_rms_reactivity: float = 1.0
     # Optical-flow morph between SDXL keyframes (RIFE). SDXL stills only.
     sdxl_rife_morph: bool = True
     # RIFE depth: ``2**exp`` uniform steps between each keyframe pair (clamped 2–8 in UI).
@@ -552,6 +560,13 @@ def _render_pipeline(
     eff_timeline, eff_auto_master = _effects_compositor_config(
         inputs, state.cache_dir
     )
+    timeline_disk = load_effects_timeline(state.cache_dir)
+    kb_pts = timeline_disk.ken_burns_rms_automation
+    base_kb = max(0.0, min(2.0, float(inputs.sdxl_ken_burns_rms_reactivity)))
+
+    def kb_rms_drive_at(t: float) -> float:
+        env = interp_ken_burns_rms_automation(kb_pts, float(t))
+        return max(0.0, min(2.0, base_kb * env))
 
     cfg = CompositorConfig(
         fps=int(inputs.fps),
@@ -612,6 +627,7 @@ def _render_pipeline(
         sdxl_ken_burns=bool(inputs.sdxl_ken_burns),
         sdxl_rife_morph=bool(inputs.sdxl_rife_morph),
         rife_exp=int(inputs.rife_exp),
+        ken_burns_rms_drive_at=kb_rms_drive_at,
     )
     try:
         background.ensure(force=False, progress=bg_cb)

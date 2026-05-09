@@ -248,7 +248,8 @@ def load_editor_state(
     Assemble data for a future Gradio/JS effects timeline editor.
 
     Returns JSON-friendly dict keys: ``song_hash``, ``clips``, ``auto_enabled``,
-    ``auto_reactivity_master``, ``peaks`` (``[min, max]`` column pairs in ``[-1, 1]``),
+    ``auto_reactivity_master``, ``ken_burns_rms_automation`` (``t`` / ``v`` points),
+    ``peaks`` (``[min, max]`` column pairs in ``[-1, 1]``),
     ``duration`` (float seconds), ``sample_rate``, and ``ghost_events``.
     """
     cache = Path(cache_dir)
@@ -271,6 +272,10 @@ def load_editor_state(
         "auto_reactivity_master": float(timeline.auto_reactivity_master),
         "auto_enabled": _auto_enabled_to_json(timeline.auto_enabled),
         "clips": [_clip_to_json(c) for c in timeline.clips],
+        "ken_burns_rms_automation": [
+            {"t": float(tt), "v": float(vv)}
+            for tt, vv in timeline.ken_burns_rms_automation
+        ],
         "peaks": peaks_list,
         "duration": float(duration),
         "sample_rate": int(sample_rate),
@@ -321,7 +326,13 @@ def save_edited_timeline(
         )
 
     # Keep only the on-disk fields (JS may post the full load_editor_state blob).
-    file_keys = ("schema_version", "auto_reactivity_master", "auto_enabled", "clips")
+    file_keys = (
+        "schema_version",
+        "auto_reactivity_master",
+        "auto_enabled",
+        "clips",
+        "ken_burns_rms_automation",
+    )
     file_payload = {k: data[k] for k in file_keys if k in data}
     if "clips" not in file_payload:
         raise ValueError("Effects editor payload is missing a 'clips' array.")
@@ -483,6 +494,7 @@ def bake_auto_schedule(
         clips=merged,
         auto_enabled=timeline.auto_enabled,
         auto_reactivity_master=timeline.auto_reactivity_master,
+        ken_burns_rms_automation=list(timeline.ken_burns_rms_automation),
     )
     return save(cache, new_t)
 
@@ -572,11 +584,11 @@ _KIND_DEFAULTS: dict[str, dict[str, Any]] = {
     },
     "PIXEL_SMEAR": {
         "duration_s": 0.35,
-        "settings": {"intensity": 0.6, "density": 0.18, "streak_length_frac": 0.45},
+        "settings": {"intensity": 0.65, "density": 0.16, "streak_length_frac": 0.62},
     },
     "BLOCK_GLITCH": {
         "duration_s": 0.3,
-        "settings": {"intensity": 0.35, "block_size_px": 32, "displace_frac": 0.6},
+        "settings": {"intensity": 0.38, "block_size_px": 28, "displace_frac": 0.85},
     },
 }
 
@@ -617,6 +629,9 @@ _EFFECTS_CSS = """
     border-bottom: 1px solid #1f2937;
     display: flex; align-items: flex-end; padding: 4px 8px;
     color: #64748b; font-size: 11px; }
+  .mv-fx .mv-fx-label-kb { height: 44px; display: flex; align-items: center;
+    padding: 0 8px; border-bottom: 1px solid #1f2937; font-size: 11px;
+    color: #a78bfa; background: #0f172a; }
   .mv-fx .mv-fx-label { height: 36px; display: flex; align-items: center;
     gap: 6px; padding: 0 8px; border-bottom: 1px solid #111827;
     font-size: 11px; }
@@ -631,6 +646,9 @@ _EFFECTS_CSS = """
   .mv-fx .mv-fx-stage { position: relative; }
   .mv-fx canvas.mv-fx-wave { display: block; width: 100%; height: 120px;
     background: #0b1220; border-bottom: 1px solid #1f2937; }
+  .mv-fx canvas.mv-fx-kb-auto { display: block; width: 100%; height: 44px;
+    background: #0b1220; border-bottom: 1px solid #1f2937;
+    touch-action: none; }
   .mv-fx .mv-fx-row { position: relative; height: 36px;
     border-bottom: 1px solid #111827; background: #0b1220; }
   .mv-fx .mv-fx-row:last-child { border-bottom: none; }
@@ -643,6 +661,18 @@ _EFFECTS_CSS = """
     display: flex; align-items: center; overflow: hidden;
     -webkit-user-select: none; user-select: none;
     font-size: 10px; color: rgba(0, 0, 0, 0.85); padding: 0 4px; }
+  .mv-fx .mv-fx-clip .mv-fx-fade-ramp {
+    position: absolute; left: 0; top: 0; right: 0; bottom: 0;
+    pointer-events: none; border-radius: 2px; z-index: 0; }
+  .mv-fx .mv-fx-clip:has(.mv-fx-fade-ramp) .mv-fx-clip-label {
+    color: #f9fafb;
+    text-shadow: 0 0 4px rgba(0,0,0,0.85), 0 1px 2px rgba(0,0,0,0.75); }
+  .mv-fx .mv-fx-clip:has(.mv-fx-fade-ramp) .mv-fx-gear {
+    color: #f8fafc;
+    background: rgba(0,0,0,0.45); }
+  .mv-fx .mv-fx-clip .mv-fx-clip-label { position: relative; z-index: 1; }
+  .mv-fx .mv-fx-clip .mv-fx-gear { z-index: 2; }
+  .mv-fx .mv-fx-clip .mv-fx-handle { z-index: 2; }
   .mv-fx .mv-fx-clip.dragging { cursor: grabbing; opacity: 0.85; }
   .mv-fx .mv-fx-clip.selected { outline: 2px solid #fde68a;
     outline-offset: -2px; }
@@ -672,7 +702,7 @@ _EFFECTS_CSS = """
   .mv-fx .mv-fx-drag-guide { position: absolute; top: 0; bottom: 0;
     width: 1px; background: #fde68a; box-shadow: 0 0 4px #fde68a;
     pointer-events: none; z-index: 6; display: none; }
-  .mv-fx .mv-fx-band { position: absolute; top: 120px; bottom: 0;
+  .mv-fx .mv-fx-band { position: absolute; top: 164px; bottom: 0;
     border: 1px dashed #f59e0b;
     background: rgba(245, 158, 11, 0.12);
     pointer-events: none; display: none; z-index: 4; }
@@ -691,7 +721,8 @@ _EFFECTS_CSS = """
     align-items: center; gap: 8px; margin-bottom: 4px; }
   .mv-fx .mv-fx-settings label { flex: 0 0 96px; color: #cbd5e1;
     font-size: 11px; }
-  .mv-fx .mv-fx-settings input { flex: 1; background: #0b1220;
+  .mv-fx .mv-fx-settings input,
+  .mv-fx .mv-fx-settings select { flex: 1; background: #0b1220;
     border: 1px solid #374151; border-radius: 3px; color: #e5e7eb;
     padding: 3px 5px; font-size: 11px; font-family: inherit; }
   .mv-fx .mv-fx-settings input[type=color] { padding: 0; height: 24px; }
@@ -719,7 +750,8 @@ def build_editor_html(
     button can post it verbatim to :func:`save_edited_timeline`.
 
     ``state`` is the dict returned by :func:`load_editor_state` (``song_hash``,
-    ``clips``, ``auto_enabled``, ``auto_reactivity_master``, ``peaks``,
+    ``clips``, ``auto_enabled``, ``auto_reactivity_master``,
+    ``ken_burns_rms_automation``, ``peaks``,
     ``duration``, ``sample_rate``, ``ghost_events``).
     """
     song_hash = str(state.get("song_hash", ""))
@@ -728,6 +760,13 @@ def build_editor_html(
     ghost_events = list(state.get("ghost_events") or [])
     peaks_in = state.get("peaks") or []
     peaks = [[float(a), float(b)] for a, b in peaks_in]
+    kb_raw = state.get("ken_burns_rms_automation") or []
+    kb_points: list[dict[str, float]] = []
+    for p in kb_raw:
+        if isinstance(p, Mapping):
+            kb_points.append(
+                {"t": float(p.get("t", 0)), "v": float(p.get("v", 1))}
+            )
     auto_enabled_in = state.get("auto_enabled") or {}
     auto_enabled = {k: bool(auto_enabled_in.get(k, True)) for k in _KIND_ORDER}
     master_raw = state.get("auto_reactivity_master", 1.0)
@@ -745,6 +784,7 @@ def build_editor_html(
         "clips": clips,
         "auto_enabled": auto_enabled,
         "auto_reactivity_master": master,
+        "ken_burns_rms_automation": kb_points,
         "ghost_events": ghost_events,
         "kind_order": list(_KIND_ORDER),
         "kind_colors": _KIND_COLORS,
@@ -831,11 +871,14 @@ def build_editor_html(
         f"  <div class=\"mv-fx-body\">"
         f"    <div class=\"mv-fx-labels\">"
         f"      <div class=\"mv-fx-label-head\">waveform</div>"
+        f"      <div class=\"mv-fx-label-kb\" title=\"SDXL Ken Burns — scales loudness-driven motion. Main UI slider multiplies this envelope.\">"
+        f"        SDXL KB RMS</div>"
         f"      {label_rows}"
         f"    </div>"
         f"    <div class=\"mv-fx-scroller\" data-mv-fx-scroller>"
         f"      <div class=\"mv-fx-stage\" data-mv-fx-stage>"
         f"        <canvas class=\"mv-fx-wave\" data-mv-fx-wave></canvas>"
+        f"        <canvas class=\"mv-fx-kb-auto\" data-mv-fx-kb-auto width=\"600\" height=\"44\"></canvas>"
         f"        <div data-mv-fx-rows>{stage_rows}</div>"
         f"        <div class=\"mv-fx-playhead\" data-mv-fx-playhead></div>"
         f"        <div class=\"mv-fx-drag-guide\" data-mv-fx-drag-guide></div>"
@@ -856,7 +899,12 @@ def build_editor_html(
         f"empty timeline to rubber-band; <kbd>Del</kbd> deletes. "
         f"<kbd>Space</kbd> play/pause, <kbd>+</kbd>/<kbd>−</kbd> zoom, "
         f"<kbd>Esc</kbd> clear selection, <kbd>Ctrl</kbd>+<kbd>A</kbd> select all. "
-        f"Faint ticks mark automatic analyser events for reference."
+        f"Faint ticks mark automatic analyser events for reference. "
+        f"<strong>SDXL KB RMS</strong> (below the waveform): automation lane for "
+        f"loudness-driven Ken Burns on SDXL stills — linear segments between points, "
+        f"0–200% vertical. Double-click to add a point; drag to move; Alt+click a point to delete; "
+        f"click empty lane to seek. Empty = 100% (neutral). The Visual style "
+        f"<i>SDXL Ken Burns RMS reactivity</i> slider multiplies this envelope."
         f"  </div>"
         f"</div>"
         f"<script type=\"text/plain\" id=\"{code_tag_id}\">{code_blob}</script>"
@@ -881,6 +929,8 @@ _EFFECTS_JS = r"""
   // ── Layout constants ──────────────────────────────────────────────────
   const ROW_H = 36;
   const WAVE_H = 120;
+  const KB_AUTO_H = 44;
+  const KB_PAD = 5;
   const KINDS = state.kind_order;
   const COLORS = state.kind_colors;
   const LABELS = state.kind_labels;
@@ -893,6 +943,7 @@ _EFFECTS_JS = r"""
   const scroller = container.querySelector("[data-mv-fx-scroller]");
   const stage = container.querySelector("[data-mv-fx-stage]");
   const wave = container.querySelector("[data-mv-fx-wave]");
+  const kbCanvas = container.querySelector("[data-mv-fx-kb-auto]");
   const playhead = container.querySelector("[data-mv-fx-playhead]");
   const guide = container.querySelector("[data-mv-fx-drag-guide]");
   const bandEl = container.querySelector("[data-mv-fx-band]");
@@ -931,7 +982,12 @@ _EFFECTS_JS = r"""
     wave.width = w;
     wave.height = WAVE_H;
     KINDS.forEach((k) => { rowEls[k].style.width = w + "px"; });
+    if (kbCanvas) {
+      kbCanvas.width = w;
+      kbCanvas.height = KB_AUTO_H;
+    }
     drawWaveform();
+    drawKbAutomation();
   }
 
   function drawWaveform() {
@@ -989,6 +1045,193 @@ _EFFECTS_JS = r"""
     ctx.stroke();
   }
 
+  let kbSelPt = null;
+  let kbDrag = null;
+
+  function kbEnsureArray() {
+    if (!Array.isArray(state.ken_burns_rms_automation))
+      state.ken_burns_rms_automation = [];
+    return state.ken_burns_rms_automation;
+  }
+
+  function kbSort() {
+    const arr = kbEnsureArray();
+    arr.sort((a, b) => a.t - b.t);
+    for (let i = 1; i < arr.length; i++) {
+      if (Math.abs(arr[i].t - arr[i - 1].t) < 1e-6) {
+        arr[i - 1].v = arr[i].v;
+        arr.splice(i, 1);
+        i--;
+      }
+    }
+  }
+
+  function kbInterp(t) {
+    const pts = kbEnsureArray().slice().sort((a, b) => a.t - b.t);
+    if (pts.length === 0) return 1.0;
+    if (pts.length === 1) return clamp(pts[0].v, 0, 2);
+    if (t <= pts[0].t) return clamp(pts[0].v, 0, 2);
+    const L = pts.length;
+    if (t >= pts[L - 1].t) return clamp(pts[L - 1].v, 0, 2);
+    for (let i = 0; i < L - 1; i++) {
+      const a = pts[i], b = pts[i + 1];
+      if (t >= a.t && t <= b.t) {
+        const sp = b.t - a.t;
+        if (sp < 1e-9) return clamp(b.v, 0, 2);
+        const u = (t - a.t) / sp;
+        return clamp(a.v + (b.v - a.v) * u, 0, 2);
+      }
+    }
+    return clamp(pts[L - 1].v, 0, 2);
+  }
+
+  function vToY(v, H) {
+    const inner = H - 2 * KB_PAD;
+    return KB_PAD + (1 - clamp(v, 0, 2) / 2) * inner;
+  }
+
+  function yToV(y, H) {
+    const inner = H - 2 * KB_PAD;
+    const u = clamp((y - KB_PAD) / inner, 0, 1);
+    return 2 * (1 - u);
+  }
+
+  function drawKbAutomation() {
+    if (!kbCanvas) return;
+    const ctx = kbCanvas.getContext("2d");
+    const W = kbCanvas.width, H = kbCanvas.height;
+    ctx.fillStyle = "#0b1220";
+    ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = "#334155";
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    const yMid = vToY(1, H);
+    ctx.moveTo(0, yMid);
+    ctx.lineTo(W, yMid);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.strokeStyle = "#a78bfa";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    const dur = Math.max(1e-6, state.duration || 0);
+    for (let x = 0; x < W; x++) {
+      const t = pxToSeconds(x + 0.5);
+      const v = kbInterp(Math.max(0, Math.min(t, dur)));
+      const y = vToY(v, H);
+      if (x === 0) ctx.moveTo(x + 0.5, y);
+      else ctx.lineTo(x + 0.5, y);
+    }
+    ctx.stroke();
+    const pts = kbEnsureArray().slice().sort((a, b) => a.t - b.t);
+    pts.forEach((p) => {
+      const px = secondsToPx(p.t);
+      const py = vToY(p.v, H);
+      const sel = (p === kbSelPt);
+      ctx.beginPath();
+      ctx.arc(px, py, sel ? 7 : 5, 0, Math.PI * 2);
+      ctx.fillStyle = "#ddd6fe";
+      ctx.fill();
+      if (sel) {
+        ctx.strokeStyle = "#fde68a";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+    });
+  }
+
+  function kbHitIndex(px, py) {
+    if (!kbCanvas) return -1;
+    const H = kbCanvas.height;
+    const pts = kbEnsureArray().slice().sort((a, b) => a.t - b.t);
+    let best = -1;
+    let bestD = 1e9;
+    pts.forEach((p, i) => {
+      const x = secondsToPx(p.t);
+      const y = vToY(p.v, H);
+      const d = (px - x) * (px - x) + (py - y) * (py - y);
+      if (d < 100 && d < bestD) { bestD = d; best = i; }
+    });
+    return best;
+  }
+
+  if (kbCanvas) {
+    kbCanvas.addEventListener("pointerdown", (ev) => {
+      ev.stopPropagation();
+      const rect = kbCanvas.getBoundingClientRect();
+      const x = ev.clientX - rect.left;
+      const y = ev.clientY - rect.top;
+      if (ev.altKey) {
+        const hi = kbHitIndex(x, y);
+        if (hi >= 0) {
+          const pts = kbEnsureArray().slice().sort((a, b) => a.t - b.t);
+          const victim = pts[hi];
+          const arr = kbEnsureArray();
+          const j = arr.indexOf(victim);
+          if (j >= 0) arr.splice(j, 1);
+          if (kbSelPt === victim) kbSelPt = null;
+          drawKbAutomation();
+        }
+        return;
+      }
+      const hi = kbHitIndex(x, y);
+      if (hi >= 0) {
+        const pts = kbEnsureArray().slice().sort((a, b) => a.t - b.t);
+        kbSelPt = pts[hi];
+        kbDrag = { pt: kbSelPt };
+        try { kbCanvas.setPointerCapture(ev.pointerId); } catch (_e) {}
+      } else {
+        kbSelPt = null;
+        kbDrag = null;
+      }
+      drawKbAutomation();
+    });
+
+    kbCanvas.addEventListener("pointermove", (ev) => {
+      if (!kbDrag) return;
+      ev.stopPropagation();
+      const rect = kbCanvas.getBoundingClientRect();
+      const mx = ev.clientX - rect.left;
+      const my = ev.clientY - rect.top;
+      const dur = Math.max(0, state.duration || 0);
+      kbDrag.pt.t = clamp(pxToSeconds(mx), 0, dur);
+      kbDrag.pt.v = yToV(my, kbCanvas.height);
+      kbSort();
+      drawKbAutomation();
+    });
+
+    kbCanvas.addEventListener("pointerup", (ev) => {
+      if (kbDrag) {
+        ev.stopPropagation();
+        try { kbCanvas.releasePointerCapture(ev.pointerId); } catch (_e) {}
+        kbDrag = null;
+      }
+    });
+
+    kbCanvas.addEventListener("dblclick", (ev) => {
+      ev.stopPropagation();
+      const rect = kbCanvas.getBoundingClientRect();
+      const x = ev.clientX - rect.left;
+      const y = ev.clientY - rect.top;
+      const dur = Math.max(0, state.duration || 0);
+      const t = clamp(pxToSeconds(x), 0, dur);
+      const v = yToV(y, kbCanvas.height);
+      kbEnsureArray().push({ t, v });
+      kbSort();
+      drawKbAutomation();
+    });
+
+    kbCanvas.addEventListener("click", (ev) => {
+      if (ev.detail >= 2) return;
+      ev.stopPropagation();
+      const a = audio();
+      if (!a) return;
+      const rect = kbCanvas.getBoundingClientRect();
+      const x = ev.clientX - rect.left;
+      const t = clamp(pxToSeconds(x), 0, state.duration || 0);
+      try { a.currentTime = t; } catch (_e) {}
+    });
+  }
+
   // ── Ghost markers (non-interactive) ───────────────────────────────────
   function renderGhosts() {
     KINDS.forEach((k) => {
@@ -1016,6 +1259,34 @@ _EFFECTS_JS = r"""
     return (state.clips || []).find((c) => c.id === id) || null;
   }
 
+  function fadeDirectionMode(clip) {
+    const m = clip && clip.settings && clip.settings.direction_mode;
+    return (m === "in") ? "in" : "out";
+  }
+
+  function applyFadeClipDecor(el, clip) {
+    if (!el || !clip || clip.kind !== "FADE") return;
+    let ramp = el.querySelector(".mv-fx-fade-ramp");
+    if (!ramp) {
+      ramp = document.createElement("div");
+      ramp.className = "mv-fx-fade-ramp";
+      el.insertBefore(ramp, el.firstChild);
+    }
+    const dir = fadeDirectionMode(clip);
+    ramp.style.background = (dir === "in")
+      ? "linear-gradient(to right, rgba(0,0,0,0.78) 0%, rgba(0,0,0,0.28) 42%, rgba(0,0,0,0) 100%)"
+      : "linear-gradient(to right, rgba(0,0,0,0) 0%, rgba(0,0,0,0.28) 58%, rgba(0,0,0,0.78) 100%)";
+    const lab = el.querySelector(".mv-fx-clip-label");
+    if (lab) lab.textContent = (dir === "in") ? "Fade in" : "Fade out";
+  }
+
+  function syncFadeClipDom(clipId) {
+    const c = findClip(clipId);
+    const el = container.querySelector(
+      `.mv-fx-clip[data-clip-id="${CSS.escape(clipId)}"]`);
+    if (c && el && c.kind === "FADE") applyFadeClipDecor(el, c);
+  }
+
   function renderClips() {
     KINDS.forEach((k) => {
       const row = rowEls[k];
@@ -1038,6 +1309,8 @@ _EFFECTS_JS = r"""
     label.className = "mv-fx-clip-label";
     label.textContent = LABELS[clip.kind] || clip.kind;
     el.appendChild(label);
+
+    if (clip.kind === "FADE") applyFadeClipDecor(el, clip);
 
     const gear = document.createElement("span");
     gear.className = "mv-fx-gear";
@@ -1073,7 +1346,10 @@ _EFFECTS_JS = r"""
     const el = container.querySelector(
       `.mv-fx-clip[data-clip-id="${CSS.escape(id)}"]`);
     const c = findClip(id);
-    if (el && c) positionClipDom(el, c);
+    if (el && c) {
+      positionClipDom(el, c);
+      if (c.kind === "FADE") applyFadeClipDecor(el, c);
+    }
   }
 
   function applySelectionStyling() {
@@ -1451,35 +1727,54 @@ _EFFECTS_JS = r"""
       row.className = "mv-fx-row-field";
       const lab = document.createElement("label");
       lab.textContent = k;
-      const inp = document.createElement("input");
       clip.settings = clip.settings || {};
       const cur = clip.settings[k];
-      if (k.endsWith("_hex")) {
-        inp.type = "color";
-        inp.value = (typeof cur === "string" && /^#/.test(cur))
-          ? cur : "#ffffff";
-      } else if (k.endsWith("_mode")) {
-        inp.type = "text";
-        inp.value = (cur == null) ? "" : String(cur);
+      let inp;
+      if (k === "direction_mode") {
+        inp = document.createElement("select");
+        [
+          ["in", "Fade in (from black)"],
+          ["out", "Fade out (to black)"],
+        ].forEach(([val, txt]) => {
+          const opt = document.createElement("option");
+          opt.value = val;
+          opt.textContent = txt;
+          inp.appendChild(opt);
+        });
+        const raw = (cur == null) ? "" : String(cur);
+        inp.value = (raw === "in" || raw === "out") ? raw : "out";
+        clip.settings[k] = inp.value;
+        inp.addEventListener("change", () => {
+          clip.settings[k] = inp.value;
+          syncFadeClipDom(clip.id);
+        });
       } else {
-        inp.type = "number";
-        inp.step = "0.01";
-        inp.value = (typeof cur === "number") ? String(cur)
-                    : (cur == null ? "" : String(cur));
-      }
-      inp.addEventListener("input", () => {
-        clip.settings = clip.settings || {};
-        if (inp.type === "number") {
-          const v = parseFloat(inp.value);
-          // Writing NaN would fail server-side validation; keep the previous
-          // value intact until the user types a parseable number.
-          if (isFinite(v)) clip.settings[k] = v;
-        } else if (inp.type === "color") {
-          clip.settings[k] = inp.value;
+        inp = document.createElement("input");
+        if (k.endsWith("_hex")) {
+          inp.type = "color";
+          inp.value = (typeof cur === "string" && /^#/.test(cur))
+            ? cur : "#ffffff";
+        } else if (k.endsWith("_mode")) {
+          inp.type = "text";
+          inp.value = (cur == null) ? "" : String(cur);
         } else {
-          clip.settings[k] = inp.value;
+          inp.type = "number";
+          inp.step = "0.01";
+          inp.value = (typeof cur === "number") ? String(cur)
+                      : (cur == null ? "" : String(cur));
         }
-      });
+        inp.addEventListener("input", () => {
+          clip.settings = clip.settings || {};
+          if (inp.type === "number") {
+            const v = parseFloat(inp.value);
+            if (isFinite(v)) clip.settings[k] = v;
+          } else if (inp.type === "color") {
+            clip.settings[k] = inp.value;
+          } else {
+            clip.settings[k] = inp.value;
+          }
+        });
+      }
       row.appendChild(lab); row.appendChild(inp);
       panelEl.appendChild(row);
     });
@@ -1520,7 +1815,22 @@ _EFFECTS_JS = r"""
     } else if (ev.key === "Escape") {
       clearSelection();
       closePanel();
+      if (kbSelPt != null) {
+        kbSelPt = null;
+        drawKbAutomation();
+      }
     } else if (ev.key === "Delete" || ev.key === "Backspace") {
+      if (kbSelPt != null) {
+        const arr = kbEnsureArray();
+        const j = arr.indexOf(kbSelPt);
+        if (j >= 0) {
+          ev.preventDefault();
+          arr.splice(j, 1);
+          kbSelPt = null;
+          drawKbAutomation();
+          return;
+        }
+      }
       if (selected.size > 0) {
         ev.preventDefault();
         deleteSelected();

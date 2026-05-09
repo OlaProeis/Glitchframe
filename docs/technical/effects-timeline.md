@@ -11,7 +11,7 @@ V1 data structures for a future **Effects timeline** editor: manual and baked ef
 
 - **`EffectKind`** — Nine clip kinds: `BEAM`, `LOGO_GLITCH`, `SCREEN_SHAKE`, `COLOR_INVERT`, `CHROMATIC_ABERRATION`, `SCANLINE_TEAR`, `FADE`, `PIXEL_SMEAR`, `BLOCK_GLITCH` (string-valued enum; JSON uses the same names).
 - **`EffectClip`** — `id`, `kind`, `t_start`, `duration_s` (finite; duration > 0), per-kind `settings` dict, `auto_source` (baked-from-auto vs user).
-- **`EffectsTimeline`** — ordered `clips`, per-kind `auto_enabled` (all kinds required), and `auto_reactivity_master` in **\[0, 2\]** (0–100% to 200% of analyser-driven reactivity; reserved for the compositor auto path only).
+- **`EffectsTimeline`** — ordered `clips`, per-kind `auto_enabled` (all kinds required), `auto_reactivity_master` in **\[0, 2\]** (0–100% to 200% of analyser-driven reactivity; reserved for the compositor auto path only), and **`ken_burns_rms_automation`**: sorted `{"t", "v"}` knots with `v` in **\[0, 2\]** — piecewise-linear envelope for SDXL Ken Burns RMS drive (empty → neutral `1.0` at all times).
 
 ## Settings validation
 
@@ -27,6 +27,7 @@ Notable per-kind settings:
 
 - **Schema:** `schema_version: 1` in JSON.
 - **Atomic save:** write `effects_timeline.json.tmp`, then `os.replace` to `effects_timeline.json` (same pattern as the lyrics editor).
+- **Fields:** besides `clips` / `auto_enabled` / `auto_reactivity_master`, **`ken_burns_rms_automation`** is an array of `{"t": number, "v": number}` with `v` in \[0, 2\].
 - **`load(cache_dir)`** — returns a default empty timeline if the file is missing; always validates the payload when present.
 
 ## Backward compatibility

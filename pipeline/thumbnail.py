@@ -16,6 +16,8 @@ from PIL import Image
 
 from pipeline.background import BackgroundSource
 from pipeline.compositor import CompositorConfig, render_single_frame
+from pipeline.effects_timeline import EffectKind
+from pipeline.fade import fade_alpha
 from pipeline.kinetic_typography import DEFAULT_BASELINE_RATIO, KineticTypographyLayer
 from pipeline.preset_colors import resolve_text_colors
 from pipeline.reactive_shader import composite_premultiplied_rgba_over_rgb
@@ -24,6 +26,60 @@ LOGGER = logging.getLogger(__name__)
 
 THUMB_WIDTH = 1920
 THUMB_HEIGHT = 1080
+
+# Shift the analysis-derived thumbnail instant slightly later so opening
+# fade-ins (and similar intros) are less likely to land on a near-black frame.
+_THUMB_TIME_BIAS_SEC = 1.25
+
+# When the chosen instant still sits under a strong fade-to-black overlay,
+# scan forward in small steps until the overlay is light enough (or we exceed
+# the search budget).
+_THUMB_MAX_FADE_ALPHA = 0.18
+_THUMB_FADE_SEEK_MAX_EXTRA_SEC = 8.0
+
+
+def _fade_clips(config: CompositorConfig) -> list:
+    tl = config.effects_timeline
+    if tl is None:
+        return []
+    return [c for c in tl.clips if c.kind == EffectKind.FADE]
+
+
+def resolve_thumbnail_sample_time(
+    analysis: Mapping[str, Any],
+    config: CompositorConfig,
+) -> float:
+    """Pick a thumbnail instant after :func:`pick_thumbnail_time`, biased later.
+
+    Applies a small fixed delay, clips to song duration, then walks forward
+    while fade overlays from ``FADE`` clips are still heavy so thumbnails avoid
+    mostly-black frames during timeline fade-ins.
+    """
+    duration = float(analysis.get("duration_sec") or 0.0)
+    t = pick_thumbnail_time(analysis) + _THUMB_TIME_BIAS_SEC
+    if duration > 0:
+        t = max(0.0, min(t, duration - 1e-3))
+
+    clips = _fade_clips(config)
+    if not clips:
+        return t
+
+    fps = max(30, int(config.fps) if config.fps else 30)
+    step = 1.0 / float(fps)
+    max_t = t + _THUMB_FADE_SEEK_MAX_EXTRA_SEC
+    if duration > 0:
+        max_t = min(max_t, duration - 1e-3)
+
+    guard = 0
+    while t <= max_t and fade_alpha(t, clips) > _THUMB_MAX_FADE_ALPHA:
+        t += step
+        guard += 1
+        if guard > 200000:  # pragma: no cover - sanity bound
+            break
+
+    if duration > 0:
+        t = max(0.0, min(t, duration - 1e-3))
+    return t
 
 
 def _parse_hex_rgb(hex_str: str) -> tuple[int, int, int]:
@@ -197,7 +253,7 @@ def save_thumbnail_png(
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    t = pick_thumbnail_time(analysis)
+    t = resolve_thumbnail_sample_time(analysis, config)
     LOGGER.debug("Thumbnail sampling time: %.3fs", t)
 
     # Omit the per-frame burned title: ``save_thumbnail_png`` draws its own
@@ -235,5 +291,6 @@ __all__ = [
     "THUMB_HEIGHT",
     "THUMB_WIDTH",
     "pick_thumbnail_time",
+    "resolve_thumbnail_sample_time",
     "save_thumbnail_png",
 ]

@@ -15,7 +15,7 @@ import os
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 EFFECTS_TIMELINE_JSON = "effects_timeline.json"
 SCHEMA_VERSION = 1
@@ -103,6 +103,24 @@ def _default_auto_enabled() -> dict[EffectKind, bool]:
     return {k: True for k in EffectKind}
 
 
+def _normalize_kb_automation_in_place(
+    raw: list[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    if not raw:
+        return []
+    items = sorted((float(t), float(v)) for t, v in raw)
+    out: list[tuple[float, float]] = []
+    for tt, vv in items:
+        if not math.isfinite(tt) or not math.isfinite(vv):
+            raise ValueError("ken_burns_rms_automation has non-finite t or v")
+        vv = max(0.0, min(2.0, vv))
+        if out and abs(out[-1][0] - tt) < 1e-9:
+            out[-1] = (tt, vv)
+        else:
+            out.append((tt, vv))
+    return out
+
+
 @dataclass
 class EffectsTimeline:
     clips: list[EffectClip] = field(default_factory=list)
@@ -110,8 +128,27 @@ class EffectsTimeline:
         default_factory=_default_auto_enabled
     )
     auto_reactivity_master: float = 1.0
+    # Piecewise-linear automation in [0, 2] (0–200% RMS drive) for SDXL
+    # Ken Burns only. Scales analyser RMS before zoom/pan/tilt. Empty → 1.0.
+    ken_burns_rms_automation: list[tuple[float, float]] = field(
+        default_factory=list
+    )
 
     def __post_init__(self) -> None:
+        kb_in = self.ken_burns_rms_automation
+        pairs: list[tuple[float, float]] = []
+        for i, item in enumerate(kb_in):
+            if isinstance(item, (list, tuple)) and len(item) == 2:
+                pairs.append((float(item[0]), float(item[1])))
+            else:
+                raise TypeError(
+                    f"ken_burns_rms_automation[{i}] must be a (t, v) pair"
+                )
+        object.__setattr__(
+            self,
+            "ken_burns_rms_automation",
+            _normalize_kb_automation_in_place(pairs),
+        )
         validate_effects_timeline(self)
 
 
@@ -157,6 +194,13 @@ def validate_effects_timeline(t: EffectsTimeline) -> None:
     for c in t.clips:
         if not isinstance(c, EffectClip):
             raise TypeError("Every clip must be an EffectClip")
+    if not isinstance(t.ken_burns_rms_automation, list):
+        raise TypeError("ken_burns_rms_automation must be a list")
+    for i, raw in enumerate(t.ken_burns_rms_automation):
+        if not isinstance(raw, tuple) or len(raw) != 2:
+            raise TypeError(
+                f"ken_burns_rms_automation[{i}] must be a (t, v) pair of numbers"
+            )
     if not isinstance(t.auto_reactivity_master, (int, float)):
         raise TypeError("auto_reactivity_master must be a number")
     m = float(t.auto_reactivity_master)
@@ -174,6 +218,64 @@ def validate_effects_timeline(t: EffectsTimeline) -> None:
     for k in EffectKind:
         if k not in t.auto_enabled:
             raise ValueError(f"auto_enabled missing key {k.name!r}")
+
+
+def interp_ken_burns_rms_automation(
+    points: Sequence[tuple[float, float]], t: float
+) -> float:
+    """
+    Linear interpolation of automation values in ``[0, 2]``.
+
+    * No points → ``1.0`` (100%, neutral envelope).
+    * One point → its ``v`` (clamped).
+    * Before the first / after the last knot, the value is held (DAW-style).
+    """
+    if not points:
+        return 1.0
+    merged: list[tuple[float, float]] = []
+    for tt, vv in sorted((float(p[0]), float(p[1])) for p in points):
+        vv = max(0.0, min(2.0, float(vv)))
+        if merged and abs(merged[-1][0] - tt) < 1e-12:
+            merged[-1] = (tt, vv)
+        else:
+            merged.append((tt, vv))
+    if len(merged) == 1:
+        return max(0.0, min(2.0, merged[0][1]))
+    t0, v0 = merged[0]
+    if t <= t0:
+        return max(0.0, min(2.0, v0))
+    t1, v1 = merged[-1]
+    if t >= t1:
+        return max(0.0, min(2.0, v1))
+    for i in range(len(merged) - 1):
+        ta, va = merged[i]
+        tb, vb = merged[i + 1]
+        if ta <= t <= tb:
+            span = tb - ta
+            if span < 1e-12:
+                return max(0.0, min(2.0, vb))
+            u = (t - ta) / span
+            return max(0.0, min(2.0, va + (vb - va) * u))
+    return max(0.0, min(2.0, v1))
+
+
+def _kb_auto_to_json(points: Sequence[tuple[float, float]]) -> list[dict[str, float]]:
+    return [{"t": float(tt), "v": float(vv)} for tt, vv in points]
+
+
+def _kb_auto_from_json(data: object) -> list[tuple[float, float]]:
+    if data is None:
+        return []
+    if not isinstance(data, list):
+        raise TypeError("ken_burns_rms_automation must be an array")
+    out: list[tuple[float, float]] = []
+    for i, item in enumerate(data):
+        if not isinstance(item, dict):
+            raise TypeError(
+                f"ken_burns_rms_automation[{i}] must be an object with t, v"
+            )
+        out.append((float(item["t"]), float(item["v"])))
+    return _normalize_kb_automation_in_place(out)
 
 
 def _auto_enabled_to_json(d: dict[EffectKind, bool]) -> dict[str, bool]:
@@ -263,6 +365,7 @@ def _timeline_to_dict(t: EffectsTimeline) -> dict[str, Any]:
         "auto_reactivity_master": t.auto_reactivity_master,
         "auto_enabled": _auto_enabled_to_json(t.auto_enabled),
         "clips": [_clip_to_json(c) for c in t.clips],
+        "ken_burns_rms_automation": _kb_auto_to_json(t.ken_burns_rms_automation),
     }
 
 
@@ -287,10 +390,12 @@ def _timeline_from_dict(data: object) -> EffectsTimeline:
     master = data.get("auto_reactivity_master", 1.0)
     if not isinstance(master, (int, float)):
         raise TypeError("auto_reactivity_master must be a number")
+    kb_auto = _kb_auto_from_json(data.get("ken_burns_rms_automation", []))
     return EffectsTimeline(
         clips=clips,
         auto_enabled=auto,
         auto_reactivity_master=float(master),
+        ken_burns_rms_automation=kb_auto,
     )
 
 
