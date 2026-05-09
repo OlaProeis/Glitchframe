@@ -159,6 +159,7 @@ def load_keyframes_editor_state(
         "gen_height": int(gen_height),
         "model_id": str(model_id),
         "selected_target_id": None,
+        "regen_batch_ids": [],
     }
 
 
@@ -671,10 +672,14 @@ KeyframesEditorCss = """
     border-top: 1px solid #1e293b;}
   .mv-kf-clip { position: absolute; top: 3px; height: 30px; border-radius: 4px;
     box-sizing: border-box; border: 1px solid rgba(0,0,0,.35);
-    cursor: grab; display: flex; align-items: center; padding: 0 6px;
+    cursor: grab; display: flex; align-items: center; padding: 0 6px 0 18px;
     min-width: 24px; overflow: hidden; white-space: nowrap; font-size: 11px;
     color: #f8fafc; font-weight: 600; user-select: none;
     text-shadow: 0 1px 2px rgba(0,0,0,.55); }
+  .mv-kf-regen-wrap { position: absolute; left: 2px; top: 50%; transform: translateY(-50%);
+    z-index: 6; width: 14px; height: 14px; display: flex; align-items: center;
+    justify-content: center; pointer-events: auto; }
+  .mv-kf-regen-wrap input { margin: 0; cursor: pointer; width: 12px; height: 12px; accent-color: #f43f5e; }
   .mv-kf-clip:active { cursor: grabbing; }
   .mv-kf-clip.selected { outline: 2px solid #f8fafc; z-index: 3; }
   .mv-kf-clip.upload { background: linear-gradient(135deg,#34d399,#10b981); }
@@ -752,6 +757,8 @@ def build_keyframes_editor_html(
         "keyframe_previews": list(state.get("keyframe_previews") or []),
         "target_width": int(state.get("target_width", DEFAULT_WIDTH)),
         "target_height": int(state.get("target_height", DEFAULT_HEIGHT)),
+        "regen_batch_ids": list(state.get("regen_batch_ids") or []),
+        "selected_target_id": state.get("selected_target_id"),
     }
     payload_json = json.dumps(payload)
     song_hash = payload["song_hash"]
@@ -822,7 +829,9 @@ def build_keyframes_editor_html(
     <b>Preview</b> follows the playhead while audio plays; when paused, it shows the <b>selected</b>
     slot (click a clip or use the slot dropdown). <b>Click</b> a clip (no drag) to seek
     and pick the slot for Regenerate / crop. Drag clips to move; drag <b>edges</b> to retime the next boundary.
-    <b>Double-click</b> a clip for prompt / source. Use the panel below for image upload + Apply crop.
+    <b>Double-click</b> a clip for prompt / source. <b>Regenerate batch:</b> tick the checkbox on extra clips, type one prompt,
+    then <b>Regenerate (SDXL)</b> runs that prompt on the selected slot plus every ticked slot (one new image each).
+    Use the panel below for image upload + Apply crop.
     <b>Space</b> play/pause; <b>+</b>/<b>−</b> zoom; <b>Esc</b> closes the keyframe dialog.
   </div>
   <div class="mv-kf-modal-back" data-mv-kf-modal-back>
@@ -854,6 +863,7 @@ _KF_JS = r"""
   if (!container) return;
   const state = __MV_PAYLOAD_JSON__;
   window.__MV_STATE_JS_VAR__ = state;
+  if (!Array.isArray(state.regen_batch_ids)) state.regen_batch_ids = [];
   let pxPerSec = __MV_PIXELS_PER_SECOND__;
   const ROW_H = 36;
   const WAVE_H = 120;
@@ -1070,8 +1080,13 @@ _KF_JS = r"""
       el.classList.toggle("playing", playing && kidx === idx);
     });
     if (targetHint) {
+      const batchExtras = (state.regen_batch_ids || []).filter((x) => x !== selected);
+      const uniq = new Set([...(selected ? [selected] : []), ...(state.regen_batch_ids || [])]);
+      const n = uniq.size;
       targetHint.textContent = selected
-        ? ("Target slot: " + selected + " — used for Regenerate / Replace / Crop.")
+        ? ("Target: " + selected
+          + (batchExtras.length ? " · " + batchExtras.length + " extra in batch" : "")
+          + " — Regenerate (SDXL) will run on " + n + " slot(s).")
         : "Target slot: — click a clip, or use the dropdown under Upload.";
     }
   }
@@ -1088,6 +1103,24 @@ _KF_JS = r"""
       el.style.width = Math.max(8, secondsToPx(k.duration_s)) + "px";
       el.textContent = (k.source === "upload" ? "▣ " : "◆ ") +
         (k.prompt || "").slice(0, 28) + (k.prompt && k.prompt.length > 28 ? "…" : "");
+      const cbWrap = document.createElement("div");
+      cbWrap.className = "mv-kf-regen-wrap";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.title = "Include in SDXL batch regenerate (with the selected slot)";
+      cb.checked = (state.regen_batch_ids || []).indexOf(k.id) >= 0;
+      cb.addEventListener("pointerdown", (ev) => { ev.stopPropagation(); });
+      cb.addEventListener("change", (ev) => {
+        ev.stopPropagation();
+        const id = k.id;
+        const arr = state.regen_batch_ids;
+        const ix = arr.indexOf(id);
+        if (cb.checked && ix < 0) arr.push(id);
+        if (!cb.checked && ix >= 0) arr.splice(ix, 1);
+        updatePlayheadFollow();
+      });
+      cbWrap.appendChild(cb);
+      el.appendChild(cbWrap);
       const lh = document.createElement("div");
       lh.className = "mv-kf-handle left";
       const rh = document.createElement("div");
@@ -1356,7 +1389,28 @@ _KF_JS = r"""
     wrap.addEventListener("input", onPick, true);
   })();
 
+  function scrollClipTimelineIntoView(entryId) {
+    if (!entryId || !scroller) return;
+    const k = findKf(entryId);
+    if (!k) return;
+    const x = secondsToPx(Math.max(0, k.t_start));
+    const sw = scroller.clientWidth;
+    const sl = scroller.scrollLeft;
+    if (x < sl + 40) scroller.scrollLeft = Math.max(0, x - 40);
+    else if (x > sl + sw - 40) scroller.scrollLeft = Math.max(0, x - sw + 40);
+  }
+
+  (function restoreSelectionFromPayload() {
+    const sidRaw = state.selected_target_id;
+    const sid = sidRaw != null && sidRaw !== "" ? String(sidRaw) : "";
+    if (!sid) return;
+    if (!findKf(sid)) return;
+    trackSelected(sid);
+    syncSlotDropdown(sid);
+  })();
+
   setStageWidth();
+  if (selected) scrollClipTimelineIntoView(selected);
   requestAnimationFrame(tickPlayhead);
 })();
 """

@@ -63,7 +63,9 @@ RIFE_TIMELINE_DIRNAME = "rife_timeline"
 MANIFEST_RIFE_FILENAME = "manifest_rife.json"
 # v2: centered IFNet sampling (no exact SDXL still at internal boundaries) +
 # exact start/end stills bracketing the timeline. v1 caches re-bake.
-RIFE_MANIFEST_SCHEMA_VERSION = 2
+# v3: ``keyframes_content_hash`` ties the RIFE cache to actual keyframe pixels
+# (replacements / uploads invalidate RIFE even when text prompts are unchanged).
+RIFE_MANIFEST_SCHEMA_VERSION = 3
 
 ProgressFn = Callable[[float, str], None]
 
@@ -179,6 +181,7 @@ class RifeMorphManifest:
     height: int
     frame_count: int
     times: tuple[float, ...]
+    keyframes_content_hash: str
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -194,6 +197,7 @@ class RifeMorphManifest:
             "height": int(self.height),
             "frame_count": int(self.frame_count),
             "times": [float(x) for x in self.times],
+            "keyframes_content_hash": self.keyframes_content_hash,
         }
 
     @classmethod
@@ -212,6 +216,7 @@ class RifeMorphManifest:
                 height=int(raw["height"]),
                 frame_count=int(raw["frame_count"]),
                 times=tuple(float(x) for x in raw["times"]),
+                keyframes_content_hash=str(raw.get("keyframes_content_hash", "")),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"Invalid RIFE manifest: {exc}") from exc
@@ -228,6 +233,7 @@ class RifeMorphManifest:
         rife_repo_id: str,
         width: int,
         height: int,
+        keyframes_content_hash: str,
     ) -> bool:
         return (
             self.schema_version == RIFE_MANIFEST_SCHEMA_VERSION
@@ -241,6 +247,7 @@ class RifeMorphManifest:
             and self.width == int(width)
             and self.height == int(height)
             and len(self.times) == int(self.frame_count)
+            and self.keyframes_content_hash == keyframes_content_hash
         )
 
 
@@ -517,6 +524,39 @@ def _rife_manifest_path(cache_dir: Path) -> Path:
 
 def _rife_frame_path(cache_dir: Path, index: int) -> Path:
     return _rife_timeline_dir(cache_dir) / f"rife_{index:06d}.png"
+
+
+def _hash_keyframe_rgb_sequence(frames: Sequence[np.ndarray]) -> str:
+    """SHA-256 fingerprint of keyframe pixel data (order-sensitive).
+
+    Used to invalidate the RIFE morph cache when ``keyframe_*.png`` files are
+    replaced or edited without changing text prompts.
+    """
+    h = hashlib.sha256()
+    h.update(b"glitchframe-kf-pixels-v1\n")
+    for i, arr in enumerate(frames):
+        a = np.ascontiguousarray(arr)
+        if a.dtype != np.uint8:
+            a = a.astype(np.uint8, copy=False)
+        if a.ndim != 3 or a.shape[2] != 3:
+            raise ValueError(
+                f"Keyframe {i} must be RGB uint8 (H,W,3); got shape {a.shape}, "
+                f"dtype {a.dtype}"
+            )
+        h.update(hashlib.sha256(a.tobytes()).digest())
+    return h.hexdigest()
+
+
+def _clear_rife_timeline_pngs(cache_dir: Path) -> None:
+    """Remove cached RIFE timeline frames before a fresh bake."""
+    td = _rife_timeline_dir(cache_dir)
+    if not td.is_dir():
+        return
+    for p in td.glob("rife_*.png"):
+        try:
+            p.unlink()
+        except OSError as exc:
+            LOGGER.warning("Could not remove stale RIFE frame %s: %s", p, exc)
 
 
 def _load_rife_manifest(cache_dir: Path) -> RifeMorphManifest | None:
@@ -1212,6 +1252,8 @@ class BackgroundStills:
             LOGGER.info("RIFE morph skipped (need at least two SDXL keyframes)")
             return
 
+        kf_content_hash = _hash_keyframe_rgb_sequence(kf)
+
         if not force:
             try:
                 rm = _load_rife_manifest(self._cache_dir)
@@ -1228,6 +1270,7 @@ class BackgroundStills:
                 rife_repo_id=self._rife_repo,
                 width=self._width,
                 height=self._height,
+                keyframes_content_hash=kf_content_hash,
             ) and _rife_timeline_pngs_complete(self._cache_dir, rm.frame_count):
                 self._frames = _RifeFrameSource(
                     self._cache_dir,
@@ -1255,6 +1298,14 @@ class BackgroundStills:
                 "or run on hardware with CUDA"
             )
         device = torch.device("cuda:0")
+
+        _clear_rife_timeline_pngs(self._cache_dir)
+        mp = _rife_manifest_path(self._cache_dir)
+        if mp.is_file():
+            try:
+                mp.unlink()
+            except OSError as exc:
+                LOGGER.warning("Could not remove stale RIFE manifest %s: %s", mp, exc)
 
         # Stream frames straight from the GPU to a thread pool of PNG writers.
         # This keeps peak RAM at ~``workers × frame_size`` instead of
@@ -1353,6 +1404,7 @@ class BackgroundStills:
             height=self._height,
             frame_count=frame_count,
             times=tuple(float(t) for t in dense_times),
+            keyframes_content_hash=_hash_keyframe_rgb_sequence(sdxl_keyframes),
         )
         # Manifest is written last so a crashed bake leaves
         # ``_rife_timeline_pngs_complete`` False on retry — the manifest
@@ -1585,6 +1637,9 @@ class BackgroundStills:
 
         _atomic_write_json(manifest.to_dict(), _manifest_path(self._cache_dir))
         report(1.0, "Background keyframes ready")
+        # Drop SDXL weights before RIFE / before returning so VRAM does not stack
+        # (full render) and sequential Gradio regens do not leave duplicates resident.
+        self._dispose_sdxl_pipeline()
         return [f for f in frames if f is not None]  # type: ignore[misc]
 
     # -- frame API ----------------------------------------------------------
@@ -1644,6 +1699,21 @@ class BackgroundStills:
 
     # -- lifecycle ----------------------------------------------------------
 
+    def _dispose_sdxl_pipeline(self) -> None:
+        """Move SDXL off CUDA and reclaim allocator cache (best-effort)."""
+        pipe = self._pipe
+        self._pipe = None
+        if pipe is None:
+            return
+        try:
+            from pipeline.gpu_memory import move_to_cpu, release_cuda_memory
+
+            move_to_cpu(pipe)
+            del pipe
+            release_cuda_memory("sdxl pipeline")
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug("SDXL pipeline dispose: %s", exc)
+
     def close(self) -> None:
         """Release the SDXL pipeline and frame memory. Safe to call twice."""
         if self._closed:
@@ -1652,20 +1722,7 @@ class BackgroundStills:
         self._frames = None
         self._timeline_times = None
         self._kb_analysis = None
-        pipe = self._pipe
-        self._pipe = None
-        if pipe is None:
-            return
-        try:
-            import torch  # type: ignore
-        except Exception:  # noqa: BLE001
-            return
-        try:
-            del pipe
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.debug("Ignoring SDXL release error: %s", exc)
+        self._dispose_sdxl_pipeline()
 
     def __enter__(self) -> "BackgroundStills":
         return self

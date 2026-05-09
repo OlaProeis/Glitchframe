@@ -30,7 +30,7 @@ Why this matters for perceived smoothness: the legacy “include endpoints + ded
 
 **Spacing:** within a segment and across every internal keyframe boundary the spacing is uniform `T_seg / n` (e.g. with `T_seg = 8 s` and `N = 4` that's `0.5 s`). The only spacing irregularity is the short `T_seg/(2n)` gap between the first/last exact-still bracket and its neighbouring IFNet sample, where the motion is naturally just the start/end still slightly evolved — visually smooth.
 
-**Cache invalidation:** the `RIFE_MANIFEST_SCHEMA_VERSION` was bumped to **2** when this sampling change landed; v1 caches are silently re-baked the next time RIFE is enabled.
+**Cache invalidation:** the `RIFE_MANIFEST_SCHEMA_VERSION` was bumped to **2** when this sampling change landed; v1 caches are silently re-baked the next time RIFE is enabled. **v3** adds `keyframes_content_hash` (SHA-256 over keyframe RGB payloads in order) so **replacing or editing keyframe PNGs** invalidates the RIFE cache even when text prompts and layout are unchanged; v2 manifests are rejected and re-baked once.
 
 ## Implementation sketch
 
@@ -56,7 +56,7 @@ cache/<hash>/background/
     ...
 ```
 
-Invalidates when the **SDXL** manifest key changes (prompt / model / resolution / keyframe count), when **RIFE** settings change (`rife_exp`, output width/height, repo id), when the manifest **schema version** changes (e.g. v1 → v2 centered sampling), or when timeline PNGs are missing.
+Invalidates when the **SDXL** manifest key changes (prompt / model / resolution / keyframe count), when **RIFE** settings change (`rife_exp`, output width/height, repo id), when the manifest **schema version** changes (e.g. v1 → v2 centered sampling, v2 → v3 pixel fingerprint), when **keyframe image bytes** change (v3 `keyframes_content_hash`), when timeline PNGs are missing, or on a fresh bake (old `rife_timeline/*.png` and `manifest_rife.json` are removed before writing new frames).
 
 ## Requirements
 

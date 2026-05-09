@@ -1594,6 +1594,30 @@ def _kf_effective_target_slot(
     return sid or None
 
 
+def _kf_collect_regenerate_entry_ids(
+    slot_id: str | None,
+    edited_json: str | None,
+) -> list[str]:
+    """Primary timeline slot plus optional ``regen_batch_ids`` from editor JSON (deduped, stable order)."""
+    primary = _kf_effective_target_slot(slot_id, edited_json)
+    batch: list[str] = []
+    try:
+        data = json.loads(edited_json or "{}")
+    except json.JSONDecodeError:
+        data = {}
+    raw_batch = data.get("regen_batch_ids")
+    if isinstance(raw_batch, list):
+        batch = [str(x).strip() for x in raw_batch if str(x).strip()]
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for eid in ([primary] if primary else []) + batch:
+        if not eid or eid in seen:
+            continue
+        seen.add(eid)
+        ordered.append(eid)
+    return ordered
+
+
 def _kf_build_editor_refresh(
     song_hash: str | None,
     shader_dd: str | None,
@@ -1616,6 +1640,15 @@ def _kf_build_editor_refresh(
             target_width=w,
             target_height=h,
         )
+        choices = keyframe_id_choices(cache_dir)
+        sid_raw = (preserve_slot or "").strip()
+        if sid_raw and sid_raw in choices:
+            val: str | None = sid_raw
+        elif choices:
+            val = choices[0]
+        else:
+            val = None
+        state["selected_target_id"] = val
         audio_abs = _resolve_wav_path_for_effects_editor(cache_dir).resolve()
         html_blob = build_keyframes_editor_html(
             state,
@@ -1624,15 +1657,6 @@ def _kf_build_editor_refresh(
             state_js_var=_KEYFRAMES_EDITOR_STATE_JS_VAR,
             audio_element_id=_KEYFRAMES_EDITOR_AUDIO_ELEM_ID,
         )
-        choices = keyframe_id_choices(cache_dir)
-        sid = (preserve_slot or "").strip()
-        val: str | None
-        if sid and sid in choices:
-            val = sid
-        elif choices:
-            val = choices[0]
-        else:
-            val = None
         dd_up = gr.update(choices=choices, value=val)
         ptxt = keyframe_prompt_for_entry_id(cache_dir, val) if val else ""
         return html_blob, dd_up, ptxt
@@ -1999,16 +2023,18 @@ def _regenerate_selected_keyframe_sdxl(
     cb = _EtaProgress(progress)
     try:
         cache_dir = song_cache_dir(song_hash)
-        effective = _kf_effective_target_slot(slot_id, edited_json)
-        resolved = _kf_resolve_gallery_index(song_hash, sel_idx, effective)
-        if resolved is None:
+        entry_ids = _kf_collect_regenerate_entry_ids(slot_id, edited_json)
+        if not entry_ids:
             return _fail(
                 "Regenerate: pick a **Target keyframe** on the timeline (or dropdown) first.",
             )
-        sel_idx = resolved
-        entry_id = keyframe_entry_id_at_index(cache_dir, sel_idx)
-        if not entry_id:
-            return _fail("Regenerate: invalid keyframe slot.")
+        choices = keyframe_id_choices(cache_dir)
+        id_to_idx = {cid: i for i, cid in enumerate(choices)}
+        indices: set[int] = set()
+        for eid in entry_ids:
+            if eid not in id_to_idx:
+                return _fail(f"Regenerate: unknown keyframe id {eid!r}.")
+            indices.add(id_to_idx[eid])
         preset_id, preset_prompt = _kf_resolve_prompt(shader_dd, custom_prompt)
         w, h = _parse_resolution(out_resolution)
         prompt = (edited_prompt or "").strip()
@@ -2023,12 +2049,13 @@ def _regenerate_selected_keyframe_sdxl(
                 target_height=h,
             )
             persist_keyframes_timeline_from_loaded_state(cache_dir, editor_state)
-        set_keyframe_entry_prompt(
-            cache_dir,
-            entry_id,
-            prompt,
-            source="sdxl",
-        )
+        for eid in entry_ids:
+            set_keyframe_entry_prompt(
+                cache_dir,
+                eid,
+                prompt,
+                source="sdxl",
+            )
         refresh_manifest_from_timeline(
             cache_dir,
             preset_id=preset_id,
@@ -2043,7 +2070,7 @@ def _regenerate_selected_keyframe_sdxl(
             preset_prompt=preset_prompt,
             width=w,
             height=h,
-            regenerate_indices={sel_idx},
+            regenerate_indices=indices,
             progress=cb,
         )
         html_blob, dd_up, ptxt = _kf_build_editor_refresh(
@@ -2051,14 +2078,15 @@ def _regenerate_selected_keyframe_sdxl(
             shader_dd,
             custom_prompt,
             out_resolution,
-            preserve_slot=entry_id,
+            preserve_slot=entry_ids[0],
         )
         progress(1.0, desc="Idle")
+        n = len(entry_ids)
         return (
             _append_log(
                 log,
-                f"Regenerated {entry_id!r} (SDXL). Timeline preview updated. **Save timeline** "
-                "if you changed timing in the waveform.",
+                f"Regenerated {n} slot(s) with SDXL ({', '.join(entry_ids)}). "
+                "Timeline preview updated. **Save timeline** if you changed timing in the waveform.",
             ),
             html_blob,
             dd_up,
