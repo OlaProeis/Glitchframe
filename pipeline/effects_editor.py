@@ -1,5 +1,5 @@
 """
-Backend helpers for a future **effects timeline** editor (Gradio + JS).
+Backend helpers for the **effects timeline** editor (Gradio + JS).
 
 Mirrors the responsibilities of :mod:`pipeline.lyrics_editor` (state load, JSON
 round-trip, cache-scoped identity) for :class:`EffectsTimeline` / clips under
@@ -7,9 +7,8 @@ round-trip, cache-scoped identity) for :class:`EffectsTimeline` / clips under
 
 Ghost markers follow the same analyser + scheduling inputs the compositor uses
 for rim beams (see :func:`schedule_rim_beams`) plus RMS-impact peaks for
-``LOGO_GLITCH`` hints, per-drop ``ZOOM_PUNCH`` suggestions from
-``analysis["events"]["drops"]``, low-band transient peaks for ``SCREEN_SHAKE``,
-and high-band transient peaks for ``CHROMATIC_ABERRATION`` — see the effects
+``LOGO_GLITCH`` hints, low-band transient peaks for ``SCREEN_SHAKE``, and
+high-band transient peaks for ``CHROMATIC_ABERRATION`` — see the effects
 timeline PRD.
 """
 
@@ -47,7 +46,6 @@ from pipeline.effects_timeline import (
 from pipeline.logo_rim_beams import (
     BeamConfig,
     ScheduledBeam,
-    _drops_sorted,
     _peak_pick_track,
     schedule_rim_beams,
 )
@@ -57,7 +55,6 @@ from pipeline.logo_rim_beams import (
 DEDUPE_TOL_S = 0.02
 
 BAKE_GLITCH_DURATION_S = 0.22
-BAKE_ZOOM_PUNCH_ON_DROP_S = 0.38
 # Low-band peaks (kick / sub) → short screen-shake clips. Duration is long
 # enough to read as a camera jolt (~two frames at 30 fps) without bleeding
 # into the next kick; peak threshold matches the impact-peak pipeline so only
@@ -185,50 +182,10 @@ def _hat_transient_peaks(
     )
 
 
-# --- drop + confidence: reuse _drops_sorted times; add confidence for UI -------
-def _drop_rows_for_ghosts(analysis: Mapping[str, Any]) -> list[dict[str, Any]]:
-    ev = analysis.get("events")
-    if not isinstance(ev, dict):
-        return []
-    raw = ev.get("drops")
-    if not isinstance(raw, list):
-        return []
-    rows: list[dict[str, Any]] = []
-    for item in raw:
-        if isinstance(item, dict):
-            try:
-                t = float(item.get("t", 0.0))
-            except (TypeError, ValueError):
-                continue
-            c_raw = item.get("confidence", 1.0)
-            try:
-                c = float(c_raw) if c_raw is not None else 1.0
-            except (TypeError, ValueError):
-                c = 1.0
-        else:
-            try:
-                t = float(item)
-            except (TypeError, ValueError):
-                continue
-            c = 1.0
-        if not math.isfinite(t) or t < 0.0:
-            continue
-        rows.append(
-            {
-                "kind": "ZOOM_PUNCH",
-                "t": t,
-                "source": "drop",
-                "confidence": c,
-            }
-        )
-    rows.sort(key=lambda r: (float(r["t"]), r["kind"]))
-    return rows
-
-
 def build_ghost_events(
     analysis: Mapping[str, Any], *, song_hash: str, cfg: CompositorConfig | None = None
 ) -> list[dict[str, Any]]:
-    """Derive auto / analyser hint rows for a future JS timeline (ghost markers)."""
+    """Derive auto / analyser hint rows for the JS timeline (ghost markers)."""
     cfg = cfg or CompositorConfig()
     out: list[dict[str, Any]] = []
     h = str(song_hash) if song_hash else ""
@@ -270,7 +227,6 @@ def build_ghost_events(
                 "strength": float(strength),
             }
         )
-    out.extend(_drop_rows_for_ghosts(analysis))
     out.sort(
         key=lambda e: (float(e.get("t", 0.0)), str(e.get("kind", "")), e.get("source", ""))
     )
@@ -473,23 +429,6 @@ def _bake_chroma_clips(analysis: Mapping[str, Any]) -> list[EffectClip]:
     return out
 
 
-def _bake_zoom_clips_from_drops(analysis: Mapping[str, Any]) -> list[EffectClip]:
-    out: list[EffectClip] = []
-    for t in _drops_sorted(analysis):
-        eid = f"bake-zoom-{uuid.uuid4().hex[:12]}"
-        out.append(
-            EffectClip(
-                id=eid,
-                kind=EffectKind.ZOOM_PUNCH,
-                t_start=float(t),
-                duration_s=BAKE_ZOOM_PUNCH_ON_DROP_S,
-                settings={},
-                auto_source=True,
-            )
-        )
-    return out
-
-
 def bake_auto_schedule(
     cache_dir: str | Path,
     *,
@@ -497,11 +436,13 @@ def bake_auto_schedule(
 ) -> Path:
     """
     Turn the current **auto** hints (analyser + rim-beam schedule + impact
-    peaks + drop times + kick / hat transient peaks) into real
-    :class:`EffectClip` rows and append to the timeline. ``SCREEN_SHAKE`` clips
-    are anchored on low-band peaks and ``CHROMATIC_ABERRATION`` clips on
-    high-band peaks so the editor can scaffold a punchy starting pass per
-    song without a user placing every clip by hand.
+    peaks + kick / hat transient peaks) into real :class:`EffectClip` rows
+    and append to the timeline. ``SCREEN_SHAKE`` clips are anchored on
+    low-band peaks and ``CHROMATIC_ABERRATION`` clips on high-band peaks so
+    the editor can scaffold a punchy starting pass per song without the
+    user placing every clip by hand. ``FADE`` / ``PIXEL_SMEAR`` /
+    ``BLOCK_GLITCH`` are user-driven only — they have no analyser source
+    and are never baked.
 
     For each :class:`EffectKind`, new clips are skipped when ``auto_enabled`` is
     ``False`` for that kind, or when any existing clip of that kind (manual or
@@ -528,8 +469,6 @@ def bake_auto_schedule(
         candidates.extend(_bake_beam_clips(analysis, song_hash, cfg))
     if timeline.auto_enabled.get(EffectKind.LOGO_GLITCH, True):
         candidates.extend(_bake_glitch_clips(analysis, cfg))
-    if timeline.auto_enabled.get(EffectKind.ZOOM_PUNCH, True):
-        candidates.extend(_bake_zoom_clips_from_drops(analysis))
     if timeline.auto_enabled.get(EffectKind.SCREEN_SHAKE, True):
         candidates.extend(_bake_shake_clips(analysis))
     if timeline.auto_enabled.get(EffectKind.CHROMATIC_ABERRATION, True):
@@ -552,9 +491,8 @@ def bake_auto_schedule(
 # HTML + JS editor (mirrors pipeline.lyrics_editor.build_editor_html)
 # ---------------------------------------------------------------------------
 
-# Row order in the editor. Matches the seven v1 EffectKind values; a PRD
-# requirement that every kind (including SCANLINE_TEAR) keeps a row + toolbar
-# button alongside the others so the UI shape doesn't churn.
+# Row order in the editor. Every :class:`EffectKind` keeps a row + toolbar
+# button so the UI shape doesn't churn when renderers come and go.
 _KIND_ORDER: tuple[str, ...] = (
     "BEAM",
     "LOGO_GLITCH",
@@ -562,11 +500,13 @@ _KIND_ORDER: tuple[str, ...] = (
     "COLOR_INVERT",
     "CHROMATIC_ABERRATION",
     "SCANLINE_TEAR",
-    "ZOOM_PUNCH",
+    "FADE",
+    "PIXEL_SMEAR",
+    "BLOCK_GLITCH",
 )
 
 # Per-kind palette. Colours are chosen for legibility on the dark editor
-# background and to be easy to tell apart on the seven compact rows.
+# background and to be easy to tell apart on the compact rows.
 _KIND_COLORS: dict[str, str] = {
     "BEAM": "#f59e0b",
     "LOGO_GLITCH": "#a855f7",
@@ -574,7 +514,9 @@ _KIND_COLORS: dict[str, str] = {
     "COLOR_INVERT": "#22d3ee",
     "CHROMATIC_ABERRATION": "#14b8a6",
     "SCANLINE_TEAR": "#eab308",
-    "ZOOM_PUNCH": "#22c55e",
+    "FADE": "#9ca3af",
+    "PIXEL_SMEAR": "#ec4899",
+    "BLOCK_GLITCH": "#22c55e",
 }
 
 # Short button label for each kind's toolbar "+ …" shortcut.
@@ -585,15 +527,17 @@ _KIND_LABELS: dict[str, str] = {
     "COLOR_INVERT": "Invert",
     "CHROMATIC_ABERRATION": "Chromatic",
     "SCANLINE_TEAR": "Scanline",
-    "ZOOM_PUNCH": "Zoom",
+    "FADE": "Fade",
+    "PIXEL_SMEAR": "Smear",
+    "BLOCK_GLITCH": "Blocks",
 }
 
 # Defaults used when the toolbar adds a new clip at the playhead. Kept in
 # sync with the renderer _DEFAULT_* constants where one exists (see
-# pipeline/zoom_punch.py, screen_shake.py, color_invert.py); the remaining
-# values are just sensible starting points. Server-side
-# :func:`validate_settings_for_kind` remains the authority, so out-of-range
-# values get caught on save regardless of what the JS sends.
+# pipeline/screen_shake.py, color_invert.py, fade.py, pixel_smear.py,
+# block_glitch.py); the remaining values are just sensible starting points.
+# Server-side :func:`validate_settings_for_kind` remains the authority, so
+# out-of-range values get caught on save regardless of what the JS sends.
 _KIND_DEFAULTS: dict[str, dict[str, Any]] = {
     "BEAM": {"duration_s": 0.5, "settings": {"strength": 0.8}},
     "LOGO_GLITCH": {
@@ -616,9 +560,23 @@ _KIND_DEFAULTS: dict[str, dict[str, Any]] = {
         "duration_s": 0.4,
         "settings": {"intensity": 0.6, "band_count": 3, "band_height_px": 12},
     },
-    "ZOOM_PUNCH": {
-        "duration_s": BAKE_ZOOM_PUNCH_ON_DROP_S,
-        "settings": {"peak_scale": 1.12, "ease_in_s": 0.08, "ease_out_s": 0.12},
+    # Fade defaults to a 1 s fade-out so dragging from the toolbar feels like
+    # a typical end-of-song cue out the box. Flip to "in" via the gear panel.
+    "FADE": {
+        "duration_s": 1.0,
+        "settings": {
+            "direction_mode": "out",
+            "peak_alpha": 1.0,
+            "ease_mode": "smoothstep",
+        },
+    },
+    "PIXEL_SMEAR": {
+        "duration_s": 0.35,
+        "settings": {"intensity": 0.6, "density": 0.18, "streak_length_frac": 0.45},
+    },
+    "BLOCK_GLITCH": {
+        "duration_s": 0.3,
+        "settings": {"intensity": 0.35, "block_size_px": 32, "displace_frac": 0.6},
     },
 }
 
@@ -889,10 +847,10 @@ def build_editor_html(
         f"src=\"{audio_src}\" controls preload=\"auto\"></audio>"
         f"  <div class=\"mv-fx-help\">"
         f"    Click a toolbar <b>+</b> button to add a clip of that kind at the "
-        f"playhead, or while playing use <kbd>1</kbd>–<kbd>7</kbd> (rows top to "
-        f"bottom: Beam … Zoom). <strong>Double-click</strong> an empty spot in a "
-        f"row to add that effect at that time. Drag a clip to move; drag its edges "
-        f"to resize; "
+        f"playhead, or while playing use <kbd>1</kbd>–<kbd>9</kbd> (rows top to "
+        f"bottom: Beam, Glitch, Shake, Invert, Chromatic, Scanline, Fade, Smear, "
+        f"Blocks). <strong>Double-click</strong> an empty spot in a row to add "
+        f"that effect at that time. Drag a clip to move; drag its edges to resize; "
         f"click its <b>⚙</b> to edit settings. Click an empty row to seek. "
         f"<kbd>Shift</kbd>/<kbd>Ctrl</kbd>-click to multi-select; click-drag "
         f"empty timeline to rubber-band; <kbd>Del</kbd> deletes. "
@@ -1575,7 +1533,7 @@ _EFFECTS_JS = r"""
       applySelectionStyling();
     } else if (!ev.ctrlKey && !ev.metaKey && !ev.altKey) {
       const d = ev.key;
-      if (d >= "1" && d <= "7") {
+      if (d >= "1" && d <= "9") {
         const idx = parseInt(d, 10) - 1;
         if (KINDS[idx]) {
           ev.preventDefault();

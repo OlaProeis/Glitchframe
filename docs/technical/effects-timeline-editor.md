@@ -23,8 +23,9 @@ Mirrors `pipeline.lyrics_editor.build_editor_html` exactly so the Gradio tab can
 
 ```
 ┌ toolbar ─────────────────────────────────────────────────────────────┐
-│ [▶ Play/Pause]  [+] [−] [Fit]   [+ Beam] [+ Glitch] … [+ Zoom]       │
-│                                                          info: hash …│
+│ [▶ Play/Pause]  [+] [−] [Fit]                                        │
+│ [+ Beam] [+ Glitch] [+ Shake] [+ Invert] [+ Chromatic]               │
+│ [+ Scanline] [+ Fade] [+ Smear] [+ Block]      info: hash …          │
 ├ Master reactivity ───────────────────────────────────────────────────┤
 │ 0 ───────█────── 200%     100%                                       │
 ├ Labels ─┬─ scroller (horizontal) ────────────────────────────────────┤
@@ -35,13 +36,15 @@ Mirrors `pipeline.lyrics_editor.build_editor_html` exactly so the Gradio tab can
 │ Invert☑ │ ░░░░ COLOR_INVERT clips                                    │
 │ Chrom.☑ │ ░░░░ CHROMATIC_ABERRATION clips                            │
 │ Scan. ☑ │ ░░░░ SCANLINE_TEAR clips                                   │
-│ Zoom  ☑ │ ░░░░ ZOOM_PUNCH clips + ghost ticks                        │
+│ Fade  ☑ │ ░░░░ FADE clips (fade-to-black overlay)                    │
+│ Smear ☑ │ ░░░░ PIXEL_SMEAR clips                                     │
+│ Block ☑ │ ░░░░ BLOCK_GLITCH clips                                    │
 ├ <audio controls> (src = audio_url) ──────────────────────────────────┤
 │ help line                                                            │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-Seven rows are always present, one per `EffectKind`, including `SCANLINE_TEAR`. Row label column is sticky — only the waveform + clip rows scroll horizontally.
+Nine rows are always present, one per `EffectKind`. Row label column is sticky — only the waveform + clip rows scroll horizontally.
 
 ## Interactions
 
@@ -61,7 +64,7 @@ Seven rows are always present, one per `EffectKind`, including `SCANLINE_TEAR`. 
 | `Ctrl`/`⌘`+`A` | Select all |
 | `Space` | Play / pause |
 | `+` / `−` | Zoom in / out (`pxPerSec` clamped `[4, 600]`) |
-| `1`–`7` | Add a clip for the *n*th effect row (Beam, Glitch, Shake, Invert, Chromatic, Scanline, Zoom — top to bottom) at the current playhead, same as the matching toolbar **+** button; for live “punch in” while audio plays. No modifiers. Ignored when focus is in an `input`, `textarea`, or `select`. |
+| `1`–`9` | Add a clip for the *n*th effect row (Beam, Glitch, Shake, Invert, Chromatic, Scanline, Fade, Smear, Block — top to bottom) at the current playhead, same as the matching toolbar **+** button; for live "punch in" while audio plays. No modifiers. Ignored when focus is in an `input`, `textarea`, or `select`. |
 | Per-row "auto" checkbox | Toggle `auto_enabled[kind]`; row gets hatched pattern when off |
 | Master reactivity slider | Writes `auto_reactivity_master` in `[0, 2]` |
 
@@ -72,13 +75,13 @@ a light page; previously the key text could match the background).
 
 ## Settings panel
 
-The floating panel is built dynamically from `EFFECT_SETTINGS_KEYS[kind]` (see `pipeline/effects_timeline.py`). Keys ending in `_hex` render as a colour picker, keys ending in `_mode` as a text input, all others as a number input with `step=0.01`. Unknown / legacy keys already on a clip are preserved — the server-side `validate_settings_for_kind` remains authoritative.
+The floating panel is built dynamically from `EFFECT_SETTINGS_KEYS[kind]` (see `pipeline/effects_timeline.py`). Keys ending in `_hex` render as a colour picker, keys ending in `_mode` as a text input (e.g. `FADE.direction_mode = "in" | "out"`, `FADE.ease_mode = "smoothstep" | "linear"`), all others as a number input with `step=0.01`. Unknown / legacy keys already on a clip are preserved — the server-side `validate_settings_for_kind` remains authoritative.
 
-`t_start` and `duration_s` are always shown first so the user can nudge numbers when dragging is too coarse. NaN / empty inputs are ignored until the user types a parseable value (stale values fail server-side validation otherwise).
+`t_start` and `duration_s` are always shown first so the user can nudge numbers when dragging is too coarse. **`FADE` clips drive their fade duration directly from `duration_s`** — drag the right edge to make the fade slower, drag it shorter for a snap. NaN / empty inputs are ignored until the user types a parseable value (stale values fail server-side validation otherwise).
 
 ## Ghost markers
 
-Faint vertical ticks on each row at the corresponding `state.ghost_events` times (generated server-side from `schedule_rim_beams`, RMS-impact peak picks, `analysis["events"]["drops"]`, low-band kick transient peaks for `SCREEN_SHAKE`, and high-band hat transient peaks for `CHROMATIC_ABERRATION`). Non-interactive; they're there so the user can tell what the analyser would fire without having to hit Bake.
+Faint vertical ticks on each row at the corresponding `state.ghost_events` times (generated server-side from `schedule_rim_beams`, RMS-impact peak picks, low-band kick transient peaks for `SCREEN_SHAKE`, and high-band hat transient peaks for `CHROMATIC_ABERRATION`). `FADE`, `PIXEL_SMEAR`, and `BLOCK_GLITCH` are **user-driven only** and have no ghost hints. Non-interactive; they're there so the user can tell what the analyser would fire without having to hit Bake.
 
 ## Waveform
 
@@ -92,7 +95,7 @@ The header canvas renders `state.peaks` (mono min/max pairs, default `DEFAULT_PE
 
 ## Defaults for toolbar-created clips
 
-Kept in `_KIND_DEFAULTS` in `pipeline/effects_editor.py`. Where a renderer exposes a private `_DEFAULT_*` constant (zoom punch, screen shake, colour invert) the UI defaults match those values; the rest are sensible starting points only. Server-side validation is still the authority, so out-of-range values get caught on save.
+Kept in `_KIND_DEFAULTS` in `pipeline/effects_editor.py`. Where a renderer exposes a private `_DEFAULT_*` constant (screen shake, colour invert, fade, pixel smear, block glitch) the UI defaults match those values; the rest are sensible starting points only. New `FADE` clips default to `direction_mode="out"`, `peak_alpha=1.0`, `ease_mode="smoothstep"`, so a freshly added clip fades to fully black with a smoothstep curve over the clip duration. Server-side validation is still the authority, so out-of-range values get caught on save.
 
 ## Where the HTML / JS lives
 
@@ -106,9 +109,9 @@ Placeholders (`__MV_CONTAINER_ID__`, `__MV_STATE_JS_VAR__`, `__MV_AUDIO_ELEMENT_
 
 ## Tests
 
-- `tests/test_effects_editor.py::TestEffectsEditor::test_build_editor_html_smoke` — asserts the returned HTML contains the container id, the inert `<script type="text/plain">` tag, all seven row / toolbar / auto checkboxes, and the master slider hook.
+- `tests/test_effects_editor.py::TestEffectsEditor::test_build_editor_html_smoke` — asserts the returned HTML contains the container id, the inert `<script type="text/plain">` tag, all nine row / toolbar / auto checkboxes (Beam, Glitch, Shake, Invert, Chromatic, Scanline, Fade, Smear, Block), and the master slider hook.
 - `tests/test_effects_editor.py::TestEffectsEditor::test_build_editor_html_custom_state_var` — confirms the `state_js_var` kwarg makes it into the emitted JS.
-- The same module covers `load_editor_state`, `save_edited_timeline` (including omitted `song_hash`), and `bake_auto_schedule` (zoom dedupe, RMS-impact glitch bake, and related cases).
+- The same module covers `load_editor_state`, `save_edited_timeline` (including omitted `song_hash`), and `bake_auto_schedule` (shake dedupe, RMS-impact glitch bake, and related cases).
 
 ## Related
 

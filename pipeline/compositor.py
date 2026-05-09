@@ -48,13 +48,15 @@ from pipeline.audio_vignette import (
     build_audio_vignette_context,
 )
 from pipeline.background import BackgroundSource
+from pipeline.block_glitch import apply_block_glitch
 from pipeline.chromatic_aberration import apply_chromatic_aberration
 from pipeline.color_invert import apply_invert_mix, invert_mix
+from pipeline.fade import apply_fade, fade_alpha
+from pipeline.pixel_smear import apply_pixel_smear
 from pipeline.scanline_tear import apply_scanline_tear
 from pipeline.effects_timeline import EffectClip, EffectKind, EffectsTimeline
 from pipeline.ffmpeg_tools import require_ffmpeg, select_video_codec
 from pipeline.screen_shake import apply_shake_offset, shake_offset
-from pipeline.zoom_punch import apply_zoom_scale, zoom_scale
 from pipeline.kinetic_typography import (
     DEFAULT_FONT_SIZE,
     DEFAULT_KINETIC_BASELINE_RATIO,
@@ -891,16 +893,18 @@ class _FrameEffectsContext:
 
     Built once in :func:`_build_frame_effects_context` from
     :attr:`CompositorConfig.effects_timeline`. The per-frame pass reads these
-    tuples in fixed order: ``zoom_punch`` → ``screen_shake`` →
-    ``chromatic_aberration`` → ``scanline_tear`` → ``color_invert`` (see
-    :func:`_apply_frame_effects`).
+    tuples in fixed order: ``screen_shake`` → ``pixel_smear`` →
+    ``block_glitch`` → ``chromatic_aberration`` → ``scanline_tear`` →
+    ``color_invert`` → ``fade`` (see :func:`_apply_frame_effects`).
     """
 
-    zoom_clips: tuple[EffectClip, ...]
     shake_clips: tuple[EffectClip, ...]
     color_invert_clips: tuple[EffectClip, ...]
     chromatic_clips: tuple[EffectClip, ...]
     scanline_clips: tuple[EffectClip, ...]
+    fade_clips: tuple[EffectClip, ...]
+    pixel_smear_clips: tuple[EffectClip, ...]
+    block_glitch_clips: tuple[EffectClip, ...]
     song_hash: str
 
 
@@ -916,20 +920,24 @@ def _build_frame_effects_context(
     clips = _timeline_clips(cfg)
     if not clips:
         return None
-    zoom = _clips_of_kind(clips, EffectKind.ZOOM_PUNCH)
     shake = _clips_of_kind(clips, EffectKind.SCREEN_SHAKE)
     inv = _clips_of_kind(clips, EffectKind.COLOR_INVERT)
     chrom = _clips_of_kind(clips, EffectKind.CHROMATIC_ABERRATION)
     scan = _clips_of_kind(clips, EffectKind.SCANLINE_TEAR)
-    if not (zoom or shake or inv or chrom or scan):
+    fade = _clips_of_kind(clips, EffectKind.FADE)
+    smear = _clips_of_kind(clips, EffectKind.PIXEL_SMEAR)
+    block = _clips_of_kind(clips, EffectKind.BLOCK_GLITCH)
+    if not (shake or inv or chrom or scan or fade or smear or block):
         return None
     song_hash = str(analysis.get("song_hash") or "") if isinstance(analysis, Mapping) else ""
     return _FrameEffectsContext(
-        zoom_clips=zoom,
         shake_clips=shake,
         color_invert_clips=inv,
         chromatic_clips=chrom,
         scanline_clips=scan,
+        fade_clips=fade,
+        pixel_smear_clips=smear,
+        block_glitch_clips=block,
         song_hash=song_hash,
     )
 
@@ -956,24 +964,25 @@ def _build_audio_vignette_context(
 def _apply_frame_effects(
     frame: np.ndarray, t: float, fx: _FrameEffectsContext | None
 ) -> np.ndarray:
-    """Fixed-order post-stack effects pass (task 49).
+    """Fixed-order post-stack effects pass.
 
-    Order: zoom_punch → screen_shake → chromatic_aberration → scanline_tear
-    → color_invert. Each stage short-circuits to the input array
-    when its clip set is inactive at ``t``, so an empty timeline produces a
-    byte-identical frame.
+    Order: screen_shake → pixel_smear → block_glitch → chromatic_aberration
+    → scanline_tear → color_invert → fade. Each stage short-circuits to the
+    input array when its clip set is inactive at ``t``, so an empty timeline
+    produces a byte-identical frame. ``fade`` runs last so a fade-to-black
+    overlay covers every preceding glitch / inversion.
     """
     if fx is None:
         return frame
     out = frame
-    if fx.zoom_clips:
-        scale = zoom_scale(t, fx.zoom_clips)
-        if scale > 1.0 + 1e-9:
-            out = apply_zoom_scale(out, scale)
     if fx.shake_clips:
         dx, dy = shake_offset(t, fx.shake_clips, fx.song_hash)
         if abs(dx) >= 0.5 or abs(dy) >= 0.5:
             out = apply_shake_offset(out, dx, dy)
+    if fx.pixel_smear_clips:
+        out = apply_pixel_smear(out, t, fx.pixel_smear_clips, fx.song_hash)
+    if fx.block_glitch_clips:
+        out = apply_block_glitch(out, t, fx.block_glitch_clips, fx.song_hash)
     if fx.chromatic_clips:
         out = apply_chromatic_aberration(out, t, fx.chromatic_clips, fx.song_hash)
     if fx.scanline_clips:
@@ -982,6 +991,10 @@ def _apply_frame_effects(
         mix = invert_mix(t, fx.color_invert_clips)
         if mix > 1e-4:
             out = apply_invert_mix(out, mix)
+    if fx.fade_clips:
+        a = fade_alpha(t, fx.fade_clips)
+        if a > 1e-4:
+            out = apply_fade(out, a)
     return out
 
 
@@ -1165,12 +1178,12 @@ def _render_compositor_frame(
     from behind the mark; the logo compositing occludes the beam in the
     glyph area. Title and logo are drawn so branding stays on top of the
     reactive shader and lyrics; the logo is drawn *above* the title so the
-    mark is not occluded by an artist/song label on a shared edge. Task 49 adds a
-    final fixed-order frame-effects pass (``zoom_punch → screen_shake →
-    chromatic_aberration → scanline_tear → color_invert``) applied after all
-    layers when an ``EffectsTimeline`` is set on the config; the pass is
-    skipped entirely when no clip of any frame-effect kind is active at
-    ``t``.
+    mark is not occluded by an artist/song label on a shared edge. The
+    final post-stack frame-effects pass runs after all layers when an
+    ``EffectsTimeline`` is set on the config: ``screen_shake → pixel_smear
+    → block_glitch → chromatic_aberration → scanline_tear → color_invert →
+    fade``. The pass is skipped entirely when no clip of any frame-effect
+    kind is active at ``t``.
     """
     # Per-stage timing capture: when ``stage_timings`` is provided we record
     # ``time.perf_counter()`` deltas around each major stage. The producer

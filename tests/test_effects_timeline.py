@@ -85,10 +85,10 @@ class TestEffectsTimeline(unittest.TestCase):
                     clips=[
                         EffectClip(
                             id="1",
-                            kind=EffectKind.ZOOM_PUNCH,
+                            kind=EffectKind.FADE,
                             t_start=0.0,
                             duration_s=0.1,
-                            settings={},
+                            settings={"direction_mode": "out"},
                         )
                     ]
                 ),
@@ -161,11 +161,11 @@ class TestEffectsTimeline(unittest.TestCase):
                         settings={"amplitude_px": 4.0, "frequency_hz": 2.0},
                     ),
                     EffectClip(
-                        id="z1",
-                        kind=EffectKind.ZOOM_PUNCH,
+                        id="f1",
+                        kind=EffectKind.FADE,
                         t_start=1.0,
                         duration_s=0.2,
-                        settings={"peak_scale": 1.1},
+                        settings={"direction_mode": "in"},
                     ),
                 ],
                 auto_reactivity_master=1.25,
@@ -176,3 +176,20 @@ class TestEffectsTimeline(unittest.TestCase):
             self.assertEqual(len(t1.clips), 2)
             self.assertIs(t1.auto_enabled[EffectKind.BEAM], False)
             self.assertEqual(t1.auto_reactivity_master, 1.25)
+
+    def test_legacy_zoom_punch_clip_is_dropped_on_load(self) -> None:
+        """Old ``ZOOM_PUNCH`` clips must load silently as a no-op (migration)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "effects_timeline.json"
+            p.write_text(
+                '{"schema_version": 1, "auto_reactivity_master": 1.0, '
+                '"auto_enabled": {"ZOOM_PUNCH": true}, '
+                '"clips": [{"id": "z1", "kind": "ZOOM_PUNCH", "t_start": 0.0, '
+                '"duration_s": 0.3, "settings": {}, "auto_source": false}]}',
+                encoding="utf-8",
+            )
+            t = load(Path(tmp))
+            self.assertEqual(t.clips, [])
+            # Missing-but-known kinds default to True so legacy files still
+            # round-trip cleanly.
+            self.assertTrue(all(t.auto_enabled[k] is True for k in EffectKind))

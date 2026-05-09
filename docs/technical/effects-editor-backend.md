@@ -14,13 +14,13 @@ Module: `pipeline/effects_editor.py` — state loading, JSON save validation, an
   Appends auto-sourced clips when the per-kind `auto_enabled` flag is on:
   - **BEAM** from :func:`schedule_rim_beams` (same inputs as the compositor ghost path).
   - **LOGO_GLITCH** from RMS-impact peak picking.
-  - **ZOOM_PUNCH** from `analysis["events"]["drops"]` times.
   - **SCREEN_SHAKE** from low-band (kick / sub) transient peaks via `build_lo_transient_track` — `amplitude_px` scales with peak strength, `frequency_hz` fixed at `6.0` so the burst reads as a single camera jolt.
   - **CHROMATIC_ABERRATION** from high-band (hat / cymbal) transient peaks via `build_hi_transient_track` — `shift_px` scales with peak strength, `jitter=0.35`, `direction_deg=0.0`.
+  - **`COLOR_INVERT`**, **`SCANLINE_TEAR`**, **`FADE`**, **`PIXEL_SMEAR`**, and **`BLOCK_GLITCH`** are **user-driven only** — the baker never appends rows for these kinds (they have no analyser feature mapped to a clip schedule today). Their `auto_enabled` flag is still persisted, but it is currently inert.
   Skips a candidate when an existing clip of the **same** :class:`EffectKind` has `t_start` within **`DEDUPE_TOL_S` (0.02 s = 20 ms)**.
 
 - **`build_ghost_events(analysis, *, song_hash, compositor_config=…)`**  
-  Produces the `ghost_events` list used by `load_editor_state` (and callable on its own for tests). Emits ghost rows for every auto source the baker can fire (BEAM, LOGO_GLITCH, ZOOM_PUNCH on drops, SCREEN_SHAKE on kick peaks, CHROMATIC_ABERRATION on hat peaks) so the editor can show analyser hints on the matching row.
+  Produces the `ghost_events` list used by `load_editor_state` (and callable on its own for tests). Emits ghost rows for every auto source the baker can fire (BEAM, LOGO_GLITCH on RMS impacts, SCREEN_SHAKE on kick peaks, CHROMATIC_ABERRATION on hat peaks) so the editor can show analyser hints on the matching row. `FADE`, `PIXEL_SMEAR`, and `BLOCK_GLITCH` rows have no ghost events (user-driven only).
 
 ## Related
 

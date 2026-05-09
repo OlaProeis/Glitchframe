@@ -375,15 +375,15 @@ class TestBuildFrameEffectsContext(unittest.TestCase):
         cfg = CompositorConfig(effects_timeline=tl)
         self.assertIsNone(_build_frame_effects_context(cfg, {}))
 
-    def test_zoom_clip_builds_context(self) -> None:
+    def test_fade_clip_builds_context(self) -> None:
         tl = EffectsTimeline(
             clips=[
                 EffectClip(
-                    id="z",
-                    kind=EffectKind.ZOOM_PUNCH,
+                    id="f",
+                    kind=EffectKind.FADE,
                     t_start=0.0,
                     duration_s=0.5,
-                    settings={"peak_scale": 1.2},
+                    settings={"direction_mode": "out", "peak_alpha": 1.0},
                 )
             ]
         )
@@ -391,7 +391,7 @@ class TestBuildFrameEffectsContext(unittest.TestCase):
         fx = _build_frame_effects_context(cfg, {"song_hash": "h"})
         self.assertIsNotNone(fx)
         assert fx is not None
-        self.assertEqual(len(fx.zoom_clips), 1)
+        self.assertEqual(len(fx.fade_clips), 1)
         self.assertEqual(fx.shake_clips, ())
         self.assertEqual(fx.song_hash, "h")
 
@@ -414,11 +414,11 @@ class TestApplyFrameEffects(unittest.TestCase):
         tl = EffectsTimeline(
             clips=[
                 EffectClip(
-                    id="z",
-                    kind=EffectKind.ZOOM_PUNCH,
+                    id="f",
+                    kind=EffectKind.FADE,
                     t_start=10.0,
                     duration_s=0.2,
-                    settings={"peak_scale": 1.2},
+                    settings={"direction_mode": "out"},
                 )
             ]
         )
@@ -426,7 +426,7 @@ class TestApplyFrameEffects(unittest.TestCase):
         fx = _build_frame_effects_context(cfg, {})
         frame = self._frame()
         out = _apply_frame_effects(frame, 0.0, fx)
-        # At t=0 the zoom clip is inactive → identity short-circuit.
+        # At t=0 the fade clip is inactive → identity short-circuit.
         np.testing.assert_array_equal(out, frame)
 
     def test_color_invert_at_full_mix(self) -> None:
@@ -548,19 +548,12 @@ class TestFrameEffectsScanline(unittest.TestCase):
         assert ctx is not None
         self.assertEqual(len(ctx.chromatic_clips), 1)
 
-    def test_fixed_order_zoom_then_invert_not_commutative(self) -> None:
-        """Order per compositor: zoom then invert; result differs from each alone."""
+    def test_fade_runs_after_invert_to_overlay_black(self) -> None:
+        """Fade is the last stage, so a full-alpha fade overrides upstream stages."""
         h, w = 8, 8
         f = np.zeros((h, w, 3), dtype=np.uint8)
         for x in range(w):
             f[:, x] = np.uint8(min(255, x * 7))
-        z = EffectClip(
-            id="z",
-            kind=EffectKind.ZOOM_PUNCH,
-            t_start=0.0,
-            duration_s=1.0,
-            settings={"peak_scale": 1.2, "ease_in_s": 0.0, "ease_out_s": 0.0},
-        )
         invc = EffectClip(
             id="i",
             kind=EffectKind.COLOR_INVERT,
@@ -568,36 +561,34 @@ class TestFrameEffectsScanline(unittest.TestCase):
             duration_s=1.0,
             settings={"mix": 1.0, "intensity": 1.0},
         )
-        t_both = EffectsTimeline(clips=[z, invc])
-        cfg = CompositorConfig(effects_timeline=t_both)
-        fx = _build_frame_effects_context(cfg, {})
-        self.assertIsNotNone(fx)
-        out = _apply_frame_effects(f, 0.1, fx)
-        out_inv_only = _apply_frame_effects(
-            f,
-            0.1,
-            _build_frame_effects_context(
-                CompositorConfig(effects_timeline=EffectsTimeline(clips=[invc])),
-                {},
-            ),
+        fade = EffectClip(
+            id="fd",
+            kind=EffectKind.FADE,
+            t_start=0.0,
+            duration_s=1.0,
+            settings={
+                "direction_mode": "out",
+                "peak_alpha": 1.0,
+                "ease_mode": "linear",
+            },
         )
-        out_zoom_only = _apply_frame_effects(
-            f,
-            0.1,
-            _build_frame_effects_context(
-                CompositorConfig(effects_timeline=EffectsTimeline(clips=[z])),
-                {},
-            ),
+        # Near the end of a fade-out (linear ease, full peak_alpha) the
+        # overlay alpha is essentially ``1.0`` so the final frame must be
+        # fully black regardless of the invert that ran before it.
+        cfg_both = CompositorConfig(
+            effects_timeline=EffectsTimeline(clips=[invc, fade])
         )
-        self.assertFalse(np.array_equal(out, f), "zoom+invert should change pixels")
-        self.assertFalse(
-            np.array_equal(out, out_inv_only),
-            "zoom then invert ≠ invert only",
+        fx_both = _build_frame_effects_context(cfg_both, {})
+        out_both = _apply_frame_effects(f, 0.9999, fx_both)
+        self.assertTrue(
+            np.all(out_both == 0),
+            "fade-out at peak should fully black the frame after invert",
         )
-        self.assertFalse(
-            np.array_equal(out, out_zoom_only),
-            "zoom then invert ≠ zoom only",
-        )
+        # Invert alone produces 255 - frame (no fade in this timeline).
+        cfg_inv = CompositorConfig(effects_timeline=EffectsTimeline(clips=[invc]))
+        fx_inv = _build_frame_effects_context(cfg_inv, {})
+        out_inv = _apply_frame_effects(f, 0.5, fx_inv)
+        np.testing.assert_array_equal(out_inv, np.uint8(255) - f)
 
 
 if __name__ == "__main__":  # pragma: no cover

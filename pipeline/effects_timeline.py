@@ -30,7 +30,16 @@ class EffectKind(str, Enum):
     COLOR_INVERT = "COLOR_INVERT"
     CHROMATIC_ABERRATION = "CHROMATIC_ABERRATION"
     SCANLINE_TEAR = "SCANLINE_TEAR"
-    ZOOM_PUNCH = "ZOOM_PUNCH"
+    FADE = "FADE"
+    PIXEL_SMEAR = "PIXEL_SMEAR"
+    BLOCK_GLITCH = "BLOCK_GLITCH"
+
+
+# Kinds that older saves may still reference. They are silently dropped on
+# load (rather than raising) so an existing ``effects_timeline.json`` that
+# survived from a previous schema version still loads cleanly. New kinds may
+# only be added here when retired — never used to introduce alternate spellings.
+_DEPRECATED_KIND_NAMES: frozenset[str] = frozenset({"ZOOM_PUNCH"})
 
 
 # Per-kind allowlists for the ``settings`` dict (unknown keys → ValueError).
@@ -52,8 +61,23 @@ EFFECT_SETTINGS_KEYS: dict[EffectKind, frozenset[str]] = {
     EffectKind.SCANLINE_TEAR: frozenset(
         {"intensity", "band_count", "band_height_px", "wrap_mode"}
     ),
-    EffectKind.ZOOM_PUNCH: frozenset(
-        {"peak_scale", "ease_in_s", "ease_out_s", "width_frac"}
+    # FADE is a single timeline lane that fades **to black**. ``direction_mode``
+    # picks "in" (start black, reveal) or "out" (start clear, fade to black).
+    # ``peak_alpha`` caps the maximum darkness (1.0 = fully black at the
+    # extreme of the ramp). ``ease_mode`` picks "smoothstep" (Hermite, default)
+    # or "linear". The clip's ``duration_s`` *is* the ramp length.
+    EffectKind.FADE: frozenset({"direction_mode", "peak_alpha", "ease_mode"}),
+    # PIXEL_SMEAR — horizontal pixel-streak datamosh. ``intensity`` controls
+    # how visible the streaks are, ``density`` how many rows are smeared,
+    # ``streak_length_frac`` how far each streak extends across its row.
+    EffectKind.PIXEL_SMEAR: frozenset(
+        {"intensity", "density", "streak_length_frac"}
+    ),
+    # BLOCK_GLITCH — JPEG / macroblock displacement. ``intensity`` is the
+    # fraction of blocks to shift, ``block_size_px`` the block edge length,
+    # ``displace_frac`` the per-axis offset cap as a fraction of the block.
+    EffectKind.BLOCK_GLITCH: frozenset(
+        {"intensity", "block_size_px", "displace_frac"}
     ),
 }
 
@@ -163,6 +187,8 @@ def _auto_enabled_from_json(
         raise ValueError("auto_enabled must be a JSON object")
     out: dict[EffectKind, bool] = {}
     for name, val in data.items():
+        if isinstance(name, str) and name in _DEPRECATED_KIND_NAMES:
+            continue
         if name not in EffectKind.__members__:
             raise ValueError(f"Unknown effect kind in auto_enabled: {name!r}")
         if not isinstance(val, bool):
@@ -170,9 +196,12 @@ def _auto_enabled_from_json(
                 f"auto_enabled[{name!r}] must be bool, not {type(val).__name__}"
             )
         out[EffectKind(name)] = val
+    # Old saves predate kinds added later (e.g. FADE / PIXEL_SMEAR /
+    # BLOCK_GLITCH). Default any missing flag to ``True`` rather than raising
+    # so legacy ``effects_timeline.json`` files still load cleanly.
     for k in EffectKind:
         if k not in out:
-            raise ValueError(f"auto_enabled missing {k.name!r}")
+            out[k] = True
     return out
 
 
@@ -187,10 +216,26 @@ def _clip_to_json(c: EffectClip) -> dict[str, Any]:
     }
 
 
-def _clip_from_json(obj: object) -> EffectClip:
+class _DeprecatedClip:
+    """Sentinel returned by :func:`_clip_from_json` for retired kinds.
+
+    Lets the loader drop legacy clips (e.g. pre-FADE ``ZOOM_PUNCH`` rows)
+    silently instead of raising, while still reporting genuinely malformed
+    JSON loudly.
+    """
+
+    __slots__ = ("kind_name",)
+
+    def __init__(self, kind_name: str) -> None:
+        self.kind_name = kind_name
+
+
+def _clip_from_json(obj: object) -> EffectClip | _DeprecatedClip:
     if not isinstance(obj, dict):
         raise ValueError("Each clip must be a JSON object")
     kind_s = obj.get("kind")
+    if isinstance(kind_s, str) and kind_s in _DEPRECATED_KIND_NAMES:
+        return _DeprecatedClip(kind_s)
     if kind_s not in EffectKind.__members__:
         raise ValueError(f"Invalid or missing effect kind: {kind_s!r}")
     kind = EffectKind(kind_s)
@@ -232,7 +277,12 @@ def _timeline_from_dict(data: object) -> EffectsTimeline:
     clips_in = data.get("clips", [])
     if not isinstance(clips_in, list):
         raise TypeError("'clips' must be an array")
-    clips = [_clip_from_json(c) for c in clips_in]
+    clips: list[EffectClip] = []
+    for c in clips_in:
+        parsed = _clip_from_json(c)
+        if isinstance(parsed, _DeprecatedClip):
+            continue
+        clips.append(parsed)
     auto = _auto_enabled_from_json(data.get("auto_enabled", {}))
     master = data.get("auto_reactivity_master", 1.0)
     if not isinstance(master, (int, float)):

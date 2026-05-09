@@ -83,10 +83,10 @@ def _valid_payload(overrides: dict | None = None) -> dict:
         clips=[
             EffectClip(
                 id="c1",
-                kind=EffectKind.ZOOM_PUNCH,
+                kind=EffectKind.FADE,
                 t_start=1.0,
-                duration_s=0.2,
-                settings={},
+                duration_s=0.5,
+                settings={"direction_mode": "out", "peak_alpha": 1.0},
             )
         ],
         auto_reactivity_master=1.0,
@@ -113,8 +113,11 @@ class TestEffectsEditor(unittest.TestCase):
             self.assertIn("ghost_events", st)
             self.assertIn("clips", st)
             self.assertIn("auto_enabled", st)
-            gk = [e for e in st["ghost_events"] if e.get("source") == "drop"]
-            self.assertTrue(any(e.get("kind") == "ZOOM_PUNCH" for e in gk))
+            # Kick + hat ghost sources should always be present given the
+            # spectrum spikes injected by ``_write_minimal_analysis``.
+            kinds = {e.get("kind") for e in st["ghost_events"]}
+            self.assertIn("SCREEN_SHAKE", kinds)
+            self.assertIn("CHROMATIC_ABERRATION", kinds)
             self.assertIsInstance(build_ghost_events({}, song_hash="x"), list)
 
     def test_load_missing_cache_raises(self) -> None:
@@ -158,7 +161,7 @@ class TestEffectsEditor(unittest.TestCase):
             self.assertEqual(out, c / EFFECTS_TIMELINE_JSON)
             t1 = load(c)
             self.assertEqual(len(t1.clips), 1)
-            self.assertIs(t1.clips[0].kind, EffectKind.ZOOM_PUNCH)
+            self.assertIs(t1.clips[0].kind, EffectKind.FADE)
 
     def test_save_omits_song_hash_in_payload(self) -> None:
         """save_edited_timeline only rejects song_hash when it disagrees; omitted is OK."""
@@ -181,59 +184,52 @@ class TestEffectsEditor(unittest.TestCase):
             t1 = load(c)
             self.assertEqual(len(t1.clips), 1)
 
-    def test_bake_dedupes_zoom_against_existing_clip(self) -> None:
+    def test_bake_dedupes_shake_against_existing_clip(self) -> None:
+        """An existing manual SCREEN_SHAKE near a kick peak must not be duplicated."""
         with tempfile.TemporaryDirectory() as td:
             c = _new_cache(Path(td), "bakededupe")
+            # Kick spike at frame 90 (fps=30 → t=3.0); place a manual shake on
+            # the same beat so the auto bake should dedupe.
+            kick_t = 90.0 / 30.0
             et = EffectsTimeline(
                 clips=[
                     EffectClip(
                         id="user",
-                        kind=EffectKind.ZOOM_PUNCH,
-                        t_start=5.0,
-                        duration_s=0.3,
-                        settings={},
+                        kind=EffectKind.SCREEN_SHAKE,
+                        t_start=kick_t,
+                        duration_s=0.18,
+                        settings={"amplitude_px": 3.0, "frequency_hz": 4.0},
                         auto_source=False,
                     )
                 ],
             )
-            # Only bake ZOOM (same time as analysis drop) — turn off other kinds
-            et.auto_enabled[EffectKind.BEAM] = False
-            et.auto_enabled[EffectKind.LOGO_GLITCH] = False
-            et.auto_enabled[EffectKind.SCREEN_SHAKE] = False
-            et.auto_enabled[EffectKind.CHROMATIC_ABERRATION] = False
-            et.auto_enabled[EffectKind.ZOOM_PUNCH] = True
+            for k in EffectKind:
+                et.auto_enabled[k] = False
+            et.auto_enabled[EffectKind.SCREEN_SHAKE] = True
             save(c, et)
             bake_auto_schedule(c)
             t2 = load(c)
-            self.assertEqual(len(t2.clips), 1)
-            self.assertEqual(t2.clips[0].id, "user")
-
-    def test_bake_adds_zoom_when_no_collision(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            c = _new_cache(Path(td), "bakeadd")
-            et = EffectsTimeline(clips=[])
-            et.auto_enabled[EffectKind.BEAM] = False
-            et.auto_enabled[EffectKind.LOGO_GLITCH] = False
-            et.auto_enabled[EffectKind.SCREEN_SHAKE] = False
-            et.auto_enabled[EffectKind.CHROMATIC_ABERRATION] = False
-            et.auto_enabled[EffectKind.ZOOM_PUNCH] = True
-            save(c, et)
-            bake_auto_schedule(c)
-            t2 = load(c)
-            self.assertEqual(len(t2.clips), 1)
-            self.assertIs(t2.clips[0].kind, EffectKind.ZOOM_PUNCH)
-            self.assertTrue(t2.clips[0].auto_source)
-            self.assertAlmostEqual(t2.clips[0].t_start, 5.0, places=3)
+            shakes = [x for x in t2.clips if x.kind is EffectKind.SCREEN_SHAKE]
+            user_at_kick = [
+                x for x in shakes
+                if x.id == "user"
+            ]
+            auto_at_kick = [
+                x for x in shakes
+                if x.auto_source and abs(float(x.t_start) - kick_t) <= DEDUPE_TOL_S
+            ]
+            self.assertEqual(len(user_at_kick), 1)
+            self.assertEqual(
+                auto_at_kick, [], "auto bake should dedupe against the existing user clip"
+            )
 
     def test_bake_adds_glitch_from_rms_impact_peaks(self) -> None:
         """Minimal analysis with a high RMS peak produces at least one baked glitch clip."""
         with tempfile.TemporaryDirectory() as td:
             c = _new_cache(Path(td), "bakegli")
             et = EffectsTimeline(clips=[])
-            et.auto_enabled[EffectKind.BEAM] = False
-            et.auto_enabled[EffectKind.ZOOM_PUNCH] = False
-            et.auto_enabled[EffectKind.SCREEN_SHAKE] = False
-            et.auto_enabled[EffectKind.CHROMATIC_ABERRATION] = False
+            for k in EffectKind:
+                et.auto_enabled[k] = False
             et.auto_enabled[EffectKind.LOGO_GLITCH] = True
             save(c, et)
             bake_auto_schedule(c)
@@ -310,29 +306,35 @@ class TestEffectsEditor(unittest.TestCase):
             self.assertIn("CHROMATIC_ABERRATION", kinds)
 
     def test_dedupe_threshold_boundary(self) -> None:
+        """A SCREEN_SHAKE clip half a tolerance away from a kick peak still dedupes."""
         with tempfile.TemporaryDirectory() as td:
             c = _new_cache(Path(td), "edgecase")
-            # Existing clip 5.0, drop 5.0+15ms = still within 20ms? 0.015 < 0.02 → dedupe
+            kick_t = 90.0 / 30.0
             et = EffectsTimeline(
                 clips=[
                     EffectClip(
                         id="edge",
-                        kind=EffectKind.ZOOM_PUNCH,
-                        t_start=5.0 - DEDUPE_TOL_S * 0.5,
-                        duration_s=0.2,
-                        settings={},
+                        kind=EffectKind.SCREEN_SHAKE,
+                        t_start=kick_t - DEDUPE_TOL_S * 0.5,
+                        duration_s=0.18,
+                        settings={"amplitude_px": 3.0, "frequency_hz": 4.0},
                     )
                 ],
             )
-            et.auto_enabled[EffectKind.BEAM] = False
-            et.auto_enabled[EffectKind.LOGO_GLITCH] = False
-            et.auto_enabled[EffectKind.SCREEN_SHAKE] = False
-            et.auto_enabled[EffectKind.CHROMATIC_ABERRATION] = False
-            et.auto_enabled[EffectKind.ZOOM_PUNCH] = True
+            for k in EffectKind:
+                et.auto_enabled[k] = False
+            et.auto_enabled[EffectKind.SCREEN_SHAKE] = True
             save(c, et)
             bake_auto_schedule(c)
             t2 = load(c)
-            self.assertEqual(len(t2.clips), 1)
+            shakes = [x for x in t2.clips if x.kind is EffectKind.SCREEN_SHAKE]
+            near_kick = [
+                x for x in shakes
+                if abs(float(x.t_start) - kick_t) <= DEDUPE_TOL_S
+            ]
+            self.assertEqual(
+                len(near_kick), 1, "tolerance window must collapse to a single clip"
+            )
 
     def test_bake_requires_analysis(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -360,8 +362,8 @@ class TestEffectsEditor(unittest.TestCase):
             # Default state var name is exposed on window so the Save
             # handler can grab it.
             self.assertIn("_glitchframe_effects_state", html)
-            # All seven EffectKind rows + toolbar buttons must be present —
-            # the UI contract is "seven rows regardless of renderer status".
+            # Every EffectKind row + toolbar button must be present — the UI
+            # contract is "one row per EffectKind regardless of renderer status".
             for kind in (
                 "BEAM",
                 "LOGO_GLITCH",
@@ -369,7 +371,9 @@ class TestEffectsEditor(unittest.TestCase):
                 "COLOR_INVERT",
                 "CHROMATIC_ABERRATION",
                 "SCANLINE_TEAR",
-                "ZOOM_PUNCH",
+                "FADE",
+                "PIXEL_SMEAR",
+                "BLOCK_GLITCH",
             ):
                 self.assertIn(f'data-mv-fx-row="{kind}"', html)
                 self.assertIn(f'data-mv-fx-add="{kind}"', html)

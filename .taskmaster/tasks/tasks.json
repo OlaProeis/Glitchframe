@@ -1269,12 +1269,26 @@
         "recommendedSubtasks": 1,
         "expansionPrompt": "Debug investigation: 1) Reproduce in torch 2.7+cu128 Pinokio; 2) Audit Gradio handler return wiring and exception handling; 3) Add logging and fix root cause.",
         "updatedAt": "2026-05-07T07:47:28.856Z"
+      },
+      {
+        "id": "73",
+        "title": "Storytelling: prompt ranges for SDXL keyframes (pre-generation)",
+        "description": "Let users assign different SDXL prompts to contiguous ranges of keyframes before the first **Generate SDXL stills**, so a single song can progress visually (e.g. intro mood vs chorus vs outro) without hand-editing every clip or relying only on per-slot prompts.",
+        "details": "Design + implement alongside `keyframes_timeline` / Background keyframes editor:\n- **Model**: Either (a) explicit \"prompt segments\" (start_keyframe_index..end or time ranges mapped to sorted keyframe indices), or (b) group tags on timeline entries; must round-trip in `keyframes_timeline.json` and participate in `manifest` / `prompt_hash` so cache invalidation stays correct.\n- **UI**: Gradio keyframes tab — add range editor (add/remove segment, prompt textarea per segment, preview which keyframe indices each segment covers). Optional: quick actions “apply prompt to slots N–M”.\n- **Pipeline**: `BackgroundStills` / `plan_keyframes` / `entries_to_keyframe_plans` must resolve each keyframe’s final prompt from segments + preset; document in `docs/technical/background-keyframes-editor.md` (and `background-stills.md` if manifest fields change).\n- **Edge cases**: Upload-source slots (skip or override rules); regen-all and single-slot regen must stay coherent; save timeline clears RIFE as today.\n- **Tests**: Hermetic unit tests for segment→per-index prompt resolution and manifest hash behaviour.\n\n**Out of scope for this task**: batch checkbox regen (already shipped); purely time-based section prompts from `analysis.json` alone without user-authored segments (may complement later).",
+        "testStrategy": "Unit tests for segment resolution and timeline save/load; manual: define 3 segments with distinct prompts, Generate SDXL stills, confirm PNG set and `manifest.json` prompts match; optional smoke: full render with RIFE after storytelling edit.",
+        "priority": "medium",
+        "dependencies": [],
+        "status": "pending",
+        "subtasks": [],
+        "complexity": 6,
+        "recommendedSubtasks": 3,
+        "expansionPrompt": "Break into: 1) JSON schema + disk format + manifest/prompt_hash integration; 2) Editor UI for segments and index/time preview; 3) Pipeline wiring in BackgroundStills/plan + tests + docs."
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-05-07T07:47:28.856Z",
-      "taskCount": 72,
+      "lastModified": "2026-05-09T00:00:00.000Z",
+      "taskCount": 73,
       "completedCount": 52,
       "tags": [
         "master"
