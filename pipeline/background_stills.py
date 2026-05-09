@@ -61,7 +61,9 @@ MANIFEST_SCHEMA_VERSION = 1
 
 RIFE_TIMELINE_DIRNAME = "rife_timeline"
 MANIFEST_RIFE_FILENAME = "manifest_rife.json"
-RIFE_MANIFEST_SCHEMA_VERSION = 1
+# v2: centered IFNet sampling (no exact SDXL still at internal boundaries) +
+# exact start/end stills bracketing the timeline. v1 caches re-bake.
+RIFE_MANIFEST_SCHEMA_VERSION = 2
 
 ProgressFn = Callable[[float, str], None]
 
@@ -1273,11 +1275,12 @@ class BackgroundStills:
         # the pool drains as fast as it fills.
         max_inflight = max_writers * 3
 
-        # Total estimate for progress: same formula as ``rife_build_morph_timeline``
-        # (per-segment exp pairs, dedup boundaries between segments).
+        # Total estimate for progress: matches ``rife_build_morph_timeline``
+        # — ``per_seg`` centered IFNet predictions per segment, plus the two
+        # bracketing exact stills (one at the song start, one at the end).
         total_segs = max(1, mf.num_keyframes - 1)
         per_seg = (1 << int(self._rife_exp))
-        est_total = total_segs * per_seg + 1
+        est_total = total_segs * per_seg + 2
 
         def _write_one(idx: int, arr: np.ndarray) -> int:
             img = Image.fromarray(arr, mode="RGB")
@@ -1610,9 +1613,10 @@ class BackgroundStills:
             else self._manifest.keyframe_times
         )
         # Sparse SDXL-only keyframes benefit from smoothstep crossfades. RIFE
-        # timelines are already flow-dense; smoothstep between samples adds an
-        # extra ease that slows perceived motion near every sample and lingers
-        # in the last blend (approximate IFNet frame → exact endpoint still).
+        # timelines are already flow-dense and use centered IFNet sampling so
+        # internal keyframe boundaries are bridged by symmetric soft samples
+        # (no exact-still snap); a plain linear blend therefore preserves the
+        # natural IFNet velocity instead of double-easing every neighbour.
         base = _interpolate_frame(
             self._frames,
             times_src,

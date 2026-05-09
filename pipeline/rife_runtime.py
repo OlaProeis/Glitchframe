@@ -163,8 +163,22 @@ def rife_exp_interpolate_pair(
     *,
     exp: int,
     device: torch.device,
+    include_endpoints: bool = True,
 ) -> list[np.ndarray]:
-    """Uniform RIFE subdivision (``2 ** exp``) between ``rgb0`` and ``rgb1`` (inclusive).
+    """RIFE subdivision (``2 ** exp``) between ``rgb0`` and ``rgb1``.
+
+    With ``include_endpoints=True`` (default) returns the legacy uniform grid
+    ``[rgb0, IFNet(1/n), …, IFNet((n-1)/n), rgb1]`` — ``n + 1`` frames where
+    the first and last are the exact source stills.
+
+    With ``include_endpoints=False`` returns ``n`` IFNet predictions sampled
+    at the **centered** timesteps ``[(i + 0.5)/n for i in 0..n-1]``. The
+    morph timeline builder uses this mode so adjacent segments don't snap to
+    the exact SDXL still at every internal keyframe boundary: the flanking
+    dense samples are both equally-soft IFNet predictions (one decelerating
+    into the keyframe, one accelerating away), so a linear blend at the
+    boundary produces a continuous-velocity midpoint instead of a sharp
+    pixel-content discontinuity.
 
     Inference runs inside :func:`torch.inference_mode`, which skips autograd
     bookkeeping (Practical-RIFE upstream does the equivalent via
@@ -178,12 +192,22 @@ def rife_exp_interpolate_pair(
     dtype = torch.float16 if model.fp16 else torch.float32
     t0, t1, h, w = _prepare_pair_tensors(rgb0, rgb1, device, dtype=dtype)
     out_list: list[np.ndarray] = []
-    out_list.append(_tensor_to_rgb(t0, h, w))
-    with torch.inference_mode():
-        for i in range(n - 1):
-            mid = model.inference(t0, t1, (i + 1) * 1.0 / n)
-            out_list.append(_tensor_to_rgb(mid, h, w))
-    out_list.append(_tensor_to_rgb(t1, h, w))
+    if include_endpoints:
+        out_list.append(_tensor_to_rgb(t0, h, w))
+        with torch.inference_mode():
+            for i in range(n - 1):
+                mid = model.inference(t0, t1, (i + 1) * 1.0 / n)
+                out_list.append(_tensor_to_rgb(mid, h, w))
+        out_list.append(_tensor_to_rgb(t1, h, w))
+    else:
+        with torch.inference_mode():
+            for i in range(n):
+                # Centered timestep: i + 0.5 instead of i+1, so samples sit
+                # symmetrically inside (0, 1) and never coincide with the
+                # exact endpoints.
+                ts = (i + 0.5) / n
+                mid = model.inference(t0, t1, ts)
+                out_list.append(_tensor_to_rgb(mid, h, w))
     return out_list
 
 
@@ -198,17 +222,44 @@ def rife_build_morph_timeline(
     on_frame: Callable[[int, np.ndarray, float], None] | None = None,
     keep_frames: bool = True,
 ) -> tuple[list[np.ndarray], list[float]]:
-    """Concatenate per-segment RIFE tracks into one dense timeline (dedupe boundaries).
+    """Build one continuous-velocity dense RIFE timeline across all keyframes.
 
-    ``on_frame``, if given, is invoked for every output frame as soon as it is
-    available with ``(global_index, rgb_uint8, t_sec)``. Callers can use this
-    to stream frames straight to disk (or a thread pool of writers) without
-    waiting for the whole timeline to finish — important at high ``rife_exp``
-    where the full timeline easily exceeds 30 GB of RAM at 1080p.
+    Each segment ``[kf_i, kf_{i+1}]`` is sampled at **centered** timesteps
+    ``[(j + 0.5)/n for j in 0..n-1]`` (where ``n = 2**exp``), so the dense
+    timeline contains only IFNet predictions internally — never the exact
+    SDXL still at an internal keyframe boundary. The exact start (``kf_0``)
+    and end (``kf_{n-1}``) stills are kept as the very first and very last
+    frames so the song opens/closes on the sharp generated image.
+
+    Why this matters for perceived smoothness: with the legacy "include
+    endpoints + dedupe" scheme the timeline read ``soft_ifnet → SHARP_still
+    → soft_ifnet`` at every internal keyframe time, producing a brief
+    snap-to-still pause that read as a framerate dip even with a uniform
+    sample spacing. Centered sampling makes the two flanking dense samples
+    around every internal keyframe equally soft IFNet predictions (one
+    decelerating into the keyframe, one accelerating away), so a linear
+    blend at ``t_kf`` produces a continuous-velocity midpoint instead of a
+    sharp pixel-content discontinuity.
+
+    The dense temporal spacing is uniform ``T_seg/n`` both *within* a
+    segment and *across* every internal keyframe boundary (the last centered
+    sample of segment ``N`` sits at ``t_kf - T_seg/(2n)``, the first of
+    segment ``N+1`` at ``t_kf + T_seg/(2n)``). The only spacing irregularity
+    is the short ``T_seg/(2n)`` gap between the prepended exact start still
+    and the first IFNet sample (and the symmetric one at the end), where
+    motion is naturally just the start/end still slightly evolved — visually
+    smooth.
+
+    ``on_frame``, if given, is invoked for every output frame as soon as it
+    is available with ``(global_index, rgb_uint8, t_sec)``. Callers can use
+    this to stream frames straight to disk (or a thread pool of writers)
+    without waiting for the whole timeline to finish — important at high
+    ``rife_exp`` where the full timeline easily exceeds 30 GB of RAM at
+    1080p.
 
     ``keep_frames`` controls whether the returned ``frames`` list is built.
-    Set ``False`` together with ``on_frame`` for zero-copy streaming when the
-    caller persists frames externally and reads them back lazily; the
+    Set ``False`` together with ``on_frame`` for zero-copy streaming when
+    the caller persists frames externally and reads them back lazily; the
     returned ``times`` list is still complete.
     """
     if len(keyframes) != len(keyframe_times):
@@ -240,25 +291,35 @@ def rife_build_morph_timeline(
     times_out: list[float] = []
     global_idx = 0
 
+    n_steps = 1 << int(exp)  # = 2 ** exp; centered-sample count per segment
     total_segs = n - 1
     try:
+        # Frame 0: exact start still — sharp opening for the song.
+        start_t = float(keyframe_times[0])
+        if on_frame is not None:
+            on_frame(global_idx, np.ascontiguousarray(keyframes[0]), start_t)
+        if keep_frames:
+            frames_out.append(np.ascontiguousarray(keyframes[0]))
+        times_out.append(start_t)
+        global_idx += 1
+
         for seg_i in range(total_segs):
             t0 = float(keyframe_times[seg_i])
             t1 = float(keyframe_times[seg_i + 1])
+            seg_span = t1 - t0
             seg_frames = rife_exp_interpolate_pair(
                 model,
                 keyframes[seg_i],
                 keyframes[seg_i + 1],
                 exp=exp,
                 device=device,
+                include_endpoints=False,
             )
+            # ``seg_frames`` is exactly ``n_steps`` IFNet predictions at
+            # centered timesteps; map each to wall-clock time so the gap to
+            # the previous/next segment matches the within-segment spacing.
             for j, fr in enumerate(seg_frames):
-                # Skip the duplicated boundary frame between segments — every
-                # segment includes both endpoint stills, but consecutive
-                # segments share one of those endpoints.
-                if seg_i > 0 and j == 0:
-                    continue
-                tau = t0 + (t1 - t0) * (j / max(1, len(seg_frames) - 1))
+                tau = t0 + seg_span * (j + 0.5) / n_steps
                 if on_frame is not None:
                     on_frame(global_idx, fr, tau)
                 if keep_frames:
@@ -267,6 +328,15 @@ def rife_build_morph_timeline(
                 global_idx += 1
             frac = (seg_i + 1) / max(1, total_segs)
             _report(0.05 + 0.9 * frac, f"RIFE segment {seg_i + 1}/{total_segs}")
+
+        # Final frame: exact end still — sharp closing for the song.
+        end_t = float(keyframe_times[-1])
+        if on_frame is not None:
+            on_frame(global_idx, np.ascontiguousarray(keyframes[-1]), end_t)
+        if keep_frames:
+            frames_out.append(np.ascontiguousarray(keyframes[-1]))
+        times_out.append(end_t)
+        global_idx += 1
     finally:
         del model
         if torch.cuda.is_available():

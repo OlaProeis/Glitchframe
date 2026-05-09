@@ -12,11 +12,25 @@ Optional **optical-flow** interpolation (Practical-RIFE–style IFNet) between c
 | Control | Effect |
 |--------|--------|
 | **Morph keyframes (RIFE)** | After SDXL keyframes exist, runs RIFE between each adjacent pair and replaces the sampling timeline with a denser control set. |
-| **RIFE subdivisions (2^N steps between keyframes)** | Integer **N** in **[2, 8]**; **2^N** uniform timestep steps between each keyframe pair (plus endpoints). Higher = smoother morphs and **longer** RIFE bake. Default **4** → 16 steps per segment; **N=8** → 256 steps (heavy). Wall-clock sampling along each morph is uniform; perceived “ease” near the destination still comes from optical flow settling—more subdivisions usually soften that before the hold. |
+| **RIFE subdivisions (2^N steps between keyframes)** | Integer **N** in **[2, 8]**; **2^N** centered IFNet samples per segment (see “Centered sampling” below). Higher = smoother morphs and **longer** RIFE bake. Default **4** → 16 IFNet samples per segment; **N=8** → 256 (heavy). |
 
 Ken Burns (if enabled) is applied **after** the background sample at time `t`, unchanged from pre-RIFE behaviour.
 
 **Sampling:** `background_frame(t)` uses **linear** blending between neighbouring RIFE samples (dense optical-flow timeline). Sparse SDXL-only keyframes still use **smoothstep** crossfades—double-easing dense RIFE was slowing motion toward every sample and stretching the blend from the last approximate IFNet frame to the exact endpoint still.
+
+### Centered sampling (no internal exact stills)
+
+The dense morph timeline is built so that internal SDXL keyframes are *bridged* by IFNet predictions on both sides instead of appearing as exact stills directly in the timeline. For each segment `[kf_i, kf_{i+1}]` of duration `T_seg`:
+
+* Sample IFNet at the **centered** timesteps `[(j + 0.5)/n for j in 0..n-1]` (where `n = 2**N`), giving exactly `n` soft predictions per segment.
+* Map each sample to wall-clock time `t_j = t_kf_i + T_seg * (j + 0.5) / n`. The first centered sample sits at `t_kf_i + T_seg/(2n)`, the last at `t_kf_{i+1} - T_seg/(2n)`.
+* The exact SDXL still is emitted **only** as the very first frame (`t = 0`) and very last frame (`t = duration`) of the timeline — never at internal keyframe times.
+
+Why this matters for perceived smoothness: the legacy “include endpoints + dedupe” scheme placed the exact sharp SDXL still at every internal keyframe time, surrounded by *soft* IFNet predictions on both sides. The viewer saw `soft → SHARP_still → soft`, perceived as a brief snap-to-still pause that read as a framerate dip even though the dense temporal spacing was uniform. With centered sampling the two flanking samples around each internal keyframe are equally soft IFNet predictions (one decelerating into `kf`, one accelerating away from it), so a linear blend at `t_kf` produces a continuous-velocity midpoint and there is no sharp pixel-content discontinuity.
+
+**Spacing:** within a segment and across every internal keyframe boundary the spacing is uniform `T_seg / n` (e.g. with `T_seg = 8 s` and `N = 4` that's `0.5 s`). The only spacing irregularity is the short `T_seg/(2n)` gap between the first/last exact-still bracket and its neighbouring IFNet sample, where the motion is naturally just the start/end still slightly evolved — visually smooth.
+
+**Cache invalidation:** the `RIFE_MANIFEST_SCHEMA_VERSION` was bumped to **2** when this sampling change landed; v1 caches are silently re-baked the next time RIFE is enabled.
 
 ## Implementation sketch
 
@@ -42,7 +56,7 @@ cache/<hash>/background/
     ...
 ```
 
-Invalidates when the **SDXL** manifest key changes (prompt / model / resolution / keyframe count) or when **RIFE** settings change (`rife_exp`, output width/height, repo id) or timeline PNGs are missing.
+Invalidates when the **SDXL** manifest key changes (prompt / model / resolution / keyframe count), when **RIFE** settings change (`rife_exp`, output width/height, repo id), when the manifest **schema version** changes (e.g. v1 → v2 centered sampling), or when timeline PNGs are missing.
 
 ## Requirements
 
