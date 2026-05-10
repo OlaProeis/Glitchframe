@@ -37,9 +37,9 @@ Configuration (environment variables, see ``.env.example``):
   (50 steps).
 * ``GLITCHFRAME_HIDREAM_GEN_WIDTH`` / ``GLITCHFRAME_HIDREAM_GEN_HEIGHT`` —
   override generation resolution (defaults: 1280×720).
-* ``GLITCHFRAME_HIDREAM_PIPELINE_IMPORT`` — ``auto`` (default: prefer
-  ``generate_image`` in current HiDream, else legacy ``HiDreamImagePipeline``),
-  or ``module:Class`` for a custom diffusers-style pipeline.
+* ``GLITCHFRAME_HIDREAM_NATIVE_WEIGHTS_DTYPE`` — optional ``float32`` or ``bfloat16``
+  for the HiDream worker's ``from_pretrained`` dtype; default auto-selects ``float32``
+  for FP8 repos (e.g. drbaph) to avoid Float8/BFloat16 promotion errors in ``generate_image``.
 
 Unit tests use ``load_hidream_config(..., strict_env=True)`` so paths stay
 explicit; UI manifest peeking uses ``allow_fetch=False`` without requiring

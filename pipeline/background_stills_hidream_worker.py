@@ -169,6 +169,59 @@ class _NativeHiDreamBundle:
     model_type: str
 
 
+def _native_weights_torch_dtype(model_path: Path) -> Any:
+    """Return ``torch.dtype`` for :meth:`Qwen3VLForConditionalGeneration.from_pretrained`.
+
+    Community FP8 checkpoints (e.g. ``drbaph/HiDream-O1-Image-FP8``) keep weights as
+    ``Float8_e4m3fn``. Upstream ``generate_image`` hard-codes ``torch.bfloat16`` autocast,
+    which triggers **Promotion for Float8 Types is not supported** when Float8 and BF16
+    meet. Loading those repos as **float32** avoids Float8 tensors during forward (more
+    VRAM than “true” FP8 inference inside HiDream’s own tooling).
+
+    Override: ``GLITCHFRAME_HIDREAM_NATIVE_WEIGHTS_DTYPE=float32|bfloat16``.
+    """
+    import torch  # type: ignore
+
+    raw = os.environ.get("GLITCHFRAME_HIDREAM_NATIVE_WEIGHTS_DTYPE", "").strip().lower()
+    if raw in ("float32", "fp32"):
+        return torch.float32
+    if raw in ("bfloat16", "bf16"):
+        return torch.bfloat16
+    if raw in ("auto", ""):
+        pass
+    else:
+        _log(
+            f"Ignoring unknown GLITCHFRAME_HIDREAM_NATIVE_WEIGHTS_DTYPE={raw!r}; "
+            "using heuristic."
+        )
+
+    hf_id = os.environ.get("GLITCHFRAME_HIDREAM_HF_REPO_ID", "").strip().lower()
+    if hf_id and any(h in hf_id for h in ("fp8", "drbaph", "e4m3", "f8e4")):
+        _log(
+            "GLITCHFRAME_HIDREAM_HF_REPO_ID suggests an FP8 checkpoint — "
+            "loading weights as float32 for generate_image compatibility."
+        )
+        return torch.float32
+
+    path_s = str(model_path).lower()
+    if any(
+        hint in path_s
+        for hint in (
+            "fp8",
+            "f8e4m3",
+            "float8",
+            "drbaph",
+            "hidream-o1-image-dev-fp8",
+        )
+    ):
+        _log(
+            "FP8 / low-bit checkpoint path detected — loading as float32 for "
+            "Glitchframe worker compatibility (see GLITCHFRAME_HIDREAM_NATIVE_WEIGHTS_DTYPE)."
+        )
+        return torch.float32
+    return torch.bfloat16
+
+
 def _insert_repo_path(repo: Path) -> None:
     repo_str = str(repo.resolve())
     if repo_str not in sys.path:
@@ -184,11 +237,15 @@ def _load_native_hidream(*, model_path: Path, model_type: str) -> _NativeHiDream
         Qwen3VLForConditionalGeneration,
     )
 
-    _log(f"loading HiDream native stack ({model_type}) from {model_path}")
+    wdtype = _native_weights_torch_dtype(model_path)
+    _log(
+        f"loading HiDream native stack ({model_type}) from {model_path} "
+        f"(from_pretrained torch_dtype={wdtype})"
+    )
     processor = AutoProcessor.from_pretrained(str(model_path))
     model = Qwen3VLForConditionalGeneration.from_pretrained(
         str(model_path),
-        torch_dtype=torch.bfloat16,
+        torch_dtype=wdtype,
         device_map="cuda",
     ).eval()
     tokenizer = _get_tokenizer(processor)
