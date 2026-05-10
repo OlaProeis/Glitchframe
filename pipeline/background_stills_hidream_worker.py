@@ -49,6 +49,50 @@ from pathlib import Path
 from typing import Any
 
 
+def _reconfigure_stdio_utf8() -> None:
+    """Ensure stdout/stderr accept UTF-8 so Hugging Face import-time prints do not crash on Windows (cp1252).
+
+    ``transformers``' ``auto_docstring`` can ``print()`` messages containing emoji
+    (e.g. U+1F6A8) while loading HiDream's ``qwen3_vl_transformers``; that raises
+    ``UnicodeEncodeError`` when the console code page is not UTF-8.
+    Disable with ``GLITCHFRAME_HIDREAM_WORKER_UTF8_STDIO=0`` if needed.
+    """
+    if os.environ.get("GLITCHFRAME_HIDREAM_WORKER_UTF8_STDIO", "").strip() == "0":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        if stream is None:
+            continue
+        reconf = getattr(stream, "reconfigure", None)
+        if callable(reconf):
+            try:
+                reconf(encoding="utf-8", errors="replace")
+                continue
+            except (OSError, ValueError, AttributeError):
+                pass
+        buf = getattr(stream, "buffer", None)
+        if buf is None:
+            continue
+        try:
+            import io
+
+            replacement = io.TextIOWrapper(
+                buf,
+                encoding="utf-8",
+                errors="replace",
+                line_buffering=stream is sys.stdout,
+                write_through=True,
+            )
+        except Exception:
+            continue
+        if stream is sys.stdout:
+            sys.stdout = replacement
+        else:
+            sys.stderr = replacement
+
+
+_reconfigure_stdio_utf8()
+
+
 def _emit(event: dict) -> None:
     """Write a single JSONL event to stdout and flush."""
     sys.stdout.write(json.dumps(event, separators=(",", ":")) + "\n")
