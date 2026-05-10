@@ -33,9 +33,41 @@ Set these in `.env` (see `.env.example`):
 | `GLITCHFRAME_HIDREAM_MODEL_TYPE` | `dev` (28 steps, ~16 GB on FP8) or `full` (50 steps) |
 | `GLITCHFRAME_HIDREAM_GEN_WIDTH` / `_GEN_HEIGHT` | Generation resolution (default 1280×720) |
 | `GLITCHFRAME_HIDREAM_PIPELINE_IMPORT` | `auto` (default), or `module:Class` for a fork |
+| `GLITCHFRAME_HIDREAM_NATIVE_WEIGHTS_DTYPE` | `from_pretrained` dtype (default `bfloat16`); only affects non-Float8 tensors |
+| `GLITCHFRAME_HIDREAM_DEQUANT_FLOAT8` | `0` to skip the post-load Float8 → BFloat16 in-place cast (default: on) |
 
 If any of the first three is unset, switching the radio to **HiDream**
 raises a clear error at generation time. SDXL keeps working regardless.
+
+## Float8 (drbaph FP8) compatibility
+
+`drbaph/HiDream-O1-Image-FP8` ships the Qwen3-VL backbone as
+`Float8_e4m3fn` safetensors. `transformers.from_pretrained` honours
+`torch_dtype=...` only as a *default for newly-created tensors* — Float8
+entries on disk stay Float8 in memory regardless. Upstream `generate_image`
+runs forward inside `torch.autocast(dtype=bfloat16)`; in
+`Qwen3VLModel._forward_generation` the line
+
+```python
+inputs_embeds = torch.where(tms_mask_3d, t_emb_expanded, inputs_embeds)
+```
+
+mixes a Float8 `inputs_embeds` (Embedding lookup, *not* touched by
+autocast) with a BFloat16 `t_emb_expanded` (Linear inside the autocast)
+and PyTorch raises `RuntimeError: Promotion for Float8 Types is not
+supported`.
+
+To fix this without vendoring `pipeline.py`, the worker calls
+`_dequantize_float8_to_bfloat16(model)` right after
+`Qwen3VLForConditionalGeneration.from_pretrained` and casts every Float8
+parameter/buffer to BFloat16 in-place. Direct `.to(bfloat16)` reinterprets
+each Float8 value at full BF16 precision — the upstream FP8 release stores
+plain Float8 weights, not torchao-style scaled `Float8Tensor`s, so no
+external scale factor is required. The model effectively becomes a BF16
+build with FP8-precision weights (same accuracy as drbaph's intended FP8
+inference, compatible with HiDream's BF16 forward path). The worker logs a
+dtype audit before *and* after the cast so you can verify zero Float8
+tensors remain.
 
 ## Cache namespacing
 

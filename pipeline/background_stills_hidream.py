@@ -38,8 +38,14 @@ Configuration (environment variables, see ``.env.example``):
 * ``GLITCHFRAME_HIDREAM_GEN_WIDTH`` / ``GLITCHFRAME_HIDREAM_GEN_HEIGHT`` —
   override generation resolution (defaults: 1280×720).
 * ``GLITCHFRAME_HIDREAM_NATIVE_WEIGHTS_DTYPE`` — optional ``float32`` or ``bfloat16``
-  for the HiDream worker's ``from_pretrained`` dtype; default auto-selects ``float32``
-  for FP8 repos (e.g. drbaph) to avoid Float8/BFloat16 promotion errors in ``generate_image``.
+  for the HiDream worker's ``from_pretrained`` dtype; default ``bfloat16``. FP8
+  repos (e.g. drbaph) are handled by an in-place Float8→BFloat16 dequant pass on
+  the loaded model (see ``GLITCHFRAME_HIDREAM_DEQUANT_FLOAT8``) so ``torch_dtype``
+  no longer has to inflate every tensor to FP32 to avoid Float8/BFloat16
+  promotion errors inside HiDream's ``generate_image``.
+* ``GLITCHFRAME_HIDREAM_DEQUANT_FLOAT8`` — set to ``0`` to skip the post-load
+  Float8→BFloat16 cast (advanced — only useful when the env already provides
+  true FP8 ops via ``torchao`` or a fork). Default is on.
 
 Unit tests use ``load_hidream_config(..., strict_env=True)`` so paths stay
 explicit; UI manifest peeking uses ``allow_fetch=False`` without requiring

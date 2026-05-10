@@ -169,14 +169,40 @@ class _NativeHiDreamBundle:
     model_type: str
 
 
+def _is_fp8_checkpoint_hint(model_path: Path) -> bool:
+    """Heuristic: does this path / repo id look like an FP8 community checkpoint?"""
+    hf_id = os.environ.get("GLITCHFRAME_HIDREAM_HF_REPO_ID", "").strip().lower()
+    if hf_id and any(h in hf_id for h in ("fp8", "drbaph", "e4m3", "f8e4")):
+        return True
+    path_s = str(model_path).lower()
+    return any(
+        hint in path_s
+        for hint in (
+            "fp8",
+            "f8e4m3",
+            "float8",
+            "drbaph",
+            "hidream-o1-image-dev-fp8",
+        )
+    )
+
+
 def _native_weights_torch_dtype(model_path: Path) -> Any:
     """Return ``torch.dtype`` for :meth:`Qwen3VLForConditionalGeneration.from_pretrained`.
 
-    Community FP8 checkpoints (e.g. ``drbaph/HiDream-O1-Image-FP8``) keep weights as
-    ``Float8_e4m3fn``. Upstream ``generate_image`` hard-codes ``torch.bfloat16`` autocast,
-    which triggers **Promotion for Float8 Types is not supported** when Float8 and BF16
-    meet. Loading those repos as **float32** avoids Float8 tensors during forward (more
-    VRAM than “true” FP8 inference inside HiDream’s own tooling).
+    Community FP8 checkpoints (e.g. ``drbaph/HiDream-O1-Image-FP8``) keep their main
+    weights as ``Float8_e4m3fn`` regardless of ``torch_dtype`` — ``transformers``
+    only uses ``torch_dtype`` as a *default for newly-created tensors*; safetensors
+    entries that store Float8 stay Float8 on disk and in memory. Upstream
+    ``generate_image`` then runs ``torch.autocast(dtype=bfloat16)`` and the BF16 ↔
+    Float8 mix raises **Promotion for Float8 Types is not supported** at the
+    ``torch.where`` in ``qwen3_vl_transformers._forward_generation``.
+
+    The Float8 tensors are dequantized to BFloat16 *after* load by
+    :func:`_dequantize_float8_to_bfloat16` (see that function's docstring), so the
+    most economical default for FP8 repos is **bfloat16** — non-Float8 auxiliary
+    tensors (LayerNorm scales, embeddings, etc.) load straight into BF16 to match
+    ``generate_image``'s autocast and avoid the previous float32 footprint.
 
     Override: ``GLITCHFRAME_HIDREAM_NATIVE_WEIGHTS_DTYPE=float32|bfloat16``.
     """
@@ -195,30 +221,13 @@ def _native_weights_torch_dtype(model_path: Path) -> Any:
             "using heuristic."
         )
 
-    hf_id = os.environ.get("GLITCHFRAME_HIDREAM_HF_REPO_ID", "").strip().lower()
-    if hf_id and any(h in hf_id for h in ("fp8", "drbaph", "e4m3", "f8e4")):
+    if _is_fp8_checkpoint_hint(model_path):
         _log(
-            "GLITCHFRAME_HIDREAM_HF_REPO_ID suggests an FP8 checkpoint — "
-            "loading weights as float32 for generate_image compatibility."
+            "FP8 / low-bit checkpoint detected — loading auxiliary tensors as "
+            "bfloat16; Float8 weights will be dequantized to bfloat16 in-place "
+            "(see GLITCHFRAME_HIDREAM_DEQUANT_FLOAT8 to disable)."
         )
-        return torch.float32
-
-    path_s = str(model_path).lower()
-    if any(
-        hint in path_s
-        for hint in (
-            "fp8",
-            "f8e4m3",
-            "float8",
-            "drbaph",
-            "hidream-o1-image-dev-fp8",
-        )
-    ):
-        _log(
-            "FP8 / low-bit checkpoint path detected — loading as float32 for "
-            "Glitchframe worker compatibility (see GLITCHFRAME_HIDREAM_NATIVE_WEIGHTS_DTYPE)."
-        )
-        return torch.float32
+        return torch.bfloat16
     return torch.bfloat16
 
 
@@ -226,6 +235,158 @@ def _insert_repo_path(repo: Path) -> None:
     repo_str = str(repo.resolve())
     if repo_str not in sys.path:
         sys.path.insert(0, repo_str)
+
+
+def _collect_float8_dtypes() -> set[Any]:
+    """Return every Float8 ``torch.dtype`` exposed by the installed PyTorch.
+
+    Builds matter: PyTorch 2.1 added ``float8_e4m3fn`` / ``float8_e5m2``;
+    later releases added ``float8_e4m3fnuz`` / ``float8_e5m2fnuz``. This
+    function returns whatever the current build advertises so the dequant
+    helper does not need to be edited when PyTorch grows new variants.
+    """
+    import torch  # type: ignore
+
+    out: set[Any] = set()
+    for name in dir(torch):
+        if not name.startswith("float8_"):
+            continue
+        attr = getattr(torch, name, None)
+        if isinstance(attr, torch.dtype):
+            out.add(attr)
+    return out
+
+
+def _audit_model_dtypes(model: Any, *, sample_names: int = 5, label: str = "audit") -> int:
+    """Read-only diagnostic: log how parameters / buffers are split by dtype.
+
+    Returns the total number of Float8 tensors (params + buffers) found, so
+    callers can decide whether a follow-up dequant pass is needed.
+
+    Set ``GLITCHFRAME_HIDREAM_WORKER_DIAGNOSE_DTYPES=0`` to skip the
+    log-line emission (the count return value is still computed since it is
+    cheap — one pass over named tensors, no GPU work, no allocations).
+    """
+    quiet = os.environ.get("GLITCHFRAME_HIDREAM_WORKER_DIAGNOSE_DTYPES", "").strip() == "0"
+    try:
+        param_counts: dict[str, int] = {}
+        buffer_counts: dict[str, int] = {}
+        float8_param_names: list[str] = []
+        float8_buffer_names: list[str] = []
+        float8_total = 0
+
+        for name, p in model.named_parameters():
+            key = str(p.dtype)
+            param_counts[key] = param_counts.get(key, 0) + 1
+            if "float8" in key.lower():
+                float8_total += 1
+                if len(float8_param_names) < sample_names:
+                    float8_param_names.append(name)
+
+        for name, b in model.named_buffers():
+            key = str(b.dtype)
+            buffer_counts[key] = buffer_counts.get(key, 0) + 1
+            if "float8" in key.lower():
+                float8_total += 1
+                if len(float8_buffer_names) < sample_names:
+                    float8_buffer_names.append(name)
+
+        if quiet:
+            return float8_total
+
+        def _fmt(counts: dict[str, int]) -> str:
+            if not counts:
+                return "<empty>"
+            return ", ".join(
+                f"{dt}={n}" for dt, n in sorted(counts.items(), key=lambda x: -x[1])
+            )
+
+        _log(f"dtype {label}: parameters: {_fmt(param_counts)}")
+        _log(f"dtype {label}: buffers:    {_fmt(buffer_counts)}")
+        if float8_param_names:
+            _log(
+                f"dtype {label}: Float8 parameters detected (first "
+                f"{len(float8_param_names)}): {float8_param_names}"
+            )
+        if float8_buffer_names:
+            _log(
+                f"dtype {label}: Float8 buffers detected (first "
+                f"{len(float8_buffer_names)}): {float8_buffer_names}"
+            )
+        if float8_total == 0:
+            _log(
+                f"dtype {label}: no Float8 tensors — generate_image's bf16 "
+                "autocast path is safe."
+            )
+        return float8_total
+    except Exception as exc:  # noqa: BLE001
+        _log(f"dtype {label} failed (non-fatal): {type(exc).__name__}: {exc}")
+        return 0
+
+
+def _dequantize_float8_to_bfloat16(model: Any) -> int:
+    """Cast every Float8 parameter / buffer in ``model`` to BFloat16 in-place.
+
+    Why this is needed
+    ------------------
+    Community FP8 checkpoints (e.g. ``drbaph/HiDream-O1-Image-FP8``) ship the
+    Qwen3-VL backbone as ``Float8_e4m3fn`` safetensors. ``transformers`` keeps
+    those tensors at their on-disk dtype regardless of ``torch_dtype=`` (which
+    is only a *default for newly-created tensors*). HiDream's upstream
+    ``generate_image`` then runs forward inside ``torch.autocast(dtype=bf16)``
+    where ``Qwen3VLModel._forward_generation`` performs::
+
+        inputs_embeds = torch.where(tms_mask_3d, t_emb_expanded, inputs_embeds)
+
+    ``inputs_embeds`` is the result of an ``Embedding`` lookup (Float8, because
+    the embedding weight is Float8 and autocast does not touch ``Embedding``)
+    while ``t_emb_expanded`` is BFloat16 (Linear inside the autocast). PyTorch
+    refuses to promote Float8 with BFloat16 → ``RuntimeError: Promotion for
+    Float8 Types is not supported``.
+
+    Strategy
+    --------
+    Cast every Float8 tensor (params + buffers) to BFloat16 once, so the
+    autocast path is consistent. Direct ``.to(bfloat16)`` reinterprets each
+    Float8 value at full BF16 precision (no scale factors are applied because
+    the upstream FP8 release stores plain Float8 weights, not torchao-style
+    scaled ``Float8Tensor``s). The model effectively becomes a BF16 build with
+    FP8-precision weights — same accuracy as drbaph's intended FP8 inference,
+    but compatible with HiDream's BF16 forward path.
+
+    Returns the number of tensors cast. Set
+    ``GLITCHFRAME_HIDREAM_DEQUANT_FLOAT8=0`` to opt out (advanced — only useful
+    when the env already provides true FP8 ops via ``torchao`` or a fork).
+    """
+    if os.environ.get("GLITCHFRAME_HIDREAM_DEQUANT_FLOAT8", "").strip() == "0":
+        _log("Float8 dequant disabled by GLITCHFRAME_HIDREAM_DEQUANT_FLOAT8=0")
+        return 0
+    import torch  # type: ignore
+
+    float8_dtypes = _collect_float8_dtypes()
+    if not float8_dtypes:
+        return 0
+    cast = 0
+    with torch.no_grad():
+        for module in model.modules():
+            for pname, p in list(module.named_parameters(recurse=False)):
+                if p.dtype in float8_dtypes:
+                    new_p = torch.nn.Parameter(
+                        p.data.to(torch.bfloat16),
+                        requires_grad=p.requires_grad,
+                    )
+                    setattr(module, pname, new_p)
+                    cast += 1
+            for bname, b in list(module.named_buffers(recurse=False)):
+                if b.dtype in float8_dtypes:
+                    persistent = bname not in module._non_persistent_buffers_set
+                    module.register_buffer(
+                        bname,
+                        b.data.to(torch.bfloat16),
+                        persistent=persistent,
+                    )
+                    cast += 1
+    return cast
 
 
 def _load_native_hidream(*, model_path: Path, model_type: str) -> _NativeHiDreamBundle:
@@ -248,6 +409,22 @@ def _load_native_hidream(*, model_path: Path, model_type: str) -> _NativeHiDream
         torch_dtype=wdtype,
         device_map="cuda",
     ).eval()
+    pre_float8 = _audit_model_dtypes(model, label="audit (post-load)")
+    if pre_float8 > 0:
+        _log(
+            f"dequantizing {pre_float8} Float8 tensors → bfloat16 so "
+            "generate_image's BF16 autocast path is consistent (see "
+            "_dequantize_float8_to_bfloat16)."
+        )
+        cast = _dequantize_float8_to_bfloat16(model)
+        _log(f"dequant: cast {cast} Float8 tensor(s) to bfloat16")
+        post_float8 = _audit_model_dtypes(model, label="audit (post-dequant)")
+        if post_float8 > 0:
+            _log(
+                f"WARNING: {post_float8} Float8 tensor(s) remain after dequant — "
+                "generate_image will likely raise Promotion for Float8 Types. "
+                "File a bug if this happens with an unmodified worker."
+            )
     tokenizer = _get_tokenizer(processor)
     _add_special_tokens(tokenizer)
     return _NativeHiDreamBundle(model=model, processor=processor, model_type=model_type)
