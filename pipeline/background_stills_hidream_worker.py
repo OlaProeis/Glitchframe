@@ -46,7 +46,9 @@ import sys
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
+
+_JSONL_STDOUT: TextIO | None = None
 
 
 def _reconfigure_stdio_utf8() -> None:
@@ -93,10 +95,31 @@ def _reconfigure_stdio_utf8() -> None:
 _reconfigure_stdio_utf8()
 
 
+def _wire_jsonl_only_stdout() -> None:
+    """Route process ``sys.stdout`` to stderr so Hugging Face / tqdm ``print`` never corrupts JSONL.
+
+    The parent only reads **JSON lines** from the worker's real stdout pipe.
+    Recent ``transformers`` builds print docstring reminder lines (with emoji)
+    to stdout during imports, which would be parsed as JSON and fail.
+
+    JSON events are written via :func:`_emit` to the saved stream.
+    Set ``GLITCHFRAME_HIDREAM_WORKER_ALLOW_LIB_STDOUT=1`` to skip (debug only).
+    """
+    global _JSONL_STDOUT
+    _JSONL_STDOUT = sys.stdout
+    if os.environ.get("GLITCHFRAME_HIDREAM_WORKER_ALLOW_LIB_STDOUT", "").strip() == "1":
+        return
+    sys.stdout = sys.stderr
+
+
+_wire_jsonl_only_stdout()
+
+
 def _emit(event: dict) -> None:
-    """Write a single JSONL event to stdout and flush."""
-    sys.stdout.write(json.dumps(event, separators=(",", ":")) + "\n")
-    sys.stdout.flush()
+    """Write a single JSONL event to the pipe stdout and flush."""
+    stream = _JSONL_STDOUT if _JSONL_STDOUT is not None else sys.stdout
+    stream.write(json.dumps(event, separators=(",", ":")) + "\n")
+    stream.flush()
 
 
 def _log(msg: str) -> None:
