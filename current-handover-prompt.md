@@ -4,6 +4,68 @@
 
 **Always read [`ai-context.md`](ai-context.md) first** for project rules and architecture.
 
+> **Update (May 2026):** Significant **HiDream-O1-Image** integration work for *Background keyframes* landed on branch **`dev`** (not necessarily `main`). See **[§ HiDream background keyframes — blocked on Float8 vs BF16](#hidream-background-keyframes--blocked-on-float8-vs-bf16)** if continuing that line.
+
+---
+
+## HiDream background keyframes — blocked on Float8 vs BF16 {#hidream-background-keyframes--blocked-on-float8-vs-bf16}
+
+**Purpose:** Optional **SDXL alternative** in the *Background keyframes* tab: `pipeline/background_stills_hidream.py` spawns **`pipeline/background_stills_hidream_worker.py`** in a **separate Python** so HiDream’s stack (CUDA / `flash-attn`) does not mix with Glitchframe’s venv.
+
+**Doc:** `docs/technical/background-stills-hidream.md`
+
+### Symptom (current blocker)
+
+Generation fails during the first keyframe with:
+
+```text
+RuntimeError: Promotion for Float8 Types is not supported, attempted to promote BFloat16 and Float8_e4m3fn
+```
+
+Stack originates from **upstream** `HiDream-O1-Image` **`models/pipeline.py`** → `generate_image` uses **`dtype = torch.bfloat16`** and **`torch.autocast(..., dtype=dtype)`** while some tensors in the path remain **`Float8_e4m3fn`** (typical for **FP8** checkpoints such as **`drbaph/HiDream-O1-Image-FP8`**, Glitchframe’s default **dev** HF repo for low-VRAM docs).
+
+PyTorch does not promote **BFloat16 activations** with **Float8 weights** in that mix.
+
+### What we implemented (on `dev`, commits around HiDream worker / hidream auto-setup)
+
+1. **Auto-setup (no mandatory `.env` for repo/weights)**  
+   - `load_hidream_config(allow_fetch=True, strict_env=False)` clones **`HiDream-ai/HiDream-O1-Image`** under **`GLITCHFRAME_MODEL_CACHE/hidream/`** and **`snapshot_download`** default weights (**dev** → `drbaph/HiDream-O1-Image-FP8`; **full** → `HiDream-ai/HiDream-O1-Image`).  
+   - Optional: `GLITCHFRAME_HIDREAM_HF_REPO_ID`, `GLITCHFRAME_HIDREAM_NATIVE_WEIGHTS_DTYPE`, etc. See `.env.example`.
+
+2. **Upstream API change — no `HiDreamImagePipeline`**  
+   Current GitHub `models/pipeline.py` exposes **`generate_image`** + **`Qwen3VLForConditionalGeneration`** (matches their `inference.py`), not a diffusers-style `HiDreamImagePipeline`. Worker **`--pipeline-import auto`** prefers native path, else legacy class.
+
+3. **Windows / `transformers` quirks**  
+   - **`UnicodeEncodeError`** on emoji during import (`auto_docstring` **print**, cp1252): worker calls **`_reconfigure_stdio_utf8()`** early.  
+   - **`print()` to stdout** broke JSONL protocol (parent reads only valid JSON lines): save real pipe in **`_JSONL_STDOUT`**, **`_emit`** writes there; **`sys.stdout = sys.stderr`** for library noise. Opt-out: **`GLITCHFRAME_HIDREAM_WORKER_ALLOW_LIB_STDOUT=1`**.
+
+4. **Float8 vs BF16 — attempted mitigation**  
+   - Worker **`_native_weights_torch_dtype()`** chooses **`torch.float32`** for **`from_pretrained`** when path or **`GLITCHFRAME_HIDREAM_HF_REPO_ID`** hints FP8 (`fp8`, `drbaph`, `e4m3`, …), else **`bfloat16`**. Override: **`GLITCHFRAME_HIDREAM_NATIVE_WEIGHTS_DTYPE=float32|bfloat16`**.  
+   - **User still sees Float8 promotion after this** — so either not all parameters leave Float8 after load (buffers / submodules / transformers version), the active code path still touches FP8 tensors, or Pinokio deploy is running an older worker — **needs verification in a fresh session** (print `next(p.parameters()).dtype` after load, `pip show transformers torch` in the **worker** interpreter).
+
+### What we have **not** solved
+
+- A **reliable** way to run **drbaph FP8** + upstream **`generate_image`** inside Glitchframe’s subprocess without Float8/BF16 promotion errors.  
+- No fork of **`generate_image`** to force **float32** compute end-to-end (upstream hardcodes **`dtype = torch.bfloat16`** ~line 124 in `models/pipeline.py`).
+
+### Promising directions for the next chat
+
+| Direction | Notes |
+|-----------|--------|
+| **Official BF16 dev weights** | Point **`GLITCHFRAME_HIDREAM_HF_REPO_ID`** to **`HiDream-ai/HiDream-O1-Image-Dev`** (or non-FP8 artifact). Larger download/VRAM; avoids FP8 in the graph if weights are BF16/FP32. |
+| **Pinokio HiDream venv as `GLITCHFRAME_HIDREAM_PYTHON`** | User sometimes runs worker with **Glitchframe’s** `python.exe`; Pinokio’s dedicated HiDream env may have matching **`transformers`/`torch`** behavior — still may not fix FP8+BF16 if upstream recipe unchanged. |
+| **Patch `generate_image`** | Vendor a tiny patch (wrap or fork) to use **`torch.float32`** instead of **`bfloat16`** for `dtype` / autocast when FP8 checkpoint detected — invasive but direct. |
+| **Runtime dtype audit** | In worker after `from_pretrained`, iterate `named_parameters()` / buffers for any **`Float8`** dtype; confirms whether **`torch_dtype=float32`** actually materialized. |
+
+### Key files
+
+| File | Role |
+|------|------|
+| `pipeline/background_stills_hidream.py` | Parent integration, `load_hidream_config`, `_HiDreamWorker`, `BackgroundStillsHiDream` |
+| `pipeline/background_stills_hidream_worker.py` | Subprocess: JSONL protocol, UTF-8, stdout hijack, native vs diffusers load, `_native_weights_torch_dtype` |
+| `pipeline/background.py` | `create_background_source`, optional `hidream_config` |
+| `tests/test_background_hidream.py` | Config/factory tests (no real GPU/worker run) |
+
 ---
 
 ## Environment
@@ -12,7 +74,7 @@
 - **Python:** 3.11+ (`requires-python`); **WhisperX 3.3.0 declares `<3.13`**—the **pinned Windows “Track A”** stack only applies to **Python 3.11 / 3.12** on Windows.
 - **Interpreter (local dev):** `.\.venv\Scripts\python.exe` — Windows `py` launcher may **not** point at this venv.
 - **Tests:** `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v`
-- **Branch:** `main`
+- **Branch:** `main` for lyrics/Pinokio work described below; **HiDream keyframes work has been on `dev`** — confirm with `git branch` / recent commits before assuming.
 
 ---
 
@@ -197,6 +259,7 @@ shims, ffmpeg discovery, and progress threading are all on `main`.
 ## Checklist for the next agent
 
 - [ ] Read **`ai-context.md`** and this file end-to-end
+- [ ] If picking up **HiDream keyframes**: read **[§ HiDream background keyframes](#hidream-background-keyframes--blocked-on-float8-vs-bf16)**; verify you are on **`dev`** or have merged those commits; reproduce with **Pinokio** paths the user uses
 - [ ] Read [`docs/technical/pinokio-lyrics-align-windows-handover.md`](docs/technical/pinokio-lyrics-align-windows-handover.md) Bugs A–G for the full investigation history
 - [ ] Pinokio regressions: confirm **`install.js`** still uses **`--no-deps`** + **markupsafe/pillow** lines after torch trio
 - [ ] If touching `pipeline/compositor.py` progress code: keep `progress(...)` calls on the request thread; the producer must only write `_CompositorStats` scalars
