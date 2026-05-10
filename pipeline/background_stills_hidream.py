@@ -21,20 +21,28 @@ A different ``model_id`` invalidates the manifest match in
 :meth:`pipeline.background_stills.BackgroundManifest.matches_key`, forcing
 regeneration with the chosen backend.
 
-Configuration (all read from environment variables, see ``.env.example``):
+Configuration (environment variables, see ``.env.example``):
 
-* ``GLITCHFRAME_HIDREAM_PYTHON`` — path to the HiDream venv's Python
-  executable (e.g. Pinokio's ``.../HiDream-O1-Image/env/Scripts/python.exe``).
-* ``GLITCHFRAME_HIDREAM_REPO`` — path to a checkout of
-  ``HiDream-ai/HiDream-O1-Image``.
-* ``GLITCHFRAME_HIDREAM_MODEL_PATH`` — path to the model weights directory.
+* ``GLITCHFRAME_HIDREAM_PYTHON`` — optional; HiDream venv ``python`` (Pinokio).
+  When unset, uses ``<repo>/env/...`` if present, else Glitchframe's
+  ``sys.executable`` (often insufficient — install HiDream in a separate venv).
+* ``GLITCHFRAME_HIDREAM_REPO`` — optional; checkout of ``HiDream-ai/HiDream-O1-Image``.
+  When unset, a shallow clone is created under ``GLITCHFRAME_MODEL_CACHE/hidream/``.
+* ``GLITCHFRAME_HIDREAM_MODEL_PATH`` — optional; HF weights directory. When unset,
+  weights are downloaded on first generation (like SDXL) via ``huggingface_hub``.
+* ``GLITCHFRAME_HIDREAM_HF_REPO_ID`` — optional; HF repo id for that download
+  (defaults: ``dev`` → ``drbaph/HiDream-O1-Image-FP8``, ``full`` →
+  ``HiDream-ai/HiDream-O1-Image``).
 * ``GLITCHFRAME_HIDREAM_MODEL_TYPE`` — ``dev`` (default, 28 steps) or ``full``
   (50 steps).
 * ``GLITCHFRAME_HIDREAM_GEN_WIDTH`` / ``GLITCHFRAME_HIDREAM_GEN_HEIGHT`` —
-  override generation resolution (defaults: 1280×720, ~16 GB peak VRAM on
-  the Dev FP8 checkpoint; raise these later once stability is verified).
+  override generation resolution (defaults: 1280×720).
 * ``GLITCHFRAME_HIDREAM_PIPELINE_IMPORT`` — override the pipeline import
   spec (default ``models.pipeline:HiDreamImagePipeline``).
+
+Unit tests use ``load_hidream_config(..., strict_env=True)`` so paths stay
+explicit; UI manifest peeking uses ``allow_fetch=False`` without requiring
+``.env`` entries.
 """
 from __future__ import annotations
 
@@ -52,6 +60,7 @@ from typing import Any, Sequence
 import numpy as np
 from PIL import Image
 
+from config import MODEL_CACHE_DIR
 from pipeline.background_stills import (
     BackgroundManifest,
     BackgroundStills,
@@ -69,6 +78,15 @@ from pipeline.background_stills import (
 )
 
 LOGGER = logging.getLogger(__name__)
+
+# Shallow-clone source for code the worker imports (``models.pipeline``, etc.).
+_HIDREAM_GIT_URL = "https://github.com/HiDream-ai/HiDream-O1-Image.git"
+
+# Default Hugging Face repos for first-time weight download (override via
+# ``GLITCHFRAME_HIDREAM_HF_REPO_ID``). Dev uses the community FP8 checkpoint to
+# match Pinokio / low-VRAM docs; full uses the official release.
+_DEFAULT_HF_REPO_DEV = "drbaph/HiDream-O1-Image-FP8"
+_DEFAULT_HF_REPO_FULL = "HiDream-ai/HiDream-O1-Image"
 
 # Generation resolution defaults. HiDream-O1-Image trained at up to 2048×2048,
 # but FP8 Dev fits comfortably at 16:9 720p on a 24 GB card; we Lanczos-upscale
@@ -124,33 +142,109 @@ def _compute_model_id(model_path: Path, model_type: str) -> str:
     return f"{MODEL_ID_PREFIX}:{model_type}:{h}"
 
 
-def load_hidream_config() -> HiDreamConfig:
-    """Resolve a :class:`HiDreamConfig` from environment variables.
+def _default_hf_repo_id(model_type: str) -> str:
+    return _DEFAULT_HF_REPO_DEV if model_type == "dev" else _DEFAULT_HF_REPO_FULL
 
-    Raises
-    ------
-    RuntimeError
-        If a required variable is unset or a path is missing on disk.
-    """
-    py = _env("GLITCHFRAME_HIDREAM_PYTHON")
-    repo = _env("GLITCHFRAME_HIDREAM_REPO")
-    model_path = _env("GLITCHFRAME_HIDREAM_MODEL_PATH")
-    if not py or not repo or not model_path:
-        raise RuntimeError(
-            "HiDream backend requires GLITCHFRAME_HIDREAM_PYTHON, "
-            "GLITCHFRAME_HIDREAM_REPO and GLITCHFRAME_HIDREAM_MODEL_PATH to be "
-            "set (see .env.example)."
+
+def _hf_weights_dir_name(hf_repo_id: str) -> str:
+    """Filesystem-safe subdir under ``MODEL_CACHE_DIR/hidream/`` for weights."""
+    return "hf--" + hf_repo_id.replace("/", "--").replace("\\", "-")
+
+
+def _hidream_bundle_root() -> Path:
+    return Path(MODEL_CACHE_DIR).resolve() / "hidream"
+
+
+def _weights_dir_looks_complete(model_path: Path) -> bool:
+    if not model_path.is_dir():
+        return False
+    return (model_path / "config.json").is_file() or (
+        model_path / "model_index.json"
+    ).is_file()
+
+
+def _find_venv_python(repo: Path) -> Path | None:
+    if os.name == "nt":
+        candidate = repo / "env" / "Scripts" / "python.exe"
+    else:
+        candidate = repo / "env" / "bin" / "python"
+    return candidate if candidate.is_file() else None
+
+
+def _ensure_hidream_git_repo(repo: Path) -> None:
+    marker = repo / "models" / "pipeline.py"
+    if marker.is_file():
+        return
+    if repo.exists():
+        if any(repo.iterdir()):
+            raise RuntimeError(
+                f"GLITCHFRAME_HIDREAM_REPO directory {repo} is not empty but "
+                "does not look like HiDream-O1-Image (missing models/pipeline.py). "
+                "Remove the directory, pick an empty path, or set "
+                "GLITCHFRAME_HIDREAM_REPO to a valid checkout."
+            )
+    else:
+        repo.parent.mkdir(parents=True, exist_ok=True)
+    LOGGER.info("Cloning HiDream-O1-Image into %s …", repo)
+    try:
+        proc = subprocess.run(
+            ["git", "clone", "--depth", "1", _HIDREAM_GIT_URL, str(repo)],
+            capture_output=True,
+            text=True,
+            check=False,
         )
-    py_path = Path(py)
-    repo_path = Path(repo)
-    model_path_path = Path(model_path)
-    if not py_path.is_file():
-        raise RuntimeError(f"GLITCHFRAME_HIDREAM_PYTHON not a file: {py_path}")
-    if not repo_path.is_dir():
-        raise RuntimeError(f"GLITCHFRAME_HIDREAM_REPO not a directory: {repo_path}")
-    if not model_path_path.exists():
-        raise RuntimeError(f"GLITCHFRAME_HIDREAM_MODEL_PATH missing: {model_path_path}")
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "HiDream auto-setup needs `git` on PATH to clone HiDream-ai/HiDream-O1-Image, "
+            "or set GLITCHFRAME_HIDREAM_REPO to an existing checkout."
+        ) from exc
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip()
+        raise RuntimeError(
+            "git clone failed while setting up HiDream code repo. "
+            f"Install git or set GLITCHFRAME_HIDREAM_REPO manually. {err}"
+        )
 
+
+def _ensure_hidream_weights(model_path: Path, hf_repo_id: str) -> None:
+    if _weights_dir_looks_complete(model_path):
+        return
+    try:
+        from pipeline._huggingface_symlink_compat import patch_huggingface_disable_symlinks
+
+        patch_huggingface_disable_symlinks()
+        from huggingface_hub import snapshot_download  # type: ignore[import-untyped]
+    except ImportError as exc:
+        raise RuntimeError(
+            "Install huggingface_hub (included with Glitchframe) or place HiDream "
+            "weights on disk and set GLITCHFRAME_HIDREAM_MODEL_PATH."
+        ) from exc
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    LOGGER.info(
+        "Downloading HiDream weights from Hugging Face (%s) into %s …",
+        hf_repo_id,
+        model_path,
+    )
+    snapshot_download(repo_id=hf_repo_id, local_dir=str(model_path))
+
+
+def load_hidream_config(
+    *,
+    allow_fetch: bool = True,
+    strict_env: bool = False,
+) -> HiDreamConfig:
+    """Resolve :class:`HiDreamConfig`.
+
+    Parameters
+    ----------
+    allow_fetch
+        When ``True`` (default, used before generation), clone the HiDream
+        GitHub repo and download Hugging Face weights if paths are missing.
+    strict_env
+        When ``True`` (unit tests, explicit Pinokio setups), require
+        ``GLITCHFRAME_HIDREAM_PYTHON``, ``_REPO``, and ``_MODEL_PATH`` — no
+        defaults and no downloads.
+    """
     model_type = (_env("GLITCHFRAME_HIDREAM_MODEL_TYPE") or "dev").lower()
     if model_type not in ("dev", "full"):
         raise RuntimeError(
@@ -168,6 +262,87 @@ def load_hidream_config() -> HiDreamConfig:
         _env("GLITCHFRAME_HIDREAM_PIPELINE_IMPORT")
         or "models.pipeline:HiDreamImagePipeline"
     )
+
+    if strict_env:
+        py = _env("GLITCHFRAME_HIDREAM_PYTHON")
+        repo = _env("GLITCHFRAME_HIDREAM_REPO")
+        model_path = _env("GLITCHFRAME_HIDREAM_MODEL_PATH")
+        if not py or not repo or not model_path:
+            raise RuntimeError(
+                "HiDream backend in strict_env mode requires "
+                "GLITCHFRAME_HIDREAM_PYTHON, GLITCHFRAME_HIDREAM_REPO and "
+                "GLITCHFRAME_HIDREAM_MODEL_PATH (see .env.example)."
+            )
+        py_path = Path(py)
+        repo_path = Path(repo)
+        model_path_path = Path(model_path)
+        if allow_fetch and not _weights_dir_looks_complete(model_path_path):
+            hf_id = _env("GLITCHFRAME_HIDREAM_HF_REPO_ID") or _default_hf_repo_id(
+                model_type
+            )
+            _ensure_hidream_weights(model_path_path, hf_id)
+        if not py_path.is_file():
+            raise RuntimeError(f"GLITCHFRAME_HIDREAM_PYTHON not a file: {py_path}")
+        if not repo_path.is_dir():
+            raise RuntimeError(f"GLITCHFRAME_HIDREAM_REPO not a directory: {repo_path}")
+        if not model_path_path.exists():
+            raise RuntimeError(
+                f"GLITCHFRAME_HIDREAM_MODEL_PATH missing: {model_path_path}"
+            )
+        return HiDreamConfig(
+            python=py_path,
+            repo=repo_path,
+            model_path=model_path_path,
+            model_type=model_type,
+            gen_width=gen_w,
+            gen_height=gen_h,
+            pipeline_import=pipeline_import,
+        )
+
+    bundle = _hidream_bundle_root()
+    hf_repo_id = _env("GLITCHFRAME_HIDREAM_HF_REPO_ID") or _default_hf_repo_id(
+        model_type
+    )
+    repo_raw = _env("GLITCHFRAME_HIDREAM_REPO")
+    repo_path = Path(repo_raw) if repo_raw else bundle / "HiDream-O1-Image"
+    model_raw = _env("GLITCHFRAME_HIDREAM_MODEL_PATH")
+    model_path_path = (
+        Path(model_raw) if model_raw else bundle / _hf_weights_dir_name(hf_repo_id)
+    )
+    py_raw = _env("GLITCHFRAME_HIDREAM_PYTHON")
+    if py_raw:
+        py_path = Path(py_raw)
+    else:
+        venv_py = _find_venv_python(repo_path)
+        py_path = venv_py if venv_py is not None else Path(sys.executable)
+        if venv_py is None:
+            LOGGER.warning(
+                "GLITCHFRAME_HIDREAM_PYTHON unset and no %s/env python found; "
+                "using %s — HiDream usually needs its own venv (e.g. Pinokio).",
+                repo_path,
+                py_path,
+            )
+
+    if allow_fetch:
+        bundle.mkdir(parents=True, exist_ok=True)
+        _ensure_hidream_git_repo(repo_path)
+        _ensure_hidream_weights(model_path_path, hf_repo_id)
+
+    if allow_fetch:
+        if not py_path.is_file():
+            raise RuntimeError(
+                f"HiDream python executable not found: {py_path}. "
+                "Set GLITCHFRAME_HIDREAM_PYTHON to a HiDream venv (see .env.example)."
+            )
+        if not repo_path.is_dir() or not (repo_path / "models" / "pipeline.py").is_file():
+            raise RuntimeError(
+                f"HiDream repo missing or incomplete: {repo_path}. "
+                "Set GLITCHFRAME_HIDREAM_REPO or ensure git clone succeeded."
+            )
+        if not _weights_dir_looks_complete(model_path_path):
+            raise RuntimeError(
+                f"HiDream weights directory is missing or incomplete: {model_path_path}"
+            )
 
     return HiDreamConfig(
         python=py_path,
@@ -382,7 +557,11 @@ class BackgroundStillsHiDream(BackgroundStills):
         ken_burns_rms_drive_at: Any = None,
         config: HiDreamConfig | None = None,
     ) -> None:
-        cfg = config if config is not None else load_hidream_config()
+        cfg = (
+            config
+            if config is not None
+            else load_hidream_config(allow_fetch=True, strict_env=False)
+        )
         # Wire HiDream-specific generation resolution + a unique model_id
         # into the parent so the SDXL prompt-hash / cache logic just works.
         super().__init__(

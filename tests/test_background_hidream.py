@@ -91,6 +91,22 @@ class HiDreamModelIdTests(unittest.TestCase):
             )
 
 
+class HiDreamAutoLayoutTests(unittest.TestCase):
+    def test_relaxed_mode_default_paths(self) -> None:
+        with TemporaryDirectory() as td:
+            fake_root = Path(td) / "m"
+            with mock.patch(
+                "pipeline.background_stills_hidream._hidream_bundle_root",
+                return_value=fake_root,
+            ):
+                cfg = load_hidream_config(allow_fetch=False, strict_env=False)
+            self.assertEqual(cfg.repo, fake_root / "HiDream-O1-Image")
+            self.assertEqual(
+                cfg.model_path,
+                fake_root / "hf--drbaph--HiDream-O1-Image-FP8",
+            )
+
+
 class HiDreamConfigEnvTests(unittest.TestCase):
     def test_missing_required_env_raises(self) -> None:
         env = {
@@ -100,7 +116,7 @@ class HiDreamConfigEnvTests(unittest.TestCase):
         }
         with mock.patch.dict(os.environ, env, clear=True):
             with self.assertRaises(RuntimeError):
-                load_hidream_config()
+                load_hidream_config(strict_env=True, allow_fetch=False)
 
     def test_valid_env_resolves_paths(self) -> None:
         with TemporaryDirectory() as td:
@@ -118,7 +134,7 @@ class HiDreamConfigEnvTests(unittest.TestCase):
                 "GLITCHFRAME_HIDREAM_MODEL_TYPE": "dev",
             }
             with mock.patch.dict(os.environ, env, clear=False):
-                cfg = load_hidream_config()
+                cfg = load_hidream_config(strict_env=True, allow_fetch=False)
                 self.assertIsInstance(cfg, HiDreamConfig)
                 self.assertEqual(cfg.model_type, "dev")
                 self.assertEqual(cfg.python, py)
@@ -145,7 +161,7 @@ class HiDreamConfigEnvTests(unittest.TestCase):
             }
             with mock.patch.dict(os.environ, env, clear=False):
                 with self.assertRaises(RuntimeError):
-                    load_hidream_config()
+                    load_hidream_config(strict_env=True, allow_fetch=False)
 
 
 class FactoryDispatchTests(unittest.TestCase):
@@ -186,6 +202,15 @@ class FactoryDispatchTests(unittest.TestCase):
                 "GLITCHFRAME_HIDREAM_MODEL_PATH": str(model),
                 "GLITCHFRAME_HIDREAM_MODEL_TYPE": "dev",
             }
+            cfg = HiDreamConfig(
+                python=py,
+                repo=repo,
+                model_path=model,
+                model_type="dev",
+                gen_width=1280,
+                gen_height=720,
+                pipeline_import="models.pipeline:HiDreamImagePipeline",
+            )
             with mock.patch.dict(os.environ, env, clear=False):
                 bg = create_background_source(
                     MODE_SDXL_STILLS,
@@ -193,6 +218,7 @@ class FactoryDispatchTests(unittest.TestCase):
                     preset_id="test",
                     preset_prompt="neon synthwave city",
                     image_backend=IMAGE_BACKEND_HIDREAM,
+                    hidream_config=cfg,
                 )
                 try:
                     from pipeline.background_stills_hidream import (

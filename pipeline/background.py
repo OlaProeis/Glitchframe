@@ -129,6 +129,7 @@ def create_background_source(
     rife_exp: int = 4,
     ken_burns_rms_drive_at: Callable[[float], float] | None = None,
     image_backend: str | None = None,
+    hidream_config: Any | None = None,
 ) -> BackgroundSource:
     """
     Construct the background implementation for ``mode`` (use
@@ -138,6 +139,10 @@ def create_background_source(
     and ``hidream`` (HiDream-O1-Image via out-of-process worker — see
     :mod:`pipeline.background_stills_hidream`). Only applies to AI-stills
     modes (``MODE_SDXL_STILLS``, ``MODE_ANIMATEDIFF``).
+
+    ``hidream_config`` may pass a pre-built HiDream config (tests); otherwise
+    HiDream downloads the code repo and weights the first time the HiDream
+    background object is created (subsequent runs are no-ops).
 
     Raises
     ------
@@ -166,6 +171,7 @@ def create_background_source(
                 rife_morph=bool(sdxl_rife_morph),
                 rife_exp=int(rife_exp),
                 ken_burns_rms_drive_at=ken_burns_rms_drive_at,
+                config=hidream_config,
             )
         return BackgroundStills(
             cache_dir,

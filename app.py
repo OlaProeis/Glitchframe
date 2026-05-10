@@ -1571,16 +1571,15 @@ def _kf_backend_manifest_constants(
     ``manifest.json`` so the on-disk cache key stays consistent with the
     backend the user just picked. Falls back to SDXL constants when the
     HiDream config is missing or invalid — that way the editor never
-    blocks on a misconfigured ``.env`` and the user sees the actual
-    "GLITCHFRAME_HIDREAM_* missing" error only when they click **Generate
-    stills** (where it belongs).
+    blocks on a misconfigured ``.env``. **Generate stills** runs full setup
+    (clone + weight download) and surfaces any error there.
     """
     backend = normalize_image_backend(image_backend)
     if backend == IMAGE_BACKEND_HIDREAM:
         try:
             from pipeline.background_stills_hidream import load_hidream_config
 
-            cfg = load_hidream_config()
+            cfg = load_hidream_config(allow_fetch=False, strict_env=False)
             return cfg.model_id(), cfg.gen_width, cfg.gen_height
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning(
@@ -2867,9 +2866,11 @@ See [`docs/technical/background-stills.md`](docs/technical/background-stills.md)
                     value=IMAGE_BACKEND_SDXL,
                     info=(
                         "SDXL stays the default. HiDream uses HiDream-O1-Image "
-                        "via an out-of-process worker (its own venv) — set "
-                        "GLITCHFRAME_HIDREAM_PYTHON / _REPO / _MODEL_PATH in "
-                        "your .env first; see docs/technical/background-stills-hidream.md. "
+                        "via an out-of-process worker: first run clones the repo "
+                        "and downloads weights under your model cache (needs git + "
+                        "network + HF). Use a HiDream venv via "
+                        "GLITCHFRAME_HIDREAM_PYTHON for reliable inference "
+                        "(see docs/technical/background-stills-hidream.md). "
                         "Switching backends invalidates cached keyframe PNGs "
                         "for this song (different model_id)."
                     ),
