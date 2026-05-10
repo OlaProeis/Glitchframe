@@ -51,6 +51,11 @@ class OrchestratorInputs:
     # Default kept in sync with the Gradio radio default in ``app.py``.
     # Typical path: SDXL stills with optional RIFE morph — see ``docs/technical/rife-morph-background.md``.
     background_mode: str = "sdxl-stills"
+    # Image-generation backend used by the AI-stills mode (``sdxl`` or
+    # ``hidream``). Cosmetic in the song cache key — different backends use
+    # distinct ``BackgroundManifest.model_id`` values, so the
+    # ``cache/<hash>/background/`` PNGs naturally namespace per backend.
+    image_backend: str = "sdxl"
     static_background_image: str | Path | None = None
     # When True and background_mode is SDXL stills, apply RMS-driven Ken Burns
     # zoom/pan/tilt on top of interpolated keyframes (no extra uploads).
@@ -628,6 +633,7 @@ def _render_pipeline(
         sdxl_rife_morph=bool(inputs.sdxl_rife_morph),
         rife_exp=int(inputs.rife_exp),
         ken_burns_rms_drive_at=kb_rms_drive_at,
+        image_backend=getattr(inputs, "image_backend", None),
     )
     try:
         background.ensure(force=False, progress=bg_cb)

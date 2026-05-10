@@ -47,6 +47,7 @@
 | M1 spectrum render → ffmpeg (`output.mp4` under `outputs/<run_id>/`) | `pipeline/renderer.py`, `config.new_run_id` |
 | Audio / lyrics / backgrounds / layers / encode | `pipeline/*.py` |
 | Background modes (factory + caches; AnimateDiff module retained, not Gradio UI) | `pipeline/background.py`, `pipeline/background_stills.py`, `pipeline/background_kenburns.py`, `pipeline/background_animatediff.py`, `docs/technical/background-modes.md` |
+| HiDream-O1-Image backend (out-of-process worker, manifest namespacing) | `pipeline/background_stills_hidream.py`, `pipeline/background_stills_hidream_worker.py`, `docs/technical/background-stills-hidream.md` |
 | Visual style / shaders | `presets/*.yaml` (optional), `pipeline/visual_style.py`, `docs/technical/visual-style-presets.md` |
 | Bundled reactive shader stems (no GL import) | `pipeline/builtin_shaders.py` |
 | Reactive shader, background texture composite, Gradio reactive preview | `pipeline/reactive_shader.py`, `docs/technical/reactive-composite-and-gradio-preview.md` |

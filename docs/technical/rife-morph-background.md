@@ -18,19 +18,21 @@ Ken Burns (if enabled) is applied **after** the background sample at time `t`, u
 
 **Sampling:** `background_frame(t)` uses **linear** blending between neighbouring RIFE samples (dense optical-flow timeline). Sparse SDXL-only keyframes still use **smoothstep** crossfades—double-easing dense RIFE was slowing motion toward every sample and stretching the blend from the last approximate IFNet frame to the exact endpoint still.
 
-### Centered sampling (no internal exact stills)
+### Inset-warped centered sampling (no near-keyframe visual cluster)
 
-The dense morph timeline is built so that internal SDXL keyframes are *bridged* by IFNet predictions on both sides instead of appearing as exact stills directly in the timeline. For each segment `[kf_i, kf_{i+1}]` of duration `T_seg`:
+Plain centered sampling ``(j + 0.5)/n`` (the v2 / v3 timeline) avoided emitting *exact* SDXL stills at internal keyframe boundaries, but it still placed the boundary IFNet samples of every segment at ``s ≈ 0.5/n`` and ``s ≈ (n-0.5)/n``  (≈ 0.031 / 0.969 at the default ``N = 4``). At those near-endpoint timesteps IFNet's flow displacement collapses toward zero, so the predicted frames are visually near-identical to the SDXL keyframe pixel-wise. The compositor then renders an extended ~``T_seg/n`` window of "near-keyframe" pixels around every internal keyframe time, which the viewer perceives as the morph **pausing on the original still**, even though no exact still is in the timeline.
 
-* Sample IFNet at the **centered** timesteps `[(j + 0.5)/n for j in 0..n-1]` (where `n = 2**N`), giving exactly `n` soft predictions per segment.
-* Map each sample to wall-clock time `t_j = t_kf_i + T_seg * (j + 0.5) / n`. The first centered sample sits at `t_kf_i + T_seg/(2n)`, the last at `t_kf_{i+1} - T_seg/(2n)`.
-* The exact SDXL still is emitted **only** as the very first frame (`t = 0`) and very last frame (`t = duration`) of the timeline — never at internal keyframe times.
+The dense morph timeline therefore samples IFNet at **inset-warped** centered timesteps. For each segment ``[kf_i, kf_{i+1}]`` of duration ``T_seg``:
 
-Why this matters for perceived smoothness: the legacy “include endpoints + dedupe” scheme placed the exact sharp SDXL still at every internal keyframe time, surrounded by *soft* IFNet predictions on both sides. The viewer saw `soft → SHARP_still → soft`, perceived as a brief snap-to-still pause that read as a framerate dip even though the dense temporal spacing was uniform. With centered sampling the two flanking samples around each internal keyframe are equally soft IFNet predictions (one decelerating into `kf`, one accelerating away from it), so a linear blend at `t_kf` produces a continuous-velocity midpoint and there is no sharp pixel-content discontinuity.
+* Sample IFNet at ``s_j = inset + (1 - 2*inset) * (j + 0.5)/n`` for ``j ∈ [0, n)`` (where ``n = 2**N`` and ``inset`` defaults to **0.12**, override via ``GLITCHFRAME_RIFE_IFNET_INSET``, clamped to ``[0, 0.45]``). The closest-to-boundary samples now sit at ``s ≈ inset`` and ``s ≈ 1 - inset`` instead of the legacy ``≈ 0.5/n`` / ``≈ 1 - 0.5/n``, so every dense sample carries visible flow displacement and is visually distinct from both bracketing keyframes.
+* Wall-clock placement is **decoupled** from the IFNet timestep and stays uniform centered: ``t_j = t_kf_i + T_seg * (j + 0.5)/n``. Apparent motion velocity is therefore constant — only the visual *content* of each frame is shifted away from the keyframe.
+* The exact SDXL still is emitted **only** as the very first frame (``t = 0``) and very last frame (``t = duration``) of the timeline — never at internal keyframe times. The bookend stills now blend into a meaningfully-displaced first IFNet sample (``s ≈ inset``, not ``s ≈ 0``), so the song's open and close are smooth ease-ins rather than the previous near-static intros.
 
-**Spacing:** within a segment and across every internal keyframe boundary the spacing is uniform `T_seg / n` (e.g. with `T_seg = 8 s` and `N = 4` that's `0.5 s`). The only spacing irregularity is the short `T_seg/(2n)` gap between the first/last exact-still bracket and its neighbouring IFNet sample, where the motion is naturally just the start/end still slightly evolved — visually smooth.
+Setting ``GLITCHFRAME_RIFE_IFNET_INSET=0`` recovers the legacy plain centered sampling for byte-exact reproducibility against an older bake.
 
-**Cache invalidation:** the `RIFE_MANIFEST_SCHEMA_VERSION` was bumped to **2** when this sampling change landed; v1 caches are silently re-baked the next time RIFE is enabled. **v3** adds `keyframes_content_hash` (SHA-256 over keyframe RGB payloads in order) so **replacing or editing keyframe PNGs** invalidates the RIFE cache even when text prompts and layout are unchanged; v2 manifests are rejected and re-baked once.
+**Spacing:** within a segment and across every internal keyframe boundary the wall-clock spacing is uniform ``T_seg / n`` (e.g. with ``T_seg = 8 s`` and ``N = 4`` that's ``0.5 s``). The only spacing irregularity is the short ``T_seg/(2n)`` gap between the first/last exact-still bracket and its neighbouring IFNet sample.
+
+**Cache invalidation:** ``RIFE_MANIFEST_SCHEMA_VERSION`` is **4**. v1 → centered (v2) introduced no exact internal stills; v2 → v3 added ``keyframes_content_hash`` (SHA-256 over keyframe RGB payloads in order) so **replacing or editing keyframe PNGs** invalidates the RIFE cache even when text prompts and layout are unchanged; v3 → **v4** introduced inset-warped centered sampling. Older manifests are silently re-baked the next time RIFE runs.
 
 ## Implementation sketch
 

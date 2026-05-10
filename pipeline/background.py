@@ -28,6 +28,35 @@ BACKGROUND_MODES: tuple[str, ...] = (
     MODE_ANIMATEDIFF,
 )
 
+# Image-generation backend for the AI stills mode. SDXL stays the default so
+# existing renders behave identically; HiDream is an experimental opt-in
+# requiring GLITCHFRAME_HIDREAM_* env vars (see .env.example).
+IMAGE_BACKEND_SDXL = "sdxl"
+IMAGE_BACKEND_HIDREAM = "hidream"
+IMAGE_BACKENDS: tuple[str, ...] = (IMAGE_BACKEND_SDXL, IMAGE_BACKEND_HIDREAM)
+
+
+def normalize_image_backend(backend: str | None) -> str:
+    """Map UI / legacy labels to canonical image-backend strings; raises on unknown."""
+    if backend is None or not str(backend).strip():
+        return IMAGE_BACKEND_SDXL
+    raw = str(backend).strip().lower()
+    aliases = {
+        "sdxl": IMAGE_BACKEND_SDXL,
+        "stable diffusion xl": IMAGE_BACKEND_SDXL,
+        "sdxl ai stills": IMAGE_BACKEND_SDXL,
+        "hidream": IMAGE_BACKEND_HIDREAM,
+        "hidream-o1": IMAGE_BACKEND_HIDREAM,
+        "hidream-o1-image": IMAGE_BACKEND_HIDREAM,
+    }
+    if raw in aliases:
+        return aliases[raw]
+    if raw in IMAGE_BACKENDS:
+        return raw
+    raise ValueError(
+        f"Unknown image backend {backend!r}; expected one of {IMAGE_BACKENDS}"
+    )
+
 
 @runtime_checkable
 class BackgroundSource(Protocol):
@@ -99,10 +128,16 @@ def create_background_source(
     sdxl_rife_morph: bool = False,
     rife_exp: int = 4,
     ken_burns_rms_drive_at: Callable[[float], float] | None = None,
+    image_backend: str | None = None,
 ) -> BackgroundSource:
     """
     Construct the background implementation for ``mode`` (use
     :func:`normalize_background_mode` first if values come from the UI).
+
+    ``image_backend`` selects between ``sdxl`` (default; existing behavior)
+    and ``hidream`` (HiDream-O1-Image via out-of-process worker — see
+    :mod:`pipeline.background_stills_hidream`). Only applies to AI-stills
+    modes (``MODE_SDXL_STILLS``, ``MODE_ANIMATEDIFF``).
 
     Raises
     ------
@@ -110,11 +145,28 @@ def create_background_source(
         Unknown mode or invalid arguments for the selected mode.
     """
     m = normalize_background_mode(mode)
+    backend = normalize_image_backend(image_backend)
     mdir = Path(model_cache_dir) if model_cache_dir is not None else MODEL_CACHE_DIR
 
     kb_margin = float(DEFAULT_MARGIN if ken_burns_margin is None else ken_burns_margin)
 
     if m == MODE_SDXL_STILLS:
+        if backend == IMAGE_BACKEND_HIDREAM:
+            from .background_stills_hidream import BackgroundStillsHiDream
+
+            return BackgroundStillsHiDream(
+                cache_dir,
+                preset_id=preset_id,
+                preset_prompt=preset_prompt,
+                width=width,
+                height=height,
+                keyframe_interval=keyframe_interval,
+                ken_burns=bool(sdxl_ken_burns),
+                ken_burns_margin=kb_margin,
+                rife_morph=bool(sdxl_rife_morph),
+                rife_exp=int(rife_exp),
+                ken_burns_rms_drive_at=ken_burns_rms_drive_at,
+            )
         return BackgroundStills(
             cache_dir,
             preset_id=preset_id,
@@ -171,10 +223,14 @@ def create_background_source(
 __all__ = [
     "BACKGROUND_MODES",
     "BackgroundSource",
+    "IMAGE_BACKEND_HIDREAM",
+    "IMAGE_BACKEND_SDXL",
+    "IMAGE_BACKENDS",
     "MODE_ANIMATEDIFF",
     "MODE_SDXL_STILLS",
     "MODE_STATIC_KENBURNS",
     "ProgressFn",
     "create_background_source",
     "normalize_background_mode",
+    "normalize_image_backend",
 ]

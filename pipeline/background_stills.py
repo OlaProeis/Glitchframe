@@ -65,7 +65,13 @@ MANIFEST_RIFE_FILENAME = "manifest_rife.json"
 # exact start/end stills bracketing the timeline. v1 caches re-bake.
 # v3: ``keyframes_content_hash`` ties the RIFE cache to actual keyframe pixels
 # (replacements / uploads invalidate RIFE even when text prompts are unchanged).
-RIFE_MANIFEST_SCHEMA_VERSION = 3
+# v4: inset-warped centered IFNet sampling (boundary samples are pushed
+# inward to ``s ≈ inset`` / ``s ≈ 1 - inset`` so they carry visible flow
+# instead of collapsing onto near-keyframe pixels — fixes the perceived
+# "pause on the original still" at every keyframe boundary; see
+# :func:`pipeline.rife_runtime.rife_build_morph_timeline`). v3 manifests are
+# silently re-baked the next time RIFE runs.
+RIFE_MANIFEST_SCHEMA_VERSION = 4
 
 ProgressFn = Callable[[float, str], None]
 

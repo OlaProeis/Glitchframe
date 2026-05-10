@@ -608,8 +608,17 @@ def generate_sdxl_keyframes_for_cache(
     force_regenerate_sdxl: bool = False,
     regenerate_indices: set[int] | None = None,
     progress: Callable[..., Any] | None = None,
+    image_backend: str | None = None,
 ) -> None:
-    """Run SDXL for missing keyframes; optionally regenerate every ``sdxl`` slot or explicit indices."""
+    """Run the AI image backend for missing keyframes; optionally regenerate every AI slot or explicit indices.
+
+    ``image_backend`` selects between ``sdxl`` (default) and ``hidream``
+    (HiDream-O1-Image — requires ``GLITCHFRAME_HIDREAM_*`` env vars). The
+    function name is kept for backwards compatibility with the Gradio UI;
+    callers that select ``hidream`` get the same on-disk layout (PNGs +
+    ``manifest.json``) namespaced by ``model_id`` so the two backends never
+    share cached frames.
+    """
     from pipeline import background as bg_mod
 
     cache = Path(cache_dir)
@@ -631,6 +640,7 @@ def generate_sdxl_keyframes_for_cache(
         height=int(height),
         sdxl_ken_burns=False,
         sdxl_rife_morph=False,
+        image_backend=image_backend,
     )
     try:
         bg.ensure_keyframes(

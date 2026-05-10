@@ -141,9 +141,12 @@ from pipeline.keyframes_timeline import (
     set_keyframe_entry_prompt,
 )
 from pipeline.background import (
+    IMAGE_BACKEND_HIDREAM,
+    IMAGE_BACKEND_SDXL,
     MODE_SDXL_STILLS,
     MODE_STATIC_KENBURNS,
     normalize_background_mode,
+    normalize_image_backend,
 )
 from pipeline.visual_style import (
     canonical_reactive_shader_stem,
@@ -430,6 +433,7 @@ def _build_render_inputs(
     sdxl_ken_burns_rms_reactivity_pct: float,
     sdxl_rife_morph: bool,
     rife_exp: int,
+    image_backend: str | None = None,
 ) -> OrchestratorInputs:
     """Assemble :class:`OrchestratorInputs` from raw Gradio values."""
     if not song_hash:
@@ -464,9 +468,11 @@ def _build_render_inputs(
     cbp = (custom_background_prompt or "").strip()
     rife_e = int(np.clip(int(rife_exp), 2, 8))
     use_rife = bool(sdxl_rife_morph) and mode == MODE_SDXL_STILLS
+    backend = normalize_image_backend(image_backend)
     return OrchestratorInputs(
         song_hash=song_hash,
         background_mode=mode,
+        image_backend=backend,
         static_background_image=static_path,
         sdxl_ken_burns=bool(sdxl_ken_burns),
         sdxl_ken_burns_rms_reactivity=float(
@@ -653,6 +659,7 @@ def _run_preview(
     album: str,
     year: str,
     genre: str,
+    image_backend: str | None,
     log: str,
     progress: gr.Progress = gr.Progress(),
 ) -> tuple[str, Any, Any]:
@@ -712,6 +719,7 @@ def _run_preview(
             sdxl_ken_burns_rms_reactivity_pct=sdxl_ken_burns_rms_reactivity_pct,
             sdxl_rife_morph=sdxl_rife_morph,
             rife_exp=rife_exp,
+            image_backend=image_backend,
         )
     except ValueError as exc:
         progress(1.0, desc="Idle")
@@ -791,6 +799,7 @@ def _run_render(
     album: str,
     year: str,
     genre: str,
+    image_backend: str | None,
     log: str,
     progress: gr.Progress = gr.Progress(),
 ) -> tuple[str, Any, Any]:
@@ -850,6 +859,7 @@ def _run_render(
             sdxl_ken_burns_rms_reactivity_pct=sdxl_ken_burns_rms_reactivity_pct,
             sdxl_rife_morph=sdxl_rife_morph,
             rife_exp=rife_exp,
+            image_backend=image_backend,
         )
     except ValueError as exc:
         progress(1.0, desc="Idle")
@@ -1193,29 +1203,29 @@ _KF_CROP_PLACEHOLDER_HTML = (
     "<b>Replace with image</b>, or <b>Crop selected still</b>.</p>"
 )
 _CROP_APPLY_JS = (
-    "(song_hash, file, slot, res, preset, prompt, out_res, log, src, _prevRect, _buf) => {"
+    "(song_hash, file, slot, res, preset, prompt, out_res, log, src, _prevRect, _buf, backend) => {"
     "const r = window._glitchframe_crop_rect || {nx:0,ny:0,nw:1,nh:1};"
     "const st = JSON.stringify(window." + _KEYFRAMES_EDITOR_STATE_JS_VAR + " || {});"
-    "return [song_hash, file, slot, res, preset, prompt, out_res, log, src, JSON.stringify(r), st];"
+    "return [song_hash, file, slot, res, preset, prompt, out_res, log, src, JSON.stringify(r), st, backend];"
     "}"
 )
 _KF_REGEN_JS = (
-    "(song_hash, preset, cprompt, res, sel_idx, slot, ptxt, log, _buf) => ["
+    "(song_hash, preset, cprompt, res, sel_idx, slot, ptxt, log, _buf, backend) => ["
     "song_hash, preset, cprompt, res, sel_idx, slot, ptxt, log, "
-    "JSON.stringify(window." + _KEYFRAMES_EDITOR_STATE_JS_VAR + " || {})"
+    "JSON.stringify(window." + _KEYFRAMES_EDITOR_STATE_JS_VAR + " || {}), backend"
     "]"
 )
 _KF_GEN_JS = (
-    "(song_hash, preset, cprompt, res, regen_all, slot, log, _buf) => ["
+    "(song_hash, preset, cprompt, res, regen_all, slot, log, _buf, backend) => ["
     "song_hash, preset, cprompt, res, regen_all, slot, log, "
-    "JSON.stringify(window." + _KEYFRAMES_EDITOR_STATE_JS_VAR + " || {})"
+    "JSON.stringify(window." + _KEYFRAMES_EDITOR_STATE_JS_VAR + " || {}), backend"
     "]"
 )
 _KF_CROP_STILL_PREP_JS = (
-    "(song_hash, sel_idx, slot, log, _buf, preset, cprompt) => ["
+    "(song_hash, sel_idx, slot, log, _buf, preset, cprompt, out_res, backend) => ["
     "song_hash, sel_idx, slot, log, "
     "JSON.stringify(window." + _KEYFRAMES_EDITOR_STATE_JS_VAR + " || {}), "
-    "preset, cprompt"
+    "preset, cprompt, out_res, backend"
     "]"
 )
 _EFFECTS_EDITOR_EMPTY_HTML = (
@@ -1552,11 +1562,41 @@ def _kf_resolve_prompt(shader_dd: str | None, custom_prompt: str) -> tuple[str, 
     return style_preset_id(stem), prompt
 
 
+def _kf_backend_manifest_constants(
+    image_backend: str | None,
+) -> tuple[str, int, int]:
+    """Return ``(model_id, gen_width, gen_height)`` for the chosen image backend.
+
+    Used wherever the keyframes editor flow writes / refreshes
+    ``manifest.json`` so the on-disk cache key stays consistent with the
+    backend the user just picked. Falls back to SDXL constants when the
+    HiDream config is missing or invalid — that way the editor never
+    blocks on a misconfigured ``.env`` and the user sees the actual
+    "GLITCHFRAME_HIDREAM_* missing" error only when they click **Generate
+    stills** (where it belongs).
+    """
+    backend = normalize_image_backend(image_backend)
+    if backend == IMAGE_BACKEND_HIDREAM:
+        try:
+            from pipeline.background_stills_hidream import load_hidream_config
+
+            cfg = load_hidream_config()
+            return cfg.model_id(), cfg.gen_width, cfg.gen_height
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "HiDream config unavailable for manifest write (%s); "
+                "falling back to SDXL constants until generation runs.",
+                exc,
+            )
+    return DEFAULT_MODEL_ID, DEFAULT_GEN_WIDTH, DEFAULT_GEN_HEIGHT
+
+
 def _kf_try_flush_keyframes_browser(
     song_hash: str | None,
     edited_json: str | None,
     shader_dd: str | None,
     custom_prompt: str,
+    image_backend: str | None = None,
 ) -> None:
     """Persist in-browser timeline edits (incl. new clips) before slot-index ops hit disk."""
     if not song_hash or not edited_json or not str(edited_json).strip():
@@ -1573,15 +1613,16 @@ def _kf_try_flush_keyframes_browser(
     try:
         cache_dir = song_cache_dir(song_hash)
         preset_id, preset_prompt = _kf_resolve_prompt(shader_dd, custom_prompt)
+        model_id, gen_w, gen_h = _kf_backend_manifest_constants(image_backend)
         save_keyframes_editor_payload(
             cache_dir,
             raw,
             song_hash_from_dir=song_hash,
             preset_id=preset_id,
             preset_prompt=preset_prompt,
-            model_id=DEFAULT_MODEL_ID,
-            gen_width=DEFAULT_GEN_WIDTH,
-            gen_height=DEFAULT_GEN_HEIGHT,
+            model_id=model_id,
+            gen_width=gen_w,
+            gen_height=gen_h,
         )
     except Exception as exc:  # noqa: BLE001
         LOGGER.warning("Keyframes browser → disk sync failed: %s", exc)
@@ -1754,6 +1795,7 @@ def _save_keyframes_editor(
     custom_prompt: str,
     out_resolution: str | None,
     log: str,
+    image_backend: str | None = None,
 ) -> tuple[str, str, object, int | None, str, object, str, str | None]:
     if not song_hash:
         return (
@@ -1780,15 +1822,16 @@ def _save_keyframes_editor(
     try:
         cache_dir = song_cache_dir(song_hash)
         preset_id, preset_prompt = _kf_resolve_prompt(shader_dd, custom_prompt)
+        model_id, gen_w, gen_h = _kf_backend_manifest_constants(image_backend)
         save_keyframes_editor_payload(
             cache_dir,
             edited_json,
             song_hash_from_dir=song_hash,
             preset_id=preset_id,
             preset_prompt=preset_prompt,
-            model_id=DEFAULT_MODEL_ID,
-            gen_width=DEFAULT_GEN_WIDTH,
-            gen_height=DEFAULT_GEN_HEIGHT,
+            model_id=model_id,
+            gen_width=gen_w,
+            gen_height=gen_h,
         )
         return _load_keyframes_editor(
             song_hash,
@@ -1862,8 +1905,11 @@ def _kf_prep_keyframe_crop_still(
     shader_dd: str | None,
     custom_prompt: str,
     out_resolution: str | None,
+    image_backend: str | None = None,
 ) -> tuple[object, str, str, str | None]:
-    _kf_try_flush_keyframes_browser(song_hash, edited_json, shader_dd, custom_prompt)
+    _kf_try_flush_keyframes_browser(
+        song_hash, edited_json, shader_dd, custom_prompt, image_backend
+    )
     effective = _kf_effective_target_slot(slot_id, edited_json)
     idx = _kf_resolve_gallery_index(song_hash, sel_idx, effective)
     if not song_hash or idx is None:
@@ -1946,8 +1992,11 @@ def _apply_keyframe_crop(
     crop_src_path: str | None,
     crop_rect_json: str | None,
     edited_json: str,
+    image_backend: str | None = None,
 ) -> tuple[str | object, str | None, str | object, object, str | object]:
-    _kf_try_flush_keyframes_browser(song_hash, edited_json, shader_dd, custom_prompt)
+    _kf_try_flush_keyframes_browser(
+        song_hash, edited_json, shader_dd, custom_prompt, image_backend
+    )
     effective_id = _kf_effective_target_slot(slot_id, edited_json)
     path_s = _coerce_gradio_file_path(upload)
     if not path_s and crop_src_path and str(crop_src_path).strip():
@@ -2019,6 +2068,7 @@ def _regenerate_selected_keyframe_sdxl(
     edited_prompt: str,
     log: str,
     edited_json: str,
+    image_backend: str | None = None,
     progress: gr.Progress = gr.Progress(),
 ) -> tuple[str, str, object, str | object]:
     def _fail(msg: str) -> tuple[str, object, object, object]:
@@ -2028,8 +2078,12 @@ def _regenerate_selected_keyframe_sdxl(
     if not song_hash:
         progress(1.0, desc="Idle")
         return _fail("Regenerate: ingest audio first.")
-    _kf_try_flush_keyframes_browser(song_hash, edited_json, shader_dd, custom_prompt)
-    progress(0.0, desc="SDXL one slot")
+    backend = normalize_image_backend(image_backend)
+    backend_label = "HiDream" if backend == IMAGE_BACKEND_HIDREAM else "SDXL"
+    _kf_try_flush_keyframes_browser(
+        song_hash, edited_json, shader_dd, custom_prompt, backend
+    )
+    progress(0.0, desc=f"{backend_label} one slot")
     cb = _EtaProgress(progress)
     try:
         cache_dir = song_cache_dir(song_hash)
@@ -2066,13 +2120,14 @@ def _regenerate_selected_keyframe_sdxl(
                 prompt,
                 source="sdxl",
             )
+        model_id, gen_w, gen_h = _kf_backend_manifest_constants(backend)
         refresh_manifest_from_timeline(
             cache_dir,
             preset_id=preset_id,
             preset_prompt=preset_prompt,
-            model_id=DEFAULT_MODEL_ID,
-            gen_width=DEFAULT_GEN_WIDTH,
-            gen_height=DEFAULT_GEN_HEIGHT,
+            model_id=model_id,
+            gen_width=gen_w,
+            gen_height=gen_h,
         )
         generate_sdxl_keyframes_for_cache(
             cache_dir,
@@ -2082,6 +2137,7 @@ def _regenerate_selected_keyframe_sdxl(
             height=h,
             regenerate_indices=indices,
             progress=cb,
+            image_backend=backend,
         )
         html_blob, dd_up, ptxt = _kf_build_editor_refresh(
             song_hash,
@@ -2095,7 +2151,7 @@ def _regenerate_selected_keyframe_sdxl(
         return (
             _append_log(
                 log,
-                f"Regenerated {n} slot(s) with SDXL ({', '.join(entry_ids)}). "
+                f"Regenerated {n} slot(s) with {backend_label} ({', '.join(entry_ids)}). "
                 "Timeline preview updated. **Save timeline** if you changed timing in the waveform.",
             ),
             html_blob,
@@ -2121,6 +2177,7 @@ def _generate_keyframes_sdxl(
     slot_id: str | None,
     log: str,
     edited_json: str,
+    image_backend: str | None = None,
     progress: gr.Progress = gr.Progress(),
 ) -> tuple[str, str, object, str | object]:
     if not song_hash:
@@ -2131,8 +2188,12 @@ def _generate_keyframes_sdxl(
             gr.update(),
             gr.update(),
         )
-    _kf_try_flush_keyframes_browser(song_hash, edited_json, shader_dd, custom_prompt)
-    progress(0.0, desc="SDXL keyframes")
+    backend = normalize_image_backend(image_backend)
+    backend_label = "HiDream" if backend == IMAGE_BACKEND_HIDREAM else "SDXL"
+    _kf_try_flush_keyframes_browser(
+        song_hash, edited_json, shader_dd, custom_prompt, backend
+    )
+    progress(0.0, desc=f"{backend_label} keyframes")
     cb = _EtaProgress(progress)
     try:
         cache_dir = song_cache_dir(song_hash)
@@ -2146,6 +2207,7 @@ def _generate_keyframes_sdxl(
             height=h,
             force_regenerate_sdxl=bool(force_all),
             progress=cb,
+            image_backend=backend,
         )
         choices = keyframe_id_choices(cache_dir)
         n_png = 0
@@ -2164,7 +2226,8 @@ def _generate_keyframes_sdxl(
         return (
             _append_log(
                 log,
-                f"SDXL keyframes ready — {n_png} PNG(s) on disk. Full render still runs RIFE if enabled.",
+                f"{backend_label} keyframes ready — {n_png} PNG(s) on disk. "
+                "Full render still runs RIFE if enabled.",
             ),
             html_blob,
             dd_up,
@@ -2173,7 +2236,10 @@ def _generate_keyframes_sdxl(
     except Exception as exc:  # noqa: BLE001
         progress(1.0, desc="Idle")
         return (
-            _append_log(log, _format_exception("Generate SDXL keyframes failed", exc)),
+            _append_log(
+                log,
+                _format_exception(f"Generate {backend_label} keyframes failed", exc),
+            ),
             gr.update(),
             gr.update(),
             gr.update(),
@@ -2792,11 +2858,27 @@ See [`docs/technical/background-stills.md`](docs/technical/background-stills.md)
                 btn_kf_load = gr.Button("Load timeline", variant="primary")
                 kf_editor_html = gr.HTML(value=_KEYFRAMES_EDITOR_EMPTY_HTML)
                 kf_state_buffer = gr.Textbox(visible=False, value="", interactive=True)
+                kf_image_backend = gr.Radio(
+                    label="Image generator",
+                    choices=[
+                        ("SDXL (FP16, ~12 GB VRAM)", IMAGE_BACKEND_SDXL),
+                        ("HiDream-O1-Image (experimental)", IMAGE_BACKEND_HIDREAM),
+                    ],
+                    value=IMAGE_BACKEND_SDXL,
+                    info=(
+                        "SDXL stays the default. HiDream uses HiDream-O1-Image "
+                        "via an out-of-process worker (its own venv) — set "
+                        "GLITCHFRAME_HIDREAM_PYTHON / _REPO / _MODEL_PATH in "
+                        "your .env first; see docs/technical/background-stills-hidream.md. "
+                        "Switching backends invalidates cached keyframe PNGs "
+                        "for this song (different model_id)."
+                    ),
+                )
                 with gr.Row():
                     btn_kf_save = gr.Button("Save timeline")
-                    btn_kf_gen = gr.Button("Generate SDXL stills", variant="primary")
+                    btn_kf_gen = gr.Button("Generate stills", variant="primary")
                 kf_regen_all_cb = gr.Checkbox(
-                    label="Regenerate all SDXL slots (not uploads)",
+                    label="Regenerate all AI-generated slots (not uploads)",
                     value=False,
                 )
                 kf_slot_dd = gr.Dropdown(
@@ -2946,6 +3028,7 @@ See [`docs/technical/background-stills.md`](docs/technical/background-stills.md)
             meta_album,
             meta_year,
             meta_genre,
+            kf_image_backend,
             run_log,
         ]
         btn_preview.click(
@@ -3091,6 +3174,7 @@ See [`docs/technical/background-stills.md`](docs/technical/background-stills.md)
                 custom_prompt,
                 out_resolution,
                 run_log,
+                kf_image_backend,
             ],
             outputs=[
                 kf_editor_html,
@@ -3104,10 +3188,10 @@ See [`docs/technical/background-stills.md`](docs/technical/background-stills.md)
             ],
             show_progress="full",
             js=(
-                "(song_hash, _buf, preset, prompt, res, log) => ["
+                "(song_hash, _buf, preset, prompt, res, log, backend) => ["
                 "song_hash, "
                 "JSON.stringify(window." + _KEYFRAMES_EDITOR_STATE_JS_VAR + " || {}), "
-                "preset, prompt, res, log"
+                "preset, prompt, res, log, backend"
                 "]"
             ),
         )
@@ -3122,6 +3206,7 @@ See [`docs/technical/background-stills.md`](docs/technical/background-stills.md)
                 kf_slot_dd,
                 run_log,
                 kf_state_buffer,
+                kf_image_backend,
             ],
             outputs=[run_log, kf_editor_html, kf_slot_dd, kf_sel_prompt],
             show_progress="full",
@@ -3144,6 +3229,7 @@ See [`docs/technical/background-stills.md`](docs/technical/background-stills.md)
                 kf_sel_prompt,
                 run_log,
                 kf_state_buffer,
+                kf_image_backend,
             ],
             outputs=[run_log, kf_editor_html, kf_slot_dd, kf_sel_prompt],
             show_progress="full",
@@ -3165,6 +3251,7 @@ See [`docs/technical/background-stills.md`](docs/technical/background-stills.md)
                 shader_dd,
                 custom_prompt,
                 out_resolution,
+                kf_image_backend,
             ],
             outputs=[kf_crop_col, kf_crop_panel, run_log, kf_crop_src_state],
             show_progress="full",
@@ -3190,6 +3277,7 @@ See [`docs/technical/background-stills.md`](docs/technical/background-stills.md)
                 kf_crop_src_state,
                 kf_crop_rect_json,
                 kf_state_buffer,
+                kf_image_backend,
             ],
             outputs=[
                 run_log,

@@ -20,6 +20,35 @@ DEFAULT_RIFE_REPO = "MonsterMMORPG/RIFE_4_26"
 RIFE_WEIGHTS_SUBPATH = "train_log/flownet.pkl"
 RIFE_CACHE_SUBDIR = "rife_practical"
 
+# IFNet timestep inset for centered morph sampling.
+#
+# Without an inset, centered sampling at ``(j+0.5)/n`` places the boundary
+# samples of every segment at ``s ≈ 0.5/n`` and ``s ≈ (n-0.5)/n`` — for the
+# default ``rife_exp=4`` (n=16) that's ``s ≈ 0.031`` and ``s ≈ 0.969``. At
+# those near-endpoint timesteps IFNet's flow displacement collapses toward
+# zero, so the predicted frames are visually near-identical to the SDXL
+# keyframe pixel-wise. The compositor then renders an extended window of
+# "near-keyframe" content around every internal keyframe time, which the
+# viewer perceives as the morph "pausing on the original still".
+#
+# Pushing the IFNet timestep distribution inward by ``DEFAULT_IFNET_TIMESTEP_INSET``
+# guarantees every dense sample carries meaningful flow (the boundary
+# samples sit at ``s ≈ inset`` and ``s ≈ 1 - inset``), so the perceived
+# motion stays continuous through every keyframe. Wall-clock spacing remains
+# uniform centered ``T_seg/n`` (decoupled from IFNet timestep), so apparent
+# motion velocity is constant — only the visual *content* of each frame is
+# shifted away from the keyframe.
+#
+# Override at runtime via ``GLITCHFRAME_RIFE_IFNET_INSET`` (clamped to the
+# safe range below). Set to ``0`` to recover the legacy centered-only
+# behaviour for byte-exact reproducibility against older bakes.
+DEFAULT_IFNET_TIMESTEP_INSET = 0.12
+_IFNET_TIMESTEP_INSET_MIN = 0.0
+# Capping at 0.45 keeps both halves of the (warped) [inset, 1-inset]
+# interval non-degenerate; in practice values much above ~0.20 over-compress
+# the visible motion range and start to feel "muted" rather than "fluid".
+_IFNET_TIMESTEP_INSET_MAX = 0.45
+
 
 ProgressFn = Callable[[float, str], None]
 
@@ -39,6 +68,34 @@ def _rife_use_fp16(device: torch.device) -> bool:
     if flag in ("0", "false", "no", "off"):
         return False
     return True
+
+
+def _resolve_ifnet_timestep_inset(override: float | None = None) -> float:
+    """Resolve the IFNet timestep inset, honouring an env var when set.
+
+    Order of precedence: explicit ``override`` > ``GLITCHFRAME_RIFE_IFNET_INSET``
+    > :data:`DEFAULT_IFNET_TIMESTEP_INSET`. Values are clamped to
+    ``[_IFNET_TIMESTEP_INSET_MIN, _IFNET_TIMESTEP_INSET_MAX]``; unparseable
+    strings fall back to the default with a debug log entry.
+    """
+    if override is not None:
+        v = float(override)
+    else:
+        raw = os.environ.get("GLITCHFRAME_RIFE_IFNET_INSET", "").strip()
+        if raw == "":
+            v = DEFAULT_IFNET_TIMESTEP_INSET
+        else:
+            try:
+                v = float(raw)
+            except ValueError:
+                LOGGER.debug(
+                    "Ignoring non-numeric GLITCHFRAME_RIFE_IFNET_INSET=%r; "
+                    "using default %.3f",
+                    raw,
+                    DEFAULT_IFNET_TIMESTEP_INSET,
+                )
+                v = DEFAULT_IFNET_TIMESTEP_INSET
+    return max(_IFNET_TIMESTEP_INSET_MIN, min(_IFNET_TIMESTEP_INSET_MAX, v))
 
 
 def rife_weights_dir(repo_id: str = DEFAULT_RIFE_REPO) -> Path:
@@ -164,21 +221,27 @@ def rife_exp_interpolate_pair(
     exp: int,
     device: torch.device,
     include_endpoints: bool = True,
+    ifnet_timestep_inset: float = 0.0,
 ) -> list[np.ndarray]:
     """RIFE subdivision (``2 ** exp``) between ``rgb0`` and ``rgb1``.
 
     With ``include_endpoints=True`` (default) returns the legacy uniform grid
     ``[rgb0, IFNet(1/n), …, IFNet((n-1)/n), rgb1]`` — ``n + 1`` frames where
-    the first and last are the exact source stills.
+    the first and last are the exact source stills. ``ifnet_timestep_inset``
+    is ignored in this mode (legacy bake / tests rely on the byte-exact
+    uniform grid).
 
     With ``include_endpoints=False`` returns ``n`` IFNet predictions sampled
-    at the **centered** timesteps ``[(i + 0.5)/n for i in 0..n-1]``. The
-    morph timeline builder uses this mode so adjacent segments don't snap to
-    the exact SDXL still at every internal keyframe boundary: the flanking
-    dense samples are both equally-soft IFNet predictions (one decelerating
-    into the keyframe, one accelerating away), so a linear blend at the
-    boundary produces a continuous-velocity midpoint instead of a sharp
-    pixel-content discontinuity.
+    at **inset-warped centered** timesteps ``[inset + (1 - 2*inset)*(i + 0.5)/n
+    for i in 0..n-1]``. The morph timeline builder uses this mode so adjacent
+    segments don't snap to the exact SDXL still at every internal keyframe
+    boundary: the flanking dense samples are equally-soft IFNet predictions
+    on both sides of the keyframe, and the inset guarantees they carry
+    *visible* flow displacement instead of collapsing onto near-keyframe
+    pixels. With ``ifnet_timestep_inset=0`` this reduces to the legacy plain
+    centered sampling (boundary samples at ``s ≈ 0.5/n`` and ``s ≈ (n-0.5)/n``,
+    visually near-identical to the keyframes — the perceptual "pause" the
+    inset is meant to eliminate).
 
     Inference runs inside :func:`torch.inference_mode`, which skips autograd
     bookkeeping (Practical-RIFE upstream does the equivalent via
@@ -188,6 +251,10 @@ def rife_exp_interpolate_pair(
     """
     if exp < 1:
         raise ValueError(f"rife exp must be >= 1, got {exp}")
+    inset = max(
+        _IFNET_TIMESTEP_INSET_MIN,
+        min(_IFNET_TIMESTEP_INSET_MAX, float(ifnet_timestep_inset)),
+    )
     n = 2**exp
     dtype = torch.float16 if model.fp16 else torch.float32
     t0, t1, h, w = _prepare_pair_tensors(rgb0, rgb1, device, dtype=dtype)
@@ -200,12 +267,15 @@ def rife_exp_interpolate_pair(
                 out_list.append(_tensor_to_rgb(mid, h, w))
         out_list.append(_tensor_to_rgb(t1, h, w))
     else:
+        span = 1.0 - 2.0 * inset
         with torch.inference_mode():
             for i in range(n):
-                # Centered timestep: i + 0.5 instead of i+1, so samples sit
-                # symmetrically inside (0, 1) and never coincide with the
-                # exact endpoints.
-                ts = (i + 0.5) / n
+                # Inset-warped centered timestep: legacy ``(i + 0.5)/n`` is
+                # remapped from (0, 1) into ``(inset, 1 - inset)`` so even
+                # the boundary samples sit a ``span/2 = (1-2*inset)/(2n)``
+                # beyond the inset — that is, comfortably away from the
+                # IFNet "near-zero motion" zones at ``s -> 0`` and ``s -> 1``.
+                ts = inset + span * (i + 0.5) / n
                 mid = model.inference(t0, t1, ts)
                 out_list.append(_tensor_to_rgb(mid, h, w))
     return out_list
@@ -221,34 +291,49 @@ def rife_build_morph_timeline(
     progress: ProgressFn | None = None,
     on_frame: Callable[[int, np.ndarray, float], None] | None = None,
     keep_frames: bool = True,
+    ifnet_timestep_inset: float | None = None,
 ) -> tuple[list[np.ndarray], list[float]]:
     """Build one continuous-velocity dense RIFE timeline across all keyframes.
 
-    Each segment ``[kf_i, kf_{i+1}]`` is sampled at **centered** timesteps
-    ``[(j + 0.5)/n for j in 0..n-1]`` (where ``n = 2**exp``), so the dense
-    timeline contains only IFNet predictions internally — never the exact
-    SDXL still at an internal keyframe boundary. The exact start (``kf_0``)
-    and end (``kf_{n-1}``) stills are kept as the very first and very last
-    frames so the song opens/closes on the sharp generated image.
+    Each segment ``[kf_i, kf_{i+1}]`` is sampled at **inset-warped centered**
+    IFNet timesteps ``[inset + (1 - 2*inset) * (j + 0.5)/n for j in 0..n-1]``
+    (where ``n = 2**exp`` and ``inset`` defaults to
+    :data:`DEFAULT_IFNET_TIMESTEP_INSET`). The dense timeline therefore
+    contains *only* IFNet predictions internally — never the exact SDXL
+    still at an internal keyframe boundary — and the boundary samples carry
+    visible motion instead of collapsing onto near-keyframe pixels. The
+    exact start (``kf_0``) and end (``kf_{-1}``) stills are still kept as
+    the very first and very last frames so the song opens/closes on the
+    sharp generated image; the linear blend from the bookend still to the
+    first IFNet sample (now at ``s = inset + …`` instead of ``s ≈ 0.5/n``)
+    is a smooth ease-in rather than the previous near-static intro.
 
-    Why this matters for perceived smoothness: with the legacy "include
-    endpoints + dedupe" scheme the timeline read ``soft_ifnet → SHARP_still
-    → soft_ifnet`` at every internal keyframe time, producing a brief
-    snap-to-still pause that read as a framerate dip even with a uniform
-    sample spacing. Centered sampling makes the two flanking dense samples
-    around every internal keyframe equally soft IFNet predictions (one
-    decelerating into the keyframe, one accelerating away), so a linear
-    blend at ``t_kf`` produces a continuous-velocity midpoint instead of a
-    sharp pixel-content discontinuity.
+    Why this matters for perceived smoothness: under plain centered sampling
+    ``(j + 0.5)/n``, the boundary samples of every segment land at
+    ``s ≈ 0.5/n`` and ``s ≈ (n - 0.5)/n`` (≈ 0.031 / 0.969 at ``exp=4``).
+    IFNet's flow displacement near those endpoints is essentially zero, so
+    those frames are visually indistinguishable from the SDXL keyframe —
+    the compositor renders a ~``T_seg/n`` window of "stuck on the original
+    still" content around every internal keyframe time, perceived by the
+    viewer as a pause that breaks the otherwise-smooth morph. Insetting the
+    IFNet timestep distribution forces every dense sample to carry visible
+    flow (the closest-to-boundary samples now sit at ``s ≈ inset`` and
+    ``s ≈ 1 - inset``), eliminating the near-keyframe visual cluster while
+    keeping the wall-clock spacing uniform.
 
-    The dense temporal spacing is uniform ``T_seg/n`` both *within* a
-    segment and *across* every internal keyframe boundary (the last centered
-    sample of segment ``N`` sits at ``t_kf - T_seg/(2n)``, the first of
-    segment ``N+1`` at ``t_kf + T_seg/(2n)``). The only spacing irregularity
-    is the short ``T_seg/(2n)`` gap between the prepended exact start still
-    and the first IFNet sample (and the symmetric one at the end), where
-    motion is naturally just the start/end still slightly evolved — visually
-    smooth.
+    Wall-clock placement remains uniform centered ``T_seg/n`` (decoupled
+    from the IFNet timestep): each sample lands at
+    ``t_kf_i + T_seg * (j + 0.5)/n``, both *within* a segment and *across*
+    every internal keyframe boundary (the last sample of segment ``N`` sits
+    at ``t_kf - T_seg/(2n)``, the first of segment ``N+1`` at
+    ``t_kf + T_seg/(2n)``). The only spacing irregularity is the short
+    ``T_seg/(2n)`` gap between the prepended exact start still and the
+    first IFNet sample (and the symmetric one at the end).
+
+    ``ifnet_timestep_inset`` overrides :data:`DEFAULT_IFNET_TIMESTEP_INSET`
+    and the ``GLITCHFRAME_RIFE_IFNET_INSET`` env var; pass ``None`` (default)
+    to use the resolved default. Set to ``0`` for the legacy plain centered
+    sampling.
 
     ``on_frame``, if given, is invoked for every output frame as soon as it
     is available with ``(global_index, rgb_uint8, t_sec)``. Callers can use
@@ -267,6 +352,8 @@ def rife_build_morph_timeline(
     n = len(keyframes)
     if n < 2:
         raise ValueError("RIFE morph needs at least two SDXL keyframes")
+
+    inset = _resolve_ifnet_timestep_inset(ifnet_timestep_inset)
 
     def _report(p: float, msg: str) -> None:
         if progress is not None:
@@ -314,6 +401,7 @@ def rife_build_morph_timeline(
                 exp=exp,
                 device=device,
                 include_endpoints=False,
+                ifnet_timestep_inset=inset,
             )
             # ``seg_frames`` is exactly ``n_steps`` IFNet predictions at
             # centered timesteps; map each to wall-clock time so the gap to
