@@ -37,8 +37,9 @@ Configuration (environment variables, see ``.env.example``):
   (50 steps).
 * ``GLITCHFRAME_HIDREAM_GEN_WIDTH`` / ``GLITCHFRAME_HIDREAM_GEN_HEIGHT`` —
   override generation resolution (defaults: 1280×720).
-* ``GLITCHFRAME_HIDREAM_PIPELINE_IMPORT`` — override the pipeline import
-  spec (default ``models.pipeline:HiDreamImagePipeline``).
+* ``GLITCHFRAME_HIDREAM_PIPELINE_IMPORT`` — ``auto`` (default: prefer
+  ``generate_image`` in current HiDream, else legacy ``HiDreamImagePipeline``),
+  or ``module:Class`` for a custom diffusers-style pipeline.
 
 Unit tests use ``load_hidream_config(..., strict_env=True)`` so paths stay
 explicit; UI manifest peeking uses ``allow_fetch=False`` without requiring
@@ -258,10 +259,7 @@ def load_hidream_config(
             f"HiDream gen resolution must be positive, got {gen_w}x{gen_h}"
         )
 
-    pipeline_import = (
-        _env("GLITCHFRAME_HIDREAM_PIPELINE_IMPORT")
-        or "models.pipeline:HiDreamImagePipeline"
-    )
+    pipeline_import = _env("GLITCHFRAME_HIDREAM_PIPELINE_IMPORT") or "auto"
 
     if strict_env:
         py = _env("GLITCHFRAME_HIDREAM_PYTHON")

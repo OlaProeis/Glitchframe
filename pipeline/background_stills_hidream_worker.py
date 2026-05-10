@@ -23,16 +23,18 @@ For each job it writes JSONL events to stdout, one per line::
     {"event": "error", "index": 0, "message": "..."}
 
 Closing stdin (EOF) makes the worker exit cleanly. All non-JSONL diagnostics
-go to stderr so they do not corrupt the protocol.
+go to stderr so they do not corrupt the JSONL channel.
 
 Compatibility
 =============
 
-The worker tries to import ``HiDreamImagePipeline`` from the ``models.pipeline``
-module of the HiDream-O1-Image repo, mirroring the import that
-``inference.py`` performs internally. If your fork of HiDream renames either
-the module or the class, set ``--pipeline-import`` (e.g.
-``models.pipeline:HiDreamImagePipeline``) to override.
+Upstream ``HiDream-O1-Image`` (May 2026+) replaced the old
+``HiDreamImagePipeline`` class with :func:`models.pipeline.generate_image`
+plus ``Qwen3VLForConditionalGeneration`` (see the project's ``inference.py``).
+
+With ``--pipeline-import auto`` (default), the worker picks **native**
+``generate_image`` when available, else falls back to a diffusers-style class
+from ``from_pretrained``. Pass an explicit ``module:Class`` only for forks.
 """
 from __future__ import annotations
 
@@ -42,6 +44,7 @@ import json
 import os
 import sys
 import traceback
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +59,23 @@ def _log(msg: str) -> None:
     """Diagnostic log to stderr (does not interfere with the JSONL protocol)."""
     sys.stderr.write(f"[hidream-worker] {msg}\n")
     sys.stderr.flush()
+
+
+def _add_special_tokens(tokenizer: Any) -> None:
+    """Attach special-token shortcuts that the pipeline relies on (see ``inference.py``)."""
+    tokenizer.boi_token = "<|boi_token|>"
+    tokenizer.bor_token = "<|bor_token|>"
+    tokenizer.eor_token = "<|eor_token|>"
+    tokenizer.bot_token = "<|bot_token|>"
+    tokenizer.tms_token = "<|tms_token|>"
+
+
+def _get_tokenizer(processor: Any) -> Any:
+    from transformers import PreTrainedTokenizerBase
+
+    if isinstance(processor, PreTrainedTokenizerBase):
+        return processor
+    return processor.tokenizer
 
 
 def _resolve_pipeline_class(spec: str) -> Any:
@@ -73,17 +93,92 @@ def _resolve_pipeline_class(spec: str) -> Any:
     return getattr(mod, cls_name)
 
 
-def _build_pipeline(
+@dataclass
+class _NativeHiDreamBundle:
+    """Weights loaded for :func:`models.pipeline.generate_image`."""
+
+    model: Any
+    processor: Any
+    model_type: str
+
+
+def _insert_repo_path(repo: Path) -> None:
+    repo_str = str(repo.resolve())
+    if repo_str not in sys.path:
+        sys.path.insert(0, repo_str)
+
+
+def _load_native_hidream(*, model_path: Path, model_type: str) -> _NativeHiDreamBundle:
+    import torch  # type: ignore
+
+    from transformers import AutoProcessor  # type: ignore
+
+    from models.qwen3_vl_transformers import (  # type: ignore  # noqa: E402
+        Qwen3VLForConditionalGeneration,
+    )
+
+    _log(f"loading HiDream native stack ({model_type}) from {model_path}")
+    processor = AutoProcessor.from_pretrained(str(model_path))
+    model = Qwen3VLForConditionalGeneration.from_pretrained(
+        str(model_path),
+        torch_dtype=torch.bfloat16,
+        device_map="cuda",
+    ).eval()
+    tokenizer = _get_tokenizer(processor)
+    _add_special_tokens(tokenizer)
+    return _NativeHiDreamBundle(model=model, processor=processor, model_type=model_type)
+
+
+def _load_diffusers_style_pipeline(
+    *,
+    model_path: Path,
+    model_type: str,
+    pipeline_import: str,
+) -> Any:
+    import torch  # type: ignore
+
+    PipelineCls = _resolve_pipeline_class(pipeline_import)
+    _log(
+        f"loading HiDream diffusers-style class ({model_type}) from {model_path} "
+        f"using {pipeline_import}"
+    )
+    if hasattr(PipelineCls, "from_pretrained"):
+        pipe = PipelineCls.from_pretrained(
+            str(model_path),
+            torch_dtype=torch.bfloat16,
+        )
+    else:
+        pipe = PipelineCls(str(model_path))  # type: ignore[call-arg]
+
+    try:
+        pipe = pipe.to("cuda")
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"Failed to move HiDream pipeline to CUDA: {exc}") from exc
+
+    for method_name in (
+        "enable_vae_slicing",
+        "enable_vae_tiling",
+        "enable_attention_slicing",
+        "enable_xformers_memory_efficient_attention",
+    ):
+        method = getattr(pipe, method_name, None)
+        if callable(method):
+            try:
+                method()
+            except Exception as exc:  # noqa: BLE001
+                _log(f"{method_name} failed: {exc}")
+    return pipe
+
+
+def _load_generation_runtime(
     *,
     repo: Path,
     model_path: Path,
     model_type: str,
     pipeline_import: str,
-) -> Any:
-    """Add HiDream repo to ``sys.path``, import its pipeline, load weights to CUDA."""
-    repo_str = str(repo.resolve())
-    if repo_str not in sys.path:
-        sys.path.insert(0, repo_str)
+) -> tuple[str, Any]:
+    """Return ``("native", bundle)`` or ``("diffusers", pipe)``."""
+    _insert_repo_path(repo)
 
     try:
         import torch  # type: ignore
@@ -99,47 +194,41 @@ def _build_pipeline(
             "requires a CUDA GPU."
         )
 
-    PipelineCls = _resolve_pipeline_class(pipeline_import)
+    spec = pipeline_import.strip()
+    use_auto = spec.lower() in ("", "auto")
 
-    _log(
-        f"loading HiDream pipeline ({model_type}) from {model_path} "
-        f"using {pipeline_import}"
-    )
-    # Common diffusers-style entry points; we try ``from_pretrained`` first
-    # (matches the public API in HiDream-O1-Image's ``inference.py``).
-    if hasattr(PipelineCls, "from_pretrained"):
-        pipe = PipelineCls.from_pretrained(
-            str(model_path),
-            torch_dtype=torch.bfloat16,
+    if not use_auto:
+        return (
+            "diffusers",
+            _load_diffusers_style_pipeline(
+                model_path=model_path,
+                model_type=model_type,
+                pipeline_import=spec,
+            ),
         )
-    else:
-        pipe = PipelineCls(str(model_path))  # type: ignore[call-arg]
 
-    try:
-        pipe = pipe.to("cuda")
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(
-            f"Failed to move HiDream pipeline to CUDA: {exc}"
-        ) from exc
+    mp = importlib.import_module("models.pipeline")
+    if hasattr(mp, "generate_image"):
+        return ("native", _load_native_hidream(model_path=model_path, model_type=model_type))
+    if hasattr(mp, "HiDreamImagePipeline"):
+        _log("auto: using legacy HiDreamImagePipeline.from_pretrained")
+        return (
+            "diffusers",
+            _load_diffusers_style_pipeline(
+                model_path=model_path,
+                model_type=model_type,
+                pipeline_import="models.pipeline:HiDreamImagePipeline",
+            ),
+        )
 
-    # If the pipeline exposes a memory saver, use it (mirrors SDXL path).
-    for method_name in (
-        "enable_vae_slicing",
-        "enable_vae_tiling",
-        "enable_attention_slicing",
-        "enable_xformers_memory_efficient_attention",
-    ):
-        method = getattr(pipe, method_name, None)
-        if callable(method):
-            try:
-                method()
-            except Exception as exc:  # noqa: BLE001
-                _log(f"{method_name} failed: {exc}")
-
-    return pipe
+    raise RuntimeError(
+        "HiDream models.pipeline exposes neither generate_image nor "
+        "HiDreamImagePipeline — update HiDream-ai/HiDream-O1-Image or set "
+        "--pipeline-import to your fork's pipeline class."
+    )
 
 
-def _generate_one(
+def _generate_one_diffusers(
     pipe: Any,
     *,
     index: int,
@@ -150,9 +239,8 @@ def _generate_one(
     steps: int,
     guidance_scale: float,
     seed: int | None,
-    model_type: str,
 ) -> None:
-    """Run the pipeline for a single prompt and write a PNG to ``output_path``."""
+    """Run a diffusers-style ``__call__`` pipeline."""
     import torch  # type: ignore
     from PIL import Image  # type: ignore
 
@@ -161,8 +249,6 @@ def _generate_one(
         generator = torch.Generator(device="cuda").manual_seed(int(seed))
 
     def _step_cb(_pipe: Any, step_idx: int, _t: Any, kwargs: dict) -> dict:
-        # diffusers reports step_idx as 0-based; emit 1-based to match the
-        # SDXL UI where users never see "step 0 of N".
         _emit(
             {
                 "event": "step",
@@ -186,8 +272,6 @@ def _generate_one(
     try:
         out = pipe(**call_kwargs, callback_on_step_end=_step_cb)
     except TypeError:
-        # Older / forked pipelines without ``callback_on_step_end`` — fall
-        # back silently to a single coarse update per keyframe.
         out = pipe(**call_kwargs)
 
     images = getattr(out, "images", None)
@@ -196,6 +280,76 @@ def _generate_one(
             "HiDream pipeline returned no images; check --pipeline-import"
         )
     img: Image.Image = images[0]
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = output_path.with_suffix(output_path.suffix + ".tmp")
+    img.save(str(tmp), format="PNG")
+    os.replace(tmp, output_path)
+    _emit({"event": "saved", "index": int(index), "path": str(output_path)})
+
+
+def _generate_one_native(
+    bundle: _NativeHiDreamBundle,
+    *,
+    index: int,
+    prompt: str,
+    output_path: Path,
+    width: int,
+    height: int,
+    steps: int,
+    guidance_scale: float,
+    seed: int | None,
+) -> None:
+    """Call :func:`models.pipeline.generate_image` (current upstream HiDream)."""
+    from models.pipeline import DEFAULT_TIMESTEPS, generate_image  # type: ignore  # noqa: E402
+
+    seed_i = int(seed) if seed is not None else 32
+
+    if bundle.model_type == "full":
+        shift = 3.0
+        timesteps_list = None
+        scheduler_name = "default"
+        extra: dict[str, Any] = {}
+        gscale = float(guidance_scale)
+    else:
+        shift = 1.0
+        timesteps_list = DEFAULT_TIMESTEPS
+        scheduler_name = "flash"
+        extra = {
+            "noise_scale_start": 7.5,
+            "noise_scale_end": 7.5,
+            "noise_clip_std": 2.5,
+        }
+        gscale = 0.0
+
+    total_steps = int(steps)
+
+    def _cb(step_idx: int, n_steps: int, _decode: Any) -> None:
+        _emit(
+            {
+                "event": "step",
+                "index": int(index),
+                "step": int(step_idx) + 1,
+                "steps_total": int(n_steps),
+            }
+        )
+
+    img = generate_image(
+        model=bundle.model,
+        processor=bundle.processor,
+        prompt=prompt,
+        ref_image_paths=None,
+        height=int(height),
+        width=int(width),
+        num_inference_steps=total_steps,
+        guidance_scale=gscale,
+        shift=shift,
+        timesteps_list=timesteps_list,
+        scheduler_name=scheduler_name,
+        seed=seed_i,
+        callback=_cb,
+        **extra,
+    )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = output_path.with_suffix(output_path.suffix + ".tmp")
@@ -230,8 +384,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--pipeline-import",
-        default="models.pipeline:HiDreamImagePipeline",
-        help="``module:ClassName`` import path for the HiDream pipeline class",
+        default="auto",
+        help="``auto`` (default), or ``module:Class`` for a diffusers-style pipeline",
     )
     args = parser.parse_args(argv)
 
@@ -241,11 +395,11 @@ def main(argv: list[str] | None = None) -> int:
         args.guidance_scale = 0.0 if args.model_type == "dev" else 5.0
 
     try:
-        pipe = _build_pipeline(
+        kind, loaded = _load_generation_runtime(
             repo=args.repo,
             model_path=args.model_path,
             model_type=args.model_type,
-            pipeline_import=args.pipeline_import,
+            pipeline_import=str(args.pipeline_import),
         )
     except Exception as exc:  # noqa: BLE001
         _log(traceback.format_exc())
@@ -279,18 +433,34 @@ def main(argv: list[str] | None = None) -> int:
             )
             continue
         try:
-            _generate_one(
-                pipe,
-                index=index,
-                prompt=prompt,
-                output_path=output_path,
-                width=int(job.get("width", args.width)),
-                height=int(job.get("height", args.height)),
-                steps=int(job.get("steps", args.steps)),
-                guidance_scale=float(job.get("guidance_scale", args.guidance_scale)),
-                seed=seed,
-                model_type=args.model_type,
-            )
+            w = int(job.get("width", args.width))
+            h = int(job.get("height", args.height))
+            st = int(job.get("steps", args.steps))
+            gs = float(job.get("guidance_scale", args.guidance_scale))
+            if kind == "native":
+                _generate_one_native(
+                    loaded,
+                    index=index,
+                    prompt=prompt,
+                    output_path=output_path,
+                    width=w,
+                    height=h,
+                    steps=st,
+                    guidance_scale=gs,
+                    seed=seed,
+                )
+            else:
+                _generate_one_diffusers(
+                    loaded,
+                    index=index,
+                    prompt=prompt,
+                    output_path=output_path,
+                    width=w,
+                    height=h,
+                    steps=st,
+                    guidance_scale=gs,
+                    seed=seed,
+                )
         except Exception as exc:  # noqa: BLE001
             _log(traceback.format_exc())
             _emit({"event": "error", "index": index, "message": f"{type(exc).__name__}: {exc}"})

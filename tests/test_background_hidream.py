@@ -209,7 +209,7 @@ class FactoryDispatchTests(unittest.TestCase):
                 model_type="dev",
                 gen_width=1280,
                 gen_height=720,
-                pipeline_import="models.pipeline:HiDreamImagePipeline",
+                pipeline_import="auto",
             )
             with mock.patch.dict(os.environ, env, clear=False):
                 bg = create_background_source(

@@ -32,7 +32,7 @@ Set these in `.env` (see `.env.example`):
 | `GLITCHFRAME_HIDREAM_MODEL_PATH` | Path to weights directory (e.g. drbaph FP8 dev) |
 | `GLITCHFRAME_HIDREAM_MODEL_TYPE` | `dev` (28 steps, ~16 GB on FP8) or `full` (50 steps) |
 | `GLITCHFRAME_HIDREAM_GEN_WIDTH` / `_GEN_HEIGHT` | Generation resolution (default 1280×720) |
-| `GLITCHFRAME_HIDREAM_PIPELINE_IMPORT` | `module:Class` override (default `models.pipeline:HiDreamImagePipeline`) |
+| `GLITCHFRAME_HIDREAM_PIPELINE_IMPORT` | `auto` (default), or `module:Class` for a fork |
 
 If any of the first three is unset, switching the radio to **HiDream**
 raises a clear error at generation time. SDXL keeps working regardless.
