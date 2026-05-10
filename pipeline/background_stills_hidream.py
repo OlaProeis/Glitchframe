@@ -46,6 +46,13 @@ Configuration (environment variables, see ``.env.example``):
 * ``GLITCHFRAME_HIDREAM_DEQUANT_FLOAT8`` — set to ``0`` to skip the post-load
   Float8→BFloat16 cast (advanced — only useful when the env already provides
   true FP8 ops via ``torchao`` or a fork). Default is on.
+* ``GLITCHFRAME_HIDREAM_FORCE_NO_FLASH_ATTN`` — ``auto`` (default; patch only
+  when ``flash_attn`` / ``flash_attn_interface`` is missing), ``1`` (always
+  patch), or ``0`` (never patch). HiDream's ``generate_image`` hard-codes
+  ``use_flash_attn=True`` in its model kwargs; the worker monkey-patches
+  ``Qwen3VLModel._forward_generation`` to override that to ``False`` when
+  flash attention isn't importable, falling back to the model's standard
+  4D-mask attention path (slower but works without flash_attn wheels).
 
 Unit tests use ``load_hidream_config(..., strict_env=True)`` so paths stay
 explicit; UI manifest peeking uses ``allow_fetch=False`` without requiring

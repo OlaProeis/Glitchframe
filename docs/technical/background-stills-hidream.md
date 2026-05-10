@@ -35,6 +35,7 @@ Set these in `.env` (see `.env.example`):
 | `GLITCHFRAME_HIDREAM_PIPELINE_IMPORT` | `auto` (default), or `module:Class` for a fork |
 | `GLITCHFRAME_HIDREAM_NATIVE_WEIGHTS_DTYPE` | `from_pretrained` dtype (default `bfloat16`); only affects non-Float8 tensors |
 | `GLITCHFRAME_HIDREAM_DEQUANT_FLOAT8` | `0` to skip the post-load Float8 → BFloat16 in-place cast (default: on) |
+| `GLITCHFRAME_HIDREAM_FORCE_NO_FLASH_ATTN` | `auto` (default; patch only when flash_attn missing), `1` (always), or `0` (never) |
 
 If any of the first three is unset, switching the radio to **HiDream**
 raises a clear error at generation time. SDXL keeps working regardless.
@@ -68,6 +69,26 @@ build with FP8-precision weights (same accuracy as drbaph's intended FP8
 inference, compatible with HiDream's BF16 forward path). The worker logs a
 dtype audit before *and* after the cast so you can verify zero Float8
 tensors remain.
+
+## Flash attention availability
+
+HiDream's `generate_image` hard-codes `use_flash_attn=True` in the kwargs
+passed to `Qwen3VLForConditionalGeneration.__call__` (`forward_once` in
+`pipeline.py`). When neither `flash_attn_interface` (FA3) nor `flash_attn`
+(FA2) is importable in the worker venv, `Qwen3VLModel._run_decoder_flash`
+raises `AssertionError: Flash attention is not available`.
+
+`flash_attn` wheels are notoriously hard to install on Windows. To keep the
+backend working on a stock Glitchframe venv, the worker probes for both
+imports and, when missing, monkey-patches `Qwen3VLModel._forward_generation`
+to coerce `use_flash_attn=False`. Qwen3-VL ships a standard 4D-mask
+attention path in the same function, so generation still produces the same
+output — it is just slower and uses more VRAM than the flash kernels.
+
+For best performance, install `flash_attn` in the worker venv (e.g.
+Pinokio's HiDream-O1-Image app already includes it) and point
+`GLITCHFRAME_HIDREAM_PYTHON` at that interpreter. The worker logs which
+path it is using on every model load.
 
 ## Cache namespacing
 

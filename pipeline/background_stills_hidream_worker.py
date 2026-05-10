@@ -389,6 +389,107 @@ def _dequantize_float8_to_bfloat16(model: Any) -> int:
     return cast
 
 
+def _flash_attn_importable() -> bool:
+    """Mirror upstream's import probe (FA3 ``flash_attn_interface`` first, FA2 ``flash_attn`` fallback).
+
+    HiDream's :mod:`models.qwen3_vl_transformers` runs the same probe at module
+    import time (lines 32–44) and sets ``_flash_attn_func = None`` on failure;
+    the worker mirrors it so we can decide *before* generation whether to
+    monkey-patch ``_forward_generation``.
+    """
+    for name in ("flash_attn_interface", "flash_attn"):
+        try:
+            importlib.import_module(name)
+            return True
+        except Exception:  # noqa: BLE001
+            continue
+    return False
+
+
+def _force_disable_flash_attn(model: Any) -> bool:
+    """Wrap ``model.model._forward_generation`` to override ``use_flash_attn=False``.
+
+    Why this is needed
+    ------------------
+    HiDream upstream :func:`models.pipeline.generate_image` hard-codes
+    ``"use_flash_attn": True`` in the kwargs handed to ``model(**kwargs)``
+    (``forward_once`` in ``pipeline.py``). When neither ``flash_attn_interface``
+    (FA3) nor ``flash_attn`` (FA2) is importable in the worker venv,
+    :meth:`Qwen3VLModel._run_decoder_flash` raises::
+
+        AssertionError: Flash attention is not available.
+        Install flash_attn_interface (FA3) or flash_attn (FA2).
+
+    The Qwen3VL model already implements a *standard* (non-flash) path in the
+    same ``_forward_generation`` (the ``else`` branch building a 4D causal +
+    full attention mask). Replacing the bound method with a thin wrapper that
+    forces ``use_flash_attn=False`` routes through that path without touching
+    the upstream pipeline file. The standard path is slower and more VRAM-
+    hungry than flash attention but works on stock CPython + PyTorch on
+    Windows, where ``flash_attn`` wheels are notoriously hard to install.
+
+    Returns ``True`` when the patch was applied. The preferred long-term fix is
+    still to point ``GLITCHFRAME_HIDREAM_PYTHON`` at a venv that has
+    ``flash_attn`` installed (e.g. Pinokio's HiDream-O1-Image app).
+    """
+    inner = getattr(model, "model", None)
+    if inner is None or not hasattr(inner, "_forward_generation"):
+        _log(
+            "Cannot disable flash attention: model.model._forward_generation "
+            "missing — leaving use_flash_attn=True (likely AssertionError ahead)."
+        )
+        return False
+
+    orig = inner._forward_generation
+
+    def _no_flash_forward(*args: Any, **kwargs: Any) -> Any:
+        kwargs["use_flash_attn"] = False
+        return orig(*args, **kwargs)
+
+    inner._forward_generation = _no_flash_forward
+    return True
+
+
+def _maybe_disable_flash_attn(model: Any) -> None:
+    """Apply :func:`_force_disable_flash_attn` based on env + import probe.
+
+    ``GLITCHFRAME_HIDREAM_FORCE_NO_FLASH_ATTN``:
+
+    * unset / ``auto`` (default) — patch only if ``flash_attn`` cannot be imported
+    * ``1`` — always patch (force standard 4D-mask path even if flash_attn works)
+    * ``0`` — never patch (let the upstream assert fire if flash_attn missing)
+    """
+    raw = os.environ.get("GLITCHFRAME_HIDREAM_FORCE_NO_FLASH_ATTN", "").strip().lower()
+    if raw == "0":
+        _log(
+            "GLITCHFRAME_HIDREAM_FORCE_NO_FLASH_ATTN=0 — leaving "
+            "use_flash_attn=True; HiDream will assert if flash_attn missing."
+        )
+        return
+
+    if raw == "1":
+        if _force_disable_flash_attn(model):
+            _log(
+                "GLITCHFRAME_HIDREAM_FORCE_NO_FLASH_ATTN=1 — forced "
+                "use_flash_attn=False (standard 4D-mask attention path; "
+                "slower than flash attention)."
+            )
+        return
+
+    if _flash_attn_importable():
+        return
+
+    if _force_disable_flash_attn(model):
+        _log(
+            "flash_attn (FA2) / flash_attn_interface (FA3) not installed in this "
+            "venv — forcing use_flash_attn=False so HiDream uses the standard "
+            "4D-mask attention path. This is slower and more VRAM-hungry than "
+            "flash attention. For best perf, install flash_attn or set "
+            "GLITCHFRAME_HIDREAM_PYTHON to a venv that has it (e.g. Pinokio's "
+            "HiDream-O1-Image app). Override: GLITCHFRAME_HIDREAM_FORCE_NO_FLASH_ATTN=0."
+        )
+
+
 def _load_native_hidream(*, model_path: Path, model_type: str) -> _NativeHiDreamBundle:
     import torch  # type: ignore
 
@@ -425,6 +526,7 @@ def _load_native_hidream(*, model_path: Path, model_type: str) -> _NativeHiDream
                 "generate_image will likely raise Promotion for Float8 Types. "
                 "File a bug if this happens with an unmodified worker."
             )
+    _maybe_disable_flash_attn(model)
     tokenizer = _get_tokenizer(processor)
     _add_special_tokens(tokenizer)
     return _NativeHiDreamBundle(model=model, processor=processor, model_type=model_type)
