@@ -213,6 +213,36 @@ def _tensor_to_rgb(out: torch.Tensor, h: int, w: int) -> np.ndarray:
     return np.ascontiguousarray(x)
 
 
+def rife_ifnet_at_timestep(
+    model: RIFEInferenceWrapper,
+    rgb0: np.ndarray,
+    rgb1: np.ndarray,
+    *,
+    timestep: float,
+    device: torch.device,
+) -> np.ndarray:
+    """Single IFNet inference between ``rgb0`` and ``rgb1`` at ``timestep``.
+
+    ``timestep`` is the IFNet temporal parameter ``s ∈ [0, 1]`` (``s = 0``
+    ≈ ``rgb0``, ``s = 1`` ≈ ``rgb1``). The morph timeline builder uses this
+    helper to render the **bookend** frames at song start and end at IFNet
+    timesteps that match the body's wall-clock-to-IFNet-timestep velocity,
+    eliminating the perceived "skip" right before the song's closing still
+    (and the symmetric one at the song open). See
+    :func:`rife_build_morph_timeline` for the velocity-matching derivation.
+
+    Inference runs inside :func:`torch.inference_mode` for the same reason
+    as :func:`rife_exp_interpolate_pair` — no autograd graph for inference,
+    cuts ~15–20 % wall-clock and roughly halves transient VRAM versus a
+    plain ``model.eval()`` call.
+    """
+    dtype = torch.float16 if model.fp16 else torch.float32
+    t0, t1, h, w = _prepare_pair_tensors(rgb0, rgb1, device, dtype=dtype)
+    with torch.inference_mode():
+        mid = model.inference(t0, t1, float(timestep))
+    return _tensor_to_rgb(mid, h, w)
+
+
 def rife_exp_interpolate_pair(
     model: RIFEInferenceWrapper,
     rgb0: np.ndarray,
@@ -295,21 +325,34 @@ def rife_build_morph_timeline(
 ) -> tuple[list[np.ndarray], list[float]]:
     """Build one continuous-velocity dense RIFE timeline across all keyframes.
 
-    Each segment ``[kf_i, kf_{i+1}]`` is sampled at **inset-warped centered**
-    IFNet timesteps ``[inset + (1 - 2*inset) * (j + 0.5)/n for j in 0..n-1]``
-    (where ``n = 2**exp`` and ``inset`` defaults to
+    Each segment ``[kf_i, kf_{i+1}]`` body is sampled at **inset-warped
+    centered** IFNet timesteps ``[inset + (1 - 2*inset) * (j + 0.5)/n
+    for j in 0..n-1]`` (where ``n = 2**exp`` and ``inset`` defaults to
     :data:`DEFAULT_IFNET_TIMESTEP_INSET`). The dense timeline therefore
     contains *only* IFNet predictions internally — never the exact SDXL
     still at an internal keyframe boundary — and the boundary samples carry
-    visible motion instead of collapsing onto near-keyframe pixels. The
-    exact start (``kf_0``) and end (``kf_{-1}``) stills are still kept as
-    the very first and very last frames so the song opens/closes on the
-    sharp generated image; the linear blend from the bookend still to the
-    first IFNet sample (now at ``s = inset + …`` instead of ``s ≈ 0.5/n``)
-    is a smooth ease-in rather than the previous near-static intro.
+    visible motion instead of collapsing onto near-keyframe pixels.
 
-    Why this matters for perceived smoothness: under plain centered sampling
-    ``(j + 0.5)/n``, the boundary samples of every segment land at
+    The song's first and last frames are **velocity-matched IFNet bookends**
+    at ``t = keyframe_times[0]`` and ``t = keyframe_times[-1]`` — namely
+    IFNet at ``s = inset`` (using the first keyframe pair ``kf_0, kf_1``)
+    and ``s = 1 - inset`` (using the last keyframe pair ``kf_{N-1}, kf_N``).
+    A naive bookend at the *exact* SDXL still (``s = 0`` / ``s = 1``) would
+    leave an IFNet jump of ``inset + span/(2n)`` between the bookend and
+    the first body sample over only ``T_seg/(2n)`` wall-clock seconds: at
+    the default ``inset = 0.12`` and ``exp = 4`` that's ``0.144`` IFNet
+    timesteps in ``0.25 s``, ~6× the body's pace ``span/T_seg``. The viewer
+    perceives that as a brief "skip" right at the song open and close,
+    even though the morph in between is smooth. Sampling the bookends at
+    ``s = inset`` instead reduces the IFNet jump to ``span/(2n)`` (half a
+    body step) over the same ``T_seg/(2n)`` wall-clock — exactly the body
+    velocity ``span/T_seg``. The visual cost is tiny: IFNet at ``s = inset``
+    is within ~12 % flow displacement of ``kf_0`` (and symmetrically for
+    ``kf_N``), so the song still visibly opens/closes on the generated
+    image, just with a hint of motion instead of a freeze that snaps.
+
+    Why the body inset matters in the first place: under plain centered
+    sampling ``(j + 0.5)/n``, the boundary samples of every segment land at
     ``s ≈ 0.5/n`` and ``s ≈ (n - 0.5)/n`` (≈ 0.031 / 0.969 at ``exp=4``).
     IFNet's flow displacement near those endpoints is essentially zero, so
     those frames are visually indistinguishable from the SDXL keyframe —
@@ -322,18 +365,23 @@ def rife_build_morph_timeline(
     keeping the wall-clock spacing uniform.
 
     Wall-clock placement remains uniform centered ``T_seg/n`` (decoupled
-    from the IFNet timestep): each sample lands at
+    from the IFNet timestep): each body sample lands at
     ``t_kf_i + T_seg * (j + 0.5)/n``, both *within* a segment and *across*
-    every internal keyframe boundary (the last sample of segment ``N`` sits
-    at ``t_kf - T_seg/(2n)``, the first of segment ``N+1`` at
-    ``t_kf + T_seg/(2n)``). The only spacing irregularity is the short
-    ``T_seg/(2n)`` gap between the prepended exact start still and the
-    first IFNet sample (and the symmetric one at the end).
+    every internal keyframe boundary. Bookend wall-clock placement at
+    ``t = keyframe_times[0]`` / ``t = keyframe_times[-1]`` keeps the song's
+    very first and last rendered frame pinned to ``t = 0`` / ``t = duration``;
+    combined with the velocity-matched IFNet timestep there is no longer
+    a jump in IFNet velocity between the bookends and the body, so the
+    compositor's linear sampling produces a uniform-velocity rendering
+    across the entire song.
 
     ``ifnet_timestep_inset`` overrides :data:`DEFAULT_IFNET_TIMESTEP_INSET`
     and the ``GLITCHFRAME_RIFE_IFNET_INSET`` env var; pass ``None`` (default)
     to use the resolved default. Set to ``0`` for the legacy plain centered
-    sampling.
+    sampling — at ``inset = 0`` the bookends collapse to ``s = 0`` / ``s = 1``
+    (≈ exact stills under IFNet) so byte-exact reproducibility against the
+    pre-v4 timeline is preserved aside from any IFNet vs raw-pixel drift
+    at the rounded endpoints.
 
     ``on_frame``, if given, is invoked for every output frame as soon as it
     is available with ``(global_index, rgb_uint8, t_sec)``. Callers can use
@@ -381,12 +429,28 @@ def rife_build_morph_timeline(
     n_steps = 1 << int(exp)  # = 2 ** exp; centered-sample count per segment
     total_segs = n - 1
     try:
-        # Frame 0: exact start still — sharp opening for the song.
+        # Bookend at song start: IFNet at s = inset (instead of the legacy
+        # exact ``kf_0`` still). Sampling here at ``s = inset`` rather than
+        # ``s = 0`` makes the wall-clock-to-IFNet-timestep velocity from the
+        # bookend to the first body sample equal to the body's own velocity
+        # ``span / T_seg_0`` (rather than ~6× higher, which the viewer reads
+        # as a "skip" at the song open). See the function docstring for the
+        # full velocity derivation. ``inset = 0`` recovers the legacy
+        # ``s = 0`` bookend (≈ ``kf_0``) and a uniform velocity already
+        # holds, so this code path is correct for both the default and the
+        # legacy reproducibility setting.
         start_t = float(keyframe_times[0])
+        start_bookend = rife_ifnet_at_timestep(
+            model,
+            keyframes[0],
+            keyframes[1],
+            timestep=inset,
+            device=device,
+        )
         if on_frame is not None:
-            on_frame(global_idx, np.ascontiguousarray(keyframes[0]), start_t)
+            on_frame(global_idx, start_bookend, start_t)
         if keep_frames:
-            frames_out.append(np.ascontiguousarray(keyframes[0]))
+            frames_out.append(start_bookend)
         times_out.append(start_t)
         global_idx += 1
 
@@ -417,12 +481,24 @@ def rife_build_morph_timeline(
             frac = (seg_i + 1) / max(1, total_segs)
             _report(0.05 + 0.9 * frac, f"RIFE segment {seg_i + 1}/{total_segs}")
 
-        # Final frame: exact end still — sharp closing for the song.
+        # Bookend at song end: IFNet at ``s = 1 - inset`` on the last
+        # keyframe pair (instead of the legacy exact ``kf_{N-1}`` still).
+        # This is the symmetric fix to the start bookend above — see the
+        # function docstring for the full derivation. The visible "skip"
+        # the user reported between the last RIFE frame and the closing
+        # original still was exactly this velocity discontinuity.
         end_t = float(keyframe_times[-1])
+        end_bookend = rife_ifnet_at_timestep(
+            model,
+            keyframes[-2],
+            keyframes[-1],
+            timestep=1.0 - inset,
+            device=device,
+        )
         if on_frame is not None:
-            on_frame(global_idx, np.ascontiguousarray(keyframes[-1]), end_t)
+            on_frame(global_idx, end_bookend, end_t)
         if keep_frames:
-            frames_out.append(np.ascontiguousarray(keyframes[-1]))
+            frames_out.append(end_bookend)
         times_out.append(end_t)
         global_idx += 1
     finally:

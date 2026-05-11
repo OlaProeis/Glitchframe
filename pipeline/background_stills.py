@@ -71,7 +71,13 @@ MANIFEST_RIFE_FILENAME = "manifest_rife.json"
 # "pause on the original still" at every keyframe boundary; see
 # :func:`pipeline.rife_runtime.rife_build_morph_timeline`). v3 manifests are
 # silently re-baked the next time RIFE runs.
-RIFE_MANIFEST_SCHEMA_VERSION = 4
+# v5: velocity-matched IFNet bookends at song start/end (``s = inset`` and
+# ``s = 1 - inset`` instead of the legacy ``s = 0`` / ``s = 1`` exact stills).
+# v4 left an IFNet-velocity jump of ``~6×`` between the body and the closing
+# still that read as a skip in the rendered video; sampling the bookends at
+# the same warped timestep that anchors the body removes the jump entirely.
+# v4 manifests are silently re-baked once.
+RIFE_MANIFEST_SCHEMA_VERSION = 5
 
 ProgressFn = Callable[[float, str], None]
 

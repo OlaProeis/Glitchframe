@@ -25,14 +25,22 @@ Plain centered sampling ``(j + 0.5)/n`` (the v2 / v3 timeline) avoided emitting 
 The dense morph timeline therefore samples IFNet at **inset-warped** centered timesteps. For each segment ``[kf_i, kf_{i+1}]`` of duration ``T_seg``:
 
 * Sample IFNet at ``s_j = inset + (1 - 2*inset) * (j + 0.5)/n`` for ``j ∈ [0, n)`` (where ``n = 2**N`` and ``inset`` defaults to **0.12**, override via ``GLITCHFRAME_RIFE_IFNET_INSET``, clamped to ``[0, 0.45]``). The closest-to-boundary samples now sit at ``s ≈ inset`` and ``s ≈ 1 - inset`` instead of the legacy ``≈ 0.5/n`` / ``≈ 1 - 0.5/n``, so every dense sample carries visible flow displacement and is visually distinct from both bracketing keyframes.
-* Wall-clock placement is **decoupled** from the IFNet timestep and stays uniform centered: ``t_j = t_kf_i + T_seg * (j + 0.5)/n``. Apparent motion velocity is therefore constant — only the visual *content* of each frame is shifted away from the keyframe.
-* The exact SDXL still is emitted **only** as the very first frame (``t = 0``) and very last frame (``t = duration``) of the timeline — never at internal keyframe times. The bookend stills now blend into a meaningfully-displaced first IFNet sample (``s ≈ inset``, not ``s ≈ 0``), so the song's open and close are smooth ease-ins rather than the previous near-static intros.
+* Wall-clock placement of body samples is **decoupled** from the IFNet timestep and stays uniform centered: ``t_j = t_kf_i + T_seg * (j + 0.5)/n``. Apparent motion velocity is therefore constant — only the visual *content* of each frame is shifted away from the keyframe.
 
-Setting ``GLITCHFRAME_RIFE_IFNET_INSET=0`` recovers the legacy plain centered sampling for byte-exact reproducibility against an older bake.
+### Velocity-matched IFNet bookends (no skip at song open / close)
 
-**Spacing:** within a segment and across every internal keyframe boundary the wall-clock spacing is uniform ``T_seg / n`` (e.g. with ``T_seg = 8 s`` and ``N = 4`` that's ``0.5 s``). The only spacing irregularity is the short ``T_seg/(2n)`` gap between the first/last exact-still bracket and its neighbouring IFNet sample.
+The v4 sampling above eliminated the **internal** keyframe pause but introduced a velocity discontinuity at the song's bookends: keeping the *exact* SDXL still at ``t = 0`` (``s = 0``) and ``t = duration`` (``s = 1``) leaves an IFNet jump of ``inset + span/(2n)`` between the bookend and the first body sample over only ``T_seg/(2n)`` wall-clock seconds. At the default ``inset = 0.12`` and ``N = 4`` (``n = 16``) that's a ``0.144`` IFNet-timestep jump in ``0.25 s`` — roughly **6×** the body's pace ``span/T_seg``. The compositor renders ~7–8 video frames flying through 14 % of the morph in that window, which the viewer reads as a brief "skip" right before the song's closing still (and a symmetric one at the open).
 
-**Cache invalidation:** ``RIFE_MANIFEST_SCHEMA_VERSION`` is **4**. v1 → centered (v2) introduced no exact internal stills; v2 → v3 added ``keyframes_content_hash`` (SHA-256 over keyframe RGB payloads in order) so **replacing or editing keyframe PNGs** invalidates the RIFE cache even when text prompts and layout are unchanged; v3 → **v4** introduced inset-warped centered sampling. Older manifests are silently re-baked the next time RIFE runs.
+v5 fixes this by sampling the **bookends** at IFNet timesteps that match the body velocity:
+
+* **Start bookend** at ``t = keyframe_times[0]``: IFNet at ``s = inset`` on the first keyframe pair ``(kf_0, kf_1)`` — IFNet jump to the first body sample becomes ``span/(2n)`` (half a body step), which divided by ``T_seg/(2n)`` wall-clock equals ``span/T_seg`` (the body velocity).
+* **End bookend** at ``t = keyframe_times[-1]``: symmetrically, IFNet at ``s = 1 - inset`` on the last keyframe pair ``(kf_{N-1}, kf_N)``.
+
+The visual cost is small: IFNet at ``s = inset`` is within ~12 % flow displacement of ``kf_0`` (and symmetrically for ``kf_N``), so the song still visibly opens and closes on the generated background image — just with a hint of motion instead of a freeze that snaps. The eye reads the resulting uniform velocity as a smooth open/close instead of the previous skip. Setting ``GLITCHFRAME_RIFE_IFNET_INSET=0`` collapses the bookends to ``s = 0`` / ``s = 1`` (≈ exact stills under IFNet), which is also the legacy uniform-velocity case (no skip at ``inset = 0`` either).
+
+**Spacing:** within a segment and across every internal keyframe boundary the wall-clock spacing of body samples is uniform ``T_seg / n`` (e.g. with ``T_seg = 8 s`` and ``N = 4`` that's ``0.5 s``). The only spacing irregularity is the short ``T_seg/(2n)`` gap between the velocity-matched bookend and its neighbouring body sample, where IFNet velocity now matches the body — visually smooth.
+
+**Cache invalidation:** ``RIFE_MANIFEST_SCHEMA_VERSION`` is **5**. v1 → centered (v2) introduced no exact internal stills; v2 → v3 added ``keyframes_content_hash`` (SHA-256 over keyframe RGB payloads in order) so **replacing or editing keyframe PNGs** invalidates the RIFE cache even when text prompts and layout are unchanged; v3 → **v4** introduced inset-warped centered sampling; v4 → **v5** replaced the exact-still bookends with velocity-matched IFNet bookends (eliminating the skip at song open / close). Older manifests are silently re-baked the next time RIFE runs.
 
 ## Implementation sketch
 
