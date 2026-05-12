@@ -76,8 +76,23 @@ MANIFEST_RIFE_FILENAME = "manifest_rife.json"
 # v4 left an IFNet-velocity jump of ``~6×`` between the body and the closing
 # still that read as a skip in the rendered video; sampling the bookends at
 # the same warped timestep that anchors the body removes the jump entirely.
-# v4 manifests are silently re-baked once.
-RIFE_MANIFEST_SCHEMA_VERSION = 5
+# v6: cross-pair boundary bridges. v5 still left a ~``T_seg/n`` window
+# at every internal keyframe time where the compositor crossfades two
+# adjacent body samples both visually pulled toward the shared keyframe
+# ``kf_{i+1}`` — so even though no exact still is in the timeline the
+# blend in raw pixel space holds the visual on ``kf_{i+1}`` for that
+# window (perceived as "smooth → skip → still image → smooth" at every
+# internal keyframe). v6 inserts one IFNet sample on the cross pair
+# ``(kf_i, kf_{i+2})`` at ``s = 0.5`` exactly at ``t_{i+1}``: its flow
+# goes *across* the keyframe rather than into and out of it, so the two
+# 0.25 s blends (last body → bridge → first body) traverse three
+# distinct ghost states and break the static plateau. The default body
+# inset also rises ``0.12 → 0.25`` in v6 so each seam blend is ~73 %
+# keyframe-dominant instead of ~86 % — visibly in motion. v5 manifests
+# are silently re-baked once (``+1`` bridge per internal keyframe and a
+# new body sample distribution; both invalidate the legacy frame count
+# and on-disk PNGs).
+RIFE_MANIFEST_SCHEMA_VERSION = 6
 
 ProgressFn = Callable[[float, str], None]
 
@@ -1342,10 +1357,12 @@ class BackgroundStills:
 
         # Total estimate for progress: matches ``rife_build_morph_timeline``
         # — ``per_seg`` centered IFNet predictions per segment, plus the two
-        # bracketing exact stills (one at the song start, one at the end).
+        # velocity-matched IFNet bookends (one at the song start, one at the
+        # end), plus one v6 cross-pair bridge per internal keyframe boundary
+        # (``total_segs - 1`` of them, zero when there is only one segment).
         total_segs = max(1, mf.num_keyframes - 1)
         per_seg = (1 << int(self._rife_exp))
-        est_total = total_segs * per_seg + 2
+        est_total = total_segs * per_seg + max(0, total_segs - 1) + 2
 
         def _write_one(idx: int, arr: np.ndarray) -> int:
             img = Image.fromarray(arr, mode="RGB")

@@ -1,24 +1,28 @@
 """Dense RIFE morph timeline structure (inset-warped centered sampling +
-velocity-matched IFNet bookends).
+velocity-matched IFNet bookends + cross-pair boundary bridges).
 
 These tests do not require CUDA or RIFE weights — :func:`load_rife_model`,
 the per-pair IFNet interpolator, and the single-shot IFNet helper used for
-the bookends are all stubbed. The goal is to lock in the timeline-times
-grid and the bookend behaviour that together address the perceived stutter
-at SDXL keyframe boundaries (see ``docs/technical/rife-morph-background.md``):
+the bookends and the v6 cross-pair bridges are all stubbed. The goal is to
+lock in the timeline-times grid and the bookend / bridge behaviour that
+together address the perceived stutter at SDXL keyframe boundaries (see
+``docs/technical/rife-morph-background.md``):
 
 * a velocity-matched IFNet bookend at ``t = keyframe_times[0]`` (first frame)
   and another at ``t = keyframe_times[-1]`` (last frame) — at IFNet timesteps
   ``s = inset`` and ``s = 1 - inset`` respectively, so the bookend → first
-  body sample velocity equals the body's own ``span / T_seg``;
-* every internal SDXL keyframe time is **bridged** by two soft IFNet
-  predictions equally offset by ``T_seg / (2 * 2**exp)``, so ``t_kf`` itself
-  is never an exact still in the dense timeline;
-* dense wall-clock spacing is uniform ``T_seg / 2**exp`` within and across
-  segments (the IFNet timestep is decoupled from wall-clock by an inset);
+  body sample velocity equals the body's own ``span / T_seg`` (v5);
+* a **cross-pair IFNet bridge** sample at every *internal* keyframe time
+  ``t_{i+1}``, computed on the cross pair ``(kf_i, kf_{i+2})`` at ``s = 0.5``
+  (v6) — its flow goes *across* the shared keyframe rather than into and
+  out of it, so the compositor's pixel-space linear blend at the seam no
+  longer collapses onto a static near-``kf_{i+1}`` plateau;
+* dense wall-clock spacing is uniform ``T_seg / 2**exp`` within a segment;
+  cross-pair bridges sit exactly on internal keyframe times (so the
+  boundary blend windows are halved to ``T_seg / (2 * 2**exp)`` per side);
 * with the default inset > 0 the boundary IFNet samples carry visible flow
   displacement instead of collapsing onto near-keyframe pixels — this is
-  what the v3 → v4 → v5 schema bumps lock in.
+  what the v3 → v4 → v5 → v6 schema bumps lock in.
 """
 
 from __future__ import annotations
@@ -155,34 +159,45 @@ class CenteredMorphTimelineTests(unittest.TestCase):
         np.testing.assert_array_equal(frames[-1], kf1)
 
     def test_three_keyframes_no_internal_exact_still(self) -> None:
-        # Two segments [0, 8] and [8, 16], exp=2 (n=4). Expected dense times:
-        #   exact_start=0, seg0=[1, 3, 5, 7], seg1=[9, 11, 13, 15], exact_end=16
+        # Two segments [0, 8] and [8, 16], exp=2 (n=4). v6 expected dense times:
+        #   bookend_start=0, seg0=[1, 3, 5, 7], bridge=8, seg1=[9, 11, 13, 15],
+        #   bookend_end=16
         kf0, kf1, kf2 = _solid_rgb(10), _solid_rgb(120), _solid_rgb(250)
         frames, times = _build(
             [kf0, kf1, kf2], [0.0, 8.0, 16.0], exp=2, ifnet_timestep_inset=0.0
         )
-        self.assertEqual(times, [0.0, 1.0, 3.0, 5.0, 7.0, 9.0, 11.0, 13.0, 15.0, 16.0])
+        self.assertEqual(
+            times,
+            [0.0, 1.0, 3.0, 5.0, 7.0, 8.0, 9.0, 11.0, 13.0, 15.0, 16.0],
+        )
 
-        # The internal SDXL keyframe time t=8 is NOT in the timeline at all
-        # (the whole point of this fix).
-        self.assertNotIn(8.0, times)
+        # The internal SDXL keyframe time t=8 IS in the timeline now (v6
+        # cross-pair bridge), but the frame there is *not* an exact kf1
+        # still — it's IFNet on the cross pair (kf0, kf2) at s=0.5, which
+        # under the linear-blend fake equals (kf0 + kf2)/2 ≠ kf1.
+        idx_bridge = times.index(8.0)
+        cross_midpoint = ((kf0.astype(np.int32) + kf2.astype(np.int32)) // 2).astype(np.uint8)
+        np.testing.assert_array_equal(frames[idx_bridge], cross_midpoint)
+        self.assertFalse(np.array_equal(frames[idx_bridge], kf1))
 
-        # The two frames flanking the internal keyframe are equidistant
-        # IFNet midpoints — neither equals the exact kf1 still.
+        # The two frames flanking the bridge are equidistant pair-wise IFNet
+        # midpoints — neither equals the exact kf1 still.
         idx_left = times.index(7.0)
         idx_right = times.index(9.0)
         self.assertFalse(np.array_equal(frames[idx_left], kf1))
         self.assertFalse(np.array_equal(frames[idx_right], kf1))
 
-        # Boundary spacing equals within-segment spacing → uniform perceived
-        # motion straight through the keyframe.
-        self.assertAlmostEqual(times[idx_right] - times[idx_left], 2.0)
-        # And that's identical to within-segment spacing.
+        # Boundary windows are halved to T_seg/(2n) per side around the
+        # bridge: spacing flank → bridge = bridge → flank = 1.0 (= 2.0 / 2).
+        self.assertAlmostEqual(times[idx_bridge] - times[idx_left], 1.0)
+        self.assertAlmostEqual(times[idx_right] - times[idx_bridge], 1.0)
+        # And the within-segment spacing is unchanged at T_seg/n = 2.0.
         self.assertAlmostEqual(times[2] - times[1], 2.0)
 
     def test_uniform_spacing_across_internal_boundaries(self) -> None:
         # Four segments of varying durations to confirm the boundary spacing
-        # rule ``T_seg/2**exp`` per segment holds independently per side.
+        # rule ``T_seg/2**exp`` per segment holds independently per side and
+        # that v6 cross-pair bridges land exactly on every internal keyframe.
         kfs = [_solid_rgb(v) for v in (5, 50, 100, 150, 200)]
         kts = [0.0, 4.0, 12.0, 16.0, 24.0]  # spans 4, 8, 4, 8
         _frames, times = _build(
@@ -190,14 +205,22 @@ class CenteredMorphTimelineTests(unittest.TestCase):
         )  # n=4
         # Expected per-segment centered offsets: T_seg/2/n on each side of every kt.
         # Boundary at t=4 (between seg span=4 and seg span=8):
-        #   last sample of seg0 at 4 - 4/(2*4) = 3.5; first of seg1 at 4 + 8/(2*4) = 5.0
+        #   last sample of seg0 at 4 - 4/(2*4) = 3.5; bridge at 4.0;
+        #   first of seg1 at 4 + 8/(2*4) = 5.0
         self.assertIn(3.5, times)
+        self.assertIn(4.0, times)
         self.assertIn(5.0, times)
-        self.assertNotIn(4.0, times)
-        # Boundary at t=12: last of seg1 at 12 - 8/8 = 11.0; first of seg2 at 12 + 4/8 = 12.5
+        # Boundary at t=12: last of seg1 at 12 - 8/8 = 11.0; bridge at 12.0;
+        #   first of seg2 at 12 + 4/8 = 12.5
         self.assertIn(11.0, times)
+        self.assertIn(12.0, times)
         self.assertIn(12.5, times)
-        self.assertNotIn(12.0, times)
+        # Boundary at t=16: bridge sits exactly on the keyframe.
+        self.assertIn(16.0, times)
+        # All three internal-boundary bridges plus the start (0) and end
+        # (24) bookends mean every keyframe time appears in the timeline.
+        for kt in kts:
+            self.assertIn(kt, times)
 
     def test_on_frame_called_once_per_emitted_frame(self) -> None:
         kf0, kf1, kf2 = _solid_rgb(10), _solid_rgb(120), _solid_rgb(250)
@@ -214,10 +237,14 @@ class CenteredMorphTimelineTests(unittest.TestCase):
             on_frame=_cb,
             keep_frames=False,
         )
-        # ``keep_frames=False`` still produces the full times grid …
-        self.assertEqual(times, [0.0, 1.0, 3.0, 5.0, 7.0, 9.0, 11.0, 13.0, 15.0, 16.0])
+        # ``keep_frames=False`` still produces the full v6 times grid …
+        self.assertEqual(
+            times,
+            [0.0, 1.0, 3.0, 5.0, 7.0, 8.0, 9.0, 11.0, 13.0, 15.0, 16.0],
+        )
         # … and ``on_frame`` was invoked once per timeline slot, in order
-        # (one bookend at each end + n samples per segment).
+        # (start bookend + n body samples + bridge + n body samples + end
+        # bookend).
         self.assertEqual([t for _, t in seen], times)
         self.assertEqual([i for i, _ in seen], list(range(len(times))))
 
@@ -268,17 +295,20 @@ class IfnetTimestepInsetTests(unittest.TestCase):
             self.assertAlmostEqual(got, want, places=2)
 
     def test_env_var_override_when_kwarg_omitted(self) -> None:
+        # Pick a value that is *not* the v6 default (0.25) so this test
+        # actually verifies the env override path rather than coinciding
+        # with the resolved default.
         kf0, kf1 = _solid_rgb(0), _solid_rgb(255)
         with mock.patch.dict(
-            os.environ, {"GLITCHFRAME_RIFE_IFNET_INSET": "0.25"}, clear=False
+            os.environ, {"GLITCHFRAME_RIFE_IFNET_INSET": "0.10"}, clear=False
         ):
             frames, _times = _build(
                 [kf0, kf1], [0.0, 8.0], exp=2, ifnet_timestep_inset=None
             )
         ifnet_frames = frames[1:-1]
         recovered_s = [float(f[0, 0, 0]) / 255.0 for f in ifnet_frames]
-        # inset=0.25, n=4 → s_j = 0.25 + 0.5*(j+0.5)/4 = [0.3125, 0.4375, 0.5625, 0.6875]
-        for got, want in zip(recovered_s, (0.3125, 0.4375, 0.5625, 0.6875)):
+        # inset=0.10, n=4 → s_j = 0.10 + 0.8*(j+0.5)/4 = [0.20, 0.40, 0.60, 0.80]
+        for got, want in zip(recovered_s, (0.20, 0.40, 0.60, 0.80)):
             self.assertAlmostEqual(got, want, places=2)
 
     def test_env_var_clamped_to_safe_max(self) -> None:
@@ -403,6 +433,122 @@ class BookendVelocityTests(unittest.TestCase):
         )
         np.testing.assert_array_equal(frames[0], kf0)
         np.testing.assert_array_equal(frames[-1], kf1)
+
+
+class CrossPairBridgeTests(unittest.TestCase):
+    """Lock in the v6 sampling: cross-pair IFNet bridges at internal keyframes.
+
+    With pair-wise IFNet alone, the last body sample of segment ``i`` and
+    the first body sample of segment ``i + 1`` are both visually pulled
+    toward the shared keyframe ``kf_{i+1}``. The compositor's pixel-space
+    linear blend across the seam therefore crossfades two near-``kf_{i+1}``
+    images for the entire ``T_seg/n`` boundary window — perceived by the
+    user as the morph "snapping onto a still image" at every keyframe even
+    though no exact still is in the timeline (the symptom that survived
+    v4's inset and v5's bookend velocity match).
+
+    v6 inserts one extra IFNet inference at every internal keyframe time
+    on the **cross pair** ``(kf_i, kf_{i+2})`` at ``s = 0.5``. These tests
+    pin (a) that exactly one bridge is emitted per internal boundary, (b)
+    that it lands at exactly the keyframe time, and (c) that it is
+    computed from the cross pair rather than either flanking pair.
+    """
+
+    def test_no_bridge_for_single_segment(self) -> None:
+        # Two keyframes ⇒ one segment ⇒ zero internal boundaries ⇒ no
+        # bridges. v6 frame count for a single segment is identical to v5.
+        kf0, kf1 = _solid_rgb(0), _solid_rgb(255)
+        frames, times = _build(
+            [kf0, kf1], [0.0, 8.0], exp=2, ifnet_timestep_inset=0.20
+        )
+        # 1 bookend + 4 body + 1 bookend = 6 (no bridge slot in a one-seg run).
+        self.assertEqual(len(frames), 6)
+        self.assertEqual(len(times), 6)
+
+    def test_one_bridge_per_internal_boundary(self) -> None:
+        # 4 keyframes ⇒ 3 segments ⇒ 2 internal boundaries ⇒ 2 bridges.
+        # Frame count = 1 + 3*4 + 2 + 1 = 16.
+        kfs = [_solid_rgb(v) for v in (0, 80, 160, 240)]
+        kts = [0.0, 8.0, 16.0, 24.0]
+        frames, times = _build(kfs, kts, exp=2, ifnet_timestep_inset=0.0)
+        self.assertEqual(len(frames), 16)
+        self.assertEqual(len(times), 16)
+        # Both internal keyframe times are present (bridges sit there);
+        # the song bookends are also keyframe times.
+        for kt in kts:
+            self.assertIn(kt, times)
+
+    def test_bridge_uses_cross_pair_not_flanking_pair(self) -> None:
+        # Three keyframes with R-channel values chosen so every candidate
+        # midpoint is distinct (and ``kf_{i+1}`` is *not* the midpoint of
+        # ``kf_i`` and ``kf_{i+2}``):
+        #   pair (kf0, kf1) midpoint at s=0.5 → 35   (= flanking-left guess)
+        #   pair (kf1, kf2) midpoint at s=0.5 → 135  (= flanking-right guess)
+        #   cross (kf0, kf2) midpoint at s=0.5 → 100 (= the actual v6 bridge)
+        #   kf1 R=70                                 (would be the bridge if
+        #                                             we naively re-used the
+        #                                             exact still)
+        kf0 = np.zeros((4, 4, 3), dtype=np.uint8)
+        kf0[..., 0] = 0
+        kf1 = np.zeros((4, 4, 3), dtype=np.uint8)
+        kf1[..., 0] = 70
+        kf2 = np.zeros((4, 4, 3), dtype=np.uint8)
+        kf2[..., 0] = 200
+        frames, times = _build(
+            [kf0, kf1, kf2], [0.0, 8.0, 16.0], exp=2, ifnet_timestep_inset=0.0
+        )
+        idx_bridge = times.index(8.0)
+        bridge_r = float(frames[idx_bridge][0, 0, 0])
+        self.assertAlmostEqual(bridge_r, 100.0, delta=1.0)  # cross pair
+        # And explicitly *not* any of the alternative interpretations:
+        for wrong in (35.0, 135.0, 70.0):
+            self.assertGreater(
+                abs(bridge_r - wrong),
+                5.0,
+                msg=f"bridge byte {bridge_r} matched alternative midpoint {wrong}",
+            )
+
+    def test_bridge_independent_of_body_inset(self) -> None:
+        # Cross-pair bridge always uses ``s = 0.5`` regardless of the body
+        # inset (the bridge purpose is purely perceptual smoothing at the
+        # seam; tying it to the body inset would defeat that). Verify by
+        # baking with two different insets and checking the bridge byte
+        # value lands at the cross-pair midpoint in both.
+        kf0 = np.zeros((4, 4, 3), dtype=np.uint8)
+        kf0[..., 0] = 0
+        kf1 = np.zeros((4, 4, 3), dtype=np.uint8)
+        kf1[..., 0] = 100
+        kf2 = np.zeros((4, 4, 3), dtype=np.uint8)
+        kf2[..., 0] = 200
+        for inset in (0.0, 0.25, 0.40):
+            frames, times = _build(
+                [kf0, kf1, kf2], [0.0, 8.0, 16.0], exp=2, ifnet_timestep_inset=inset
+            )
+            idx_bridge = times.index(8.0)
+            # Cross (kf0, kf2) midpoint at s=0.5 → (0 + 200)/2 = 100.
+            self.assertAlmostEqual(
+                float(frames[idx_bridge][0, 0, 0]),
+                100.0,
+                delta=1.0,
+                msg=f"bridge byte mismatch at inset={inset}",
+            )
+
+    def test_bridge_at_exact_keyframe_time(self) -> None:
+        # Bridge wall-clock placement is exactly ``t = keyframe_times[seg_i + 1]``
+        # (the upcoming internal boundary). Verify with non-uniform spacing
+        # so the assertion isn't satisfied by a coincidence.
+        kfs = [_solid_rgb(v) for v in (0, 80, 160, 240)]
+        kts = [0.0, 5.5, 14.0, 24.0]
+        _frames, times = _build(kfs, kts, exp=2, ifnet_timestep_inset=0.20)
+        # Internal keyframes at 5.5 and 14.0 must both appear in the times
+        # grid (one bridge each).
+        self.assertIn(5.5, times)
+        self.assertIn(14.0, times)
+        # The body samples flanking each bridge sit at T_seg/(2n) per side:
+        #   seg0 (T=5.5): last body at 5.5 - 5.5/8 = 4.8125
+        #   seg1 (T=8.5): first body at 5.5 + 8.5/8 = 6.5625
+        self.assertIn(4.8125, times)
+        self.assertIn(6.5625, times)
 
 
 if __name__ == "__main__":

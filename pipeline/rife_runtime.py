@@ -39,13 +39,24 @@ RIFE_CACHE_SUBDIR = "rife_practical"
 # motion velocity is constant — only the visual *content* of each frame is
 # shifted away from the keyframe.
 #
+# v6 default ``0.25``: with ``rife_exp=4`` (n=16) the boundary body samples
+# land at ``s ≈ 0.266`` / ``s ≈ 0.734``. Their pair-wise IFNet outputs sit
+# ~27 % away from the shared keyframe ``kf_{i+1}`` in flow space, so the
+# compositor's pixel-space linear blend across the boundary no longer
+# collapses onto a near-static near-``kf_{i+1}`` plateau (the previous
+# 0.12 inset left the seam at 86 % / 14 % which still read as a "stuck
+# on still" pause). v4/v5 used 0.12; the velocity-matched bookends
+# introduced in v5 still apply, just at the new inset.
+#
 # Override at runtime via ``GLITCHFRAME_RIFE_IFNET_INSET`` (clamped to the
 # safe range below). Set to ``0`` to recover the legacy centered-only
-# behaviour for byte-exact reproducibility against older bakes.
-DEFAULT_IFNET_TIMESTEP_INSET = 0.12
+# behaviour for byte-exact reproducibility against older bakes; tune
+# towards ``0.0`` if you want the morph to settle visibly onto every SDXL
+# keyframe (at the cost of brief perceived pauses there).
+DEFAULT_IFNET_TIMESTEP_INSET = 0.25
 _IFNET_TIMESTEP_INSET_MIN = 0.0
 # Capping at 0.45 keeps both halves of the (warped) [inset, 1-inset]
-# interval non-degenerate; in practice values much above ~0.20 over-compress
+# interval non-degenerate; in practice values much above ~0.30 over-compress
 # the visible motion range and start to feel "muted" rather than "fluid".
 _IFNET_TIMESTEP_INSET_MAX = 0.45
 
@@ -333,6 +344,32 @@ def rife_build_morph_timeline(
     still at an internal keyframe boundary — and the boundary samples carry
     visible motion instead of collapsing onto near-keyframe pixels.
 
+    **v6 cross-pair boundary bridges.** At every *internal* keyframe time
+    ``t_{i+1}`` (i.e., between ``seg_i`` and ``seg_{i+1}``) we insert a
+    single extra IFNet sample computed on the *cross pair*
+    ``(kf_i, kf_{i+2})`` at ``s = 0.5`` and place it at exactly
+    ``t = t_{i+1}``. Without this bridge, the compositor's pixel-space
+    linear blend across the boundary is forced to crossfade two adjacent
+    body samples that are *both* visually pulled toward the shared
+    keyframe ``kf_{i+1}`` (the last body of ``seg_i`` sits at
+    ``s ≈ 1 - inset`` of pair ``(kf_i, kf_{i+1})`` — visually ≈ ``kf_{i+1}``
+    with a ``kf_i`` ghost — and the first body of ``seg_{i+1}`` sits at
+    ``s ≈ inset`` of pair ``(kf_{i+1}, kf_{i+2})`` — visually ≈ ``kf_{i+1}``
+    with a ``kf_{i+2}`` preview). Crossfading two near-``kf_{i+1}`` images
+    in raw pixel space holds the visual on ``kf_{i+1}`` for the full
+    ``T_seg/n`` boundary window — perceived as the morph "snapping onto
+    a still image" at every keyframe even though no exact SDXL still is
+    in the timeline. The cross-pair midpoint
+    ``IFNet(kf_i, kf_{i+2}, s=0.5)`` is also visually near ``kf_{i+1}``
+    for coherent SDXL sequences, but its *flow* points from ``kf_i``
+    through to ``kf_{i+2}`` (i.e., *across* the keyframe rather than
+    *into* and then *out of* it), and the residual ghosts are different
+    from the flanking pair-wise samples. The compositor's two 0.25 s
+    blends (last body → bridge → first body, instead of one 0.5 s last
+    body → first body) therefore traverse three visibly different ghost
+    states, breaking the "stuck on still" plateau without removing the
+    visual reference to ``kf_{i+1}``.
+
     The song's first and last frames are **velocity-matched IFNet bookends**
     at ``t = keyframe_times[0]`` and ``t = keyframe_times[-1]`` — namely
     IFNet at ``s = inset`` (using the first keyframe pair ``kf_0, kf_1``)
@@ -340,15 +377,15 @@ def rife_build_morph_timeline(
     A naive bookend at the *exact* SDXL still (``s = 0`` / ``s = 1``) would
     leave an IFNet jump of ``inset + span/(2n)`` between the bookend and
     the first body sample over only ``T_seg/(2n)`` wall-clock seconds: at
-    the default ``inset = 0.12`` and ``exp = 4`` that's ``0.144`` IFNet
+    the legacy ``inset = 0.12`` and ``exp = 4`` that's ``0.144`` IFNet
     timesteps in ``0.25 s``, ~6× the body's pace ``span/T_seg``. The viewer
     perceives that as a brief "skip" right at the song open and close,
     even though the morph in between is smooth. Sampling the bookends at
     ``s = inset`` instead reduces the IFNet jump to ``span/(2n)`` (half a
     body step) over the same ``T_seg/(2n)`` wall-clock — exactly the body
     velocity ``span/T_seg``. The visual cost is tiny: IFNet at ``s = inset``
-    is within ~12 % flow displacement of ``kf_0`` (and symmetrically for
-    ``kf_N``), so the song still visibly opens/closes on the generated
+    is within ~``inset`` flow displacement of ``kf_0`` (and symmetrically
+    for ``kf_N``), so the song still visibly opens/closes on the generated
     image, just with a hint of motion instead of a freeze that snaps.
 
     Why the body inset matters in the first place: under plain centered
@@ -361,13 +398,17 @@ def rife_build_morph_timeline(
     viewer as a pause that breaks the otherwise-smooth morph. Insetting the
     IFNet timestep distribution forces every dense sample to carry visible
     flow (the closest-to-boundary samples now sit at ``s ≈ inset`` and
-    ``s ≈ 1 - inset``), eliminating the near-keyframe visual cluster while
-    keeping the wall-clock spacing uniform.
+    ``s ≈ 1 - inset``), and the v6 default ``inset = 0.25`` keeps each
+    seam blend at ~73 % keyframe-dominant — visibly in motion — instead
+    of the 86 % keyframe-dominant blend the legacy ``0.12`` inset left
+    behind. Wall-clock spacing remains uniform centered ``T_seg/n``.
 
-    Wall-clock placement remains uniform centered ``T_seg/n`` (decoupled
-    from the IFNet timestep): each body sample lands at
+    Wall-clock placement remains uniform centered ``T_seg/n`` for body
+    samples (decoupled from the IFNet timestep): each body sample lands at
     ``t_kf_i + T_seg * (j + 0.5)/n``, both *within* a segment and *across*
-    every internal keyframe boundary. Bookend wall-clock placement at
+    every internal keyframe boundary. Cross-pair bridges land exactly at
+    each internal ``t_kf`` (so the boundary blend windows are halved to
+    ``T_seg/(2n)`` per side). Bookend wall-clock placement at
     ``t = keyframe_times[0]`` / ``t = keyframe_times[-1]`` keeps the song's
     very first and last rendered frame pinned to ``t = 0`` / ``t = duration``;
     combined with the velocity-matched IFNet timestep there is no longer
@@ -381,7 +422,12 @@ def rife_build_morph_timeline(
     sampling — at ``inset = 0`` the bookends collapse to ``s = 0`` / ``s = 1``
     (≈ exact stills under IFNet) so byte-exact reproducibility against the
     pre-v4 timeline is preserved aside from any IFNet vs raw-pixel drift
-    at the rounded endpoints.
+    at the rounded endpoints. Cross-pair bridges are still emitted at the
+    legacy inset and act purely as a perceptual smoother — they never
+    *replace* a body sample, so an inset-0 bake at v6 differs from a v3
+    bake by exactly ``N - 2`` extra IFNet frames (one per internal
+    keyframe) and the cache count formula becomes
+    ``frame_count = total_segs * n_steps + (total_segs - 1) + 2``.
 
     ``on_frame``, if given, is invoked for every output frame as soon as it
     is available with ``(global_index, rgb_uint8, t_sec)``. Callers can use
@@ -478,6 +524,32 @@ def rife_build_morph_timeline(
                     frames_out.append(fr)
                 times_out.append(tau)
                 global_idx += 1
+
+            # v6 cross-pair boundary bridge. After every segment except the
+            # last, emit a single IFNet sample on the cross pair
+            # ``(kf_{seg_i}, kf_{seg_i+2})`` at ``s = 0.5`` and place it
+            # exactly at ``t = keyframe_times[seg_i + 1]``. This sample
+            # carries flow that goes *across* the shared keyframe rather
+            # than *into / out of* it, so the compositor's pixel-space
+            # linear blend at the seam no longer collapses onto a static
+            # near-``kf_{i+1}`` plateau (the perceptual "snap onto a still
+            # image" the user reports). See the function docstring for the
+            # full visual-content derivation.
+            if seg_i < total_segs - 1:
+                bridge = rife_ifnet_at_timestep(
+                    model,
+                    keyframes[seg_i],
+                    keyframes[seg_i + 2],
+                    timestep=0.5,
+                    device=device,
+                )
+                if on_frame is not None:
+                    on_frame(global_idx, bridge, t1)
+                if keep_frames:
+                    frames_out.append(bridge)
+                times_out.append(t1)
+                global_idx += 1
+
             frac = (seg_i + 1) / max(1, total_segs)
             _report(0.05 + 0.9 * frac, f"RIFE segment {seg_i + 1}/{total_segs}")
 
