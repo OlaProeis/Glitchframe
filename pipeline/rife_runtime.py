@@ -39,24 +39,41 @@ RIFE_CACHE_SUBDIR = "rife_practical"
 # motion velocity is constant — only the visual *content* of each frame is
 # shifted away from the keyframe.
 #
-# v7 default ``0.12`` (matches v4 / v5). With ``rife_exp=4`` (n=16) the
-# boundary body samples land at ``s ≈ 0.144`` / ``s ≈ 0.856`` — visibly
-# distinct from the keyframes (so no in-body plateau) yet close enough to
-# the keyframe that the linear interpolation from the last body sample to
-# the v7 exact-still anchor at ``t_kf`` only travels ``inset = 0.12`` IFNet
+# v7.1 default ``0.12`` (unchanged from v7 / v4 / v5). With ``rife_exp=4``
+# (n=16) the boundary body samples land at ``s ≈ 0.144`` / ``s ≈ 0.856`` —
+# visibly distinct from the keyframes (so no in-body plateau) yet close
+# enough to the keyframe that the linear interpolation from the last body
+# sample to the v7.1 IFNet-rendered anchor at ``t_kf`` (an IFNet inference
+# at ``s = 1.0`` on the *prior* pair) travels only ``inset = 0.12`` IFNet
 # timesteps over the ``T_seg/(2n)`` boundary cell. At ``T_seg = 10 s``,
-# n = 16, fps = 30 that's a ~5× per-frame visual change vs. the body, which
-# reads as a brief speed-up *into* every keyframe — much milder than the
-# 16× spike a 0.25 inset would produce with the v7 anchor.
+# n = 16, fps = 30 that's a ~5× per-frame visual change vs. the body —
+# perceived as a brief speed-up *into* every keyframe, not a discrete jump.
 #
 # History: v4 introduced the inset at 0.12; v6 raised it to 0.25 together
-# with a cross-pair bridge sample at every internal keyframe time. Both v6
-# changes amplified a *different* artifact (the dominant object appearing
-# to "translate" across the boundary blend because the flanking samples
-# were on mismatched optical-flow pairs); v7 replaces the cross-pair bridge
-# with an exact-still anchor (so the compositor never blends across pairs)
-# and reverts the inset to the v5 value (so the IFNet velocity spike into
-# every anchor stays small).
+# with a cross-pair bridge at every internal keyframe (amplified an
+# orthogonal "spatial-jump" artifact by adding a *third* pair-mismatched
+# warp into the boundary blend); v7 replaced the cross-pair bridge with
+# the *exact SDXL still* at every internal ``t_kf`` to eliminate cross-pair
+# blending entirely. v7's design rested on the assumption that the SDXL
+# still was byte-identical to ``IFNet(kf_i, kf_{i+1}, s=1.0)`` ("modulo
+# IFNet's identity behaviour at the endpoints"). That assumption is wrong:
+# Practical-RIFE's IFNet has *no* identity branch at the endpoints — it
+# unconditionally runs all five flow-refinement blocks with ``timestep``
+# baked into the feature concatenation, so its render at ``s = 1.0`` is
+# visually close to ``kf_{i+1}`` but carries the network's characteristic
+# warping / merge-mask texture, which differs from the SDXL VAE's output.
+# Inserting the raw VAE still as the anchor therefore introduced a 1-frame
+# *texture* discontinuity (raw VAE crispness amid IFNet smoothing) at every
+# internal boundary — perceived as a "blip" or "skip" by the viewer, on
+# every keyframe. v7.1 replaces the exact-still anchor with an IFNet
+# inference at ``s = 1.0`` on the prior pair so the anchor shares texture
+# with its neighbours; cross-pair spatial alignment at the boundary is
+# preserved because both the pre-anchor (last body of seg_i, pair A) and
+# the anchor itself live on the same pair A, and the residual pair switch
+# on the post-anchor side (anchor on A → first body of seg_{i+1} on B) is
+# between two IFNet renders both dominated by ``kf_{i+1}`` content, so its
+# flow residual is minimal. The inset value stays at 0.12 (the
+# anchor-velocity argument is unchanged).
 #
 # Override at runtime via ``GLITCHFRAME_RIFE_IFNET_INSET`` (clamped to the
 # safe range below). Set to ``0`` to recover the legacy centered-only
@@ -352,40 +369,59 @@ def rife_build_morph_timeline(
     :data:`DEFAULT_IFNET_TIMESTEP_INSET`). The body samples carry visible
     motion instead of collapsing onto near-keyframe pixels.
 
-    **v7 internal-keyframe anchors.** At every *internal* keyframe time
-    ``t_{i+1}`` (between ``seg_i`` and ``seg_{i+1}``) we insert the
-    *exact SDXL still* ``keyframes[i+1]`` and place it at exactly
-    ``t = t_{i+1}``. Because the SDXL still is byte-identical to both
-    ``IFNet(kf_i, kf_{i+1}, s=1.0)`` and ``IFNet(kf_{i+1}, kf_{i+2}, s=0.0)``
-    (modulo IFNet's identity behaviour at the endpoints), the anchor sits
-    on *both* adjacent optical-flow pairs simultaneously. The compositor's
-    pixel-space linear blend across the boundary therefore stays within a
-    *single* pair at every wall-clock time:
+    **v7.1 internal-keyframe anchors.** At every *internal* keyframe time
+    ``t_{i+1}`` (between ``seg_i`` and ``seg_{i+1}``) we insert one extra
+    IFNet inference — ``IFNet(kf_i, kf_{i+1}, s=1.0)`` on the *prior* pair
+    — and place it at exactly ``t = t_{i+1}``. This is *IFNet's own render
+    of* ``kf_{i+1}`` (visually very close to the SDXL still but processed
+    through the network's flow + merge-mask pipeline), not the exact SDXL
+    keyframe itself.
+
+    Why not the exact SDXL still? Practical-RIFE's :class:`IFNet` has *no*
+    identity branch at the endpoints — at ``s = 0`` or ``s = 1`` it still
+    runs all five flow-refinement blocks with ``timestep`` baked into the
+    feature concatenation, so its output is *not* byte-identical to either
+    input keyframe. The render at ``s = 1.0`` carries the network's
+    characteristic warping / merge-mask texture, which differs from the
+    SDXL VAE's output (the VAE is sharper / more saturated; IFNet smooths
+    via its convolutional warping). v7 placed the raw VAE still as the
+    anchor on the (incorrect) assumption that it was byte-equivalent to
+    ``IFNet(kf_i, kf_{i+1}, s=1.0)``; the resulting frame-by-frame texture
+    hand-off VAE → IFNet at every internal boundary read as a brief 1–2
+    video-frame "blip" / "skip" in the rendered video (visible regardless
+    of how clean the underlying SDXL keyframes are). v7.1 fixes this by
+    having the anchor share IFNet's texture signature with its neighbours.
+
+    The compositor's pixel-space linear blend around the anchor:
 
     * just before ``t_{i+1}``: blend within pair ``(kf_i, kf_{i+1})`` —
       the last body of ``seg_i`` at ``s ≈ 1 - inset`` blending into the
-      anchor at ``s = 1.0`` (both on the same flow field, no spatial
-      mismatch);
-    * exactly at ``t_{i+1}``: the canonical SDXL keyframe ``kf_{i+1}``;
-    * just after ``t_{i+1}``: blend within pair ``(kf_{i+1}, kf_{i+2})`` —
-      the anchor at ``s = 0.0`` blending into the first body of
-      ``seg_{i+1}`` at ``s ≈ inset`` (same flow field, no spatial
-      mismatch).
+      anchor at ``s = 1.0``. Same flow field, same texture signature, no
+      spatial mismatch and no texture jump.
+    * exactly at ``t_{i+1}``: ``IFNet(kf_i, kf_{i+1}, s = 1.0)`` — IFNet's
+      own rendering of ``kf_{i+1}``, visually dominated by ``kf_{i+1}``
+      content.
+    * just after ``t_{i+1}``: blend across pairs — anchor (pair A, IFNet
+      at ``s = 1.0``) → first body of ``seg_{i+1}`` (pair B, IFNet at
+      ``s ≈ inset``). Both samples are IFNet renders (same texture
+      signature, so no v7-style VAE↔IFNet blip), and both are dominated
+      by ``kf_{i+1}`` content (anchor is full warp toward ``kf_{i+1}``;
+      first body is only ``inset`` along the next flow), so the cross-pair
+      flow residual at the boundary is at its minimum visible scale.
 
-    v6 placed an IFNet sample on the *cross pair* ``(kf_i, kf_{i+2})``
-    at ``s = 0.5`` here instead. That sample's flow points *across* the
-    shared keyframe rather than *into* it, so its dominant content
-    (visually similar to ``kf_{i+1}`` for coherent SDXL sequences) sat at
-    slightly different pixel coordinates than either flanking body sample.
-    The compositor's linear blend across the boundary therefore traversed
-    three pair-mismatched spatial layouts of the dominant content over
-    the ``T_seg/n`` boundary window, producing a visible per-frame
-    translation of the dominant object across the seam (the user's
-    "clear move of the object" / "skipping entire frames" symptom).
-    Anchoring on the exact keyframe eliminates the cross-pair blend
-    region entirely; the residual cost is an IFNet-timestep velocity
-    spike of ``2 * n * inset / span`` body-velocities across the
-    ``T_seg/(2n)`` boundary cell on each side, perceived as a brief
+    Trade-off vs. v7: +1 IFNet inference per internal boundary
+    (``total_segs − 1`` extra forward passes — sub-second on a 3090 for
+    typical 20–40 keyframe songs). Trade-off vs. v6: the
+    cross-pair-mismatched bridge in the middle of the boundary window is
+    gone, which is what made v6 read as a hard *spatial* jump rather than
+    a texture blip; v7 fixed the spatial jump but introduced the texture
+    blip; v7.1 fixes both. Pre-anchor blend stays entirely within pair A
+    (best case: same pair, same texture). Post-anchor blend stays within
+    "two IFNet renders both close to ``kf_{i+1}``" — perceptually smooth
+    even when the underlying optical-flow pairs differ. The residual
+    IFNet-timestep velocity spike from the last body (``s = 1 - inset``)
+    to the anchor (``s = 1.0``) over ``T_seg/(2n)`` wall-clock seconds is
+    ``2 * n * inset / span`` body-velocities, perceived as a brief
     speed-up *into* every keyframe rather than a discrete jump.
 
     The song's first and last frames are **velocity-matched IFNet bookends**
@@ -550,46 +586,78 @@ def rife_build_morph_timeline(
                 times_out.append(tau)
                 global_idx += 1
 
-            # v7 internal-keyframe anchor. After every segment except the
-            # last, place the *exact* SDXL still ``keyframes[seg_i + 1]``
-            # at ``t = keyframe_times[seg_i + 1]``. The anchor is the same
-            # image as ``IFNet(kf_i, kf_{i+1}, s=1.0)`` AND as
-            # ``IFNet(kf_{i+1}, kf_{i+2}, s=0.0)`` — i.e. it sits on both
-            # adjacent optical-flow pairs simultaneously. The compositor's
-            # pixel-space linear blend therefore stays *within a single
-            # pair* across the entire boundary: the last body of segment i
-            # (on pair ``(kf_i, kf_{i+1})``) blends into the anchor, and
-            # the anchor blends into the first body of segment i+1 (on
-            # pair ``(kf_{i+1}, kf_{i+2})``). No video frame ever crosses
-            # two pair-mismatched IFNet warps.
+            # v7.1 internal-keyframe anchor. After every segment except
+            # the last, render ``IFNet(kf_i, kf_{i+1}, s=1.0)`` on the
+            # *prior* pair and place it at ``t = keyframe_times[seg_i+1]``.
+            # This is IFNet's own rendering of ``kf_{i+1}`` — visually
+            # dominated by ``kf_{i+1}`` content but processed through the
+            # network's warp + merge-mask pipeline, so it shares the
+            # *texture* signature of every IFNet body sample on this
+            # segment (smooth, mildly warped, same VAE-free look).
             #
-            # v6 placed an IFNet sample on the *cross pair*
-            # ``(kf_i, kf_{i+2})`` at ``s = 0.5`` here. That sample lives
-            # in a flow space neither flanking body sample lives in: the
-            # last body of seg_i is warped along the ``kf_i → kf_{i+1}``
-            # flow field, the bridge along ``kf_i → kf_{i+2}``, the first
-            # body of seg_{i+1} along ``kf_{i+1} → kf_{i+2}`` — three
-            # different flow fields, three slightly different spatial
-            # layouts of the dominant content. The compositor's linear
-            # blend across them produced a visible per-frame translation
-            # of the dominant object across the boundary window (the
-            # user's "clear move of the object" / "skipping entire
-            # frames" symptom).
+            # v7 placed the raw SDXL still here instead, on the assumption
+            # that it was byte-identical to ``IFNet(s=1.0)`` "modulo IFNet
+            # identity at the endpoints". That assumption is wrong:
+            # :class:`IFNet` has *no* identity branch at the endpoints
+            # (see ``pipeline/rife_vendor/ifnet_hdv3.py`` — it always runs
+            # all five blocks with ``timestep`` baked into the feature
+            # concatenation), so the VAE still and ``IFNet(s=1.0)`` differ
+            # by a per-network signature: the VAE output is *sharper / more
+            # saturated*; the IFNet render is slightly smoother. v7 had
+            # the compositor blend ``IFNet(seg_i body, s≈0.86)`` → ``VAE
+            # still`` → ``IFNet(seg_{i+1} body, s≈0.14)`` — a 1–2-video-
+            # frame texture pop on every boundary, visible regardless of
+            # how clean the underlying SDXL still was (the artifact the
+            # user reported in v7).
             #
-            # The trade-off: the IFNet timestep velocity from the last
-            # body sample (``s = 1 - inset``) to the exact still
-            # (``s = 1.0``) over the ``T_seg/(2n)`` boundary cell is
-            # ``inset / (T_seg/(2n)) = 2 * n * inset / T_seg`` IFNet
-            # timesteps per second, vs. the body's ``span / T_seg``. At
-            # the v7 default ``inset = 0.12``, ``n = 16``, that's ~5× the
-            # body pace — a brief perceived speed-up *into* every
-            # keyframe and *out of* it, rather than the v6 spatial-jump
-            # skip. ``inset = 0`` collapses the spike to zero (perfect
-            # velocity continuity) at the cost of letting the per-pair
-            # body samples settle visibly onto the keyframe (the original
-            # "stops on the still" symptom).
+            # v6 went the other way and placed an IFNet sample on the
+            # *cross pair* ``(kf_i, kf_{i+2})`` at ``s = 0.5`` here. That
+            # sample lives in a flow space neither flanking body sample
+            # lives in (its dominant content is at slightly different
+            # pixel coordinates than the body samples' kf_{i+1}-dominant
+            # warps), so the compositor's pixel-space linear blend
+            # produced a visible per-frame translation of the dominant
+            # object across the boundary window — the "clear move of
+            # the object" / "skipping entire frames" symptom v7 fixed.
+            #
+            # v7.1 keeps both wins. The pre-anchor blend (last body of
+            # ``seg_i`` at ``s ≈ 1 - inset`` → anchor at ``s = 1.0``)
+            # stays within pair A — same flow field *and* same texture
+            # signature, no spatial or stylistic mismatch. The post-
+            # anchor blend (anchor on pair A at ``s = 1.0`` → first body
+            # of ``seg_{i+1}`` on pair B at ``s ≈ inset``) still crosses
+            # pairs, but: (a) both samples are IFNet renders (no VAE↔IFNet
+            # texture hand-off — the v7 regression); (b) both are
+            # dominated by ``kf_{i+1}`` content (anchor is full warp
+            # toward ``kf_{i+1}``; first body of pair B is only ``inset``
+            # along the next flow), so the cross-pair flow residual at
+            # the boundary is at its minimum visible scale (far smaller
+            # than v6's bridge, which sat at ``s = 0.5`` of a different
+            # pair entirely).
+            #
+            # The trade-off is identical to v7 on the velocity dimension:
+            # the IFNet-timestep velocity from the last body (``s = 1 -
+            # inset``) to the anchor (``s = 1.0``) over the ``T_seg/(2n)``
+            # boundary cell is ``inset / (T_seg/(2n)) = 2 * n * inset /
+            # T_seg`` IFNet timesteps per second, vs. the body's ``span /
+            # T_seg``. At ``inset = 0.12``, ``n = 16`` that's ~5× the body
+            # pace — a brief perceived speed-up *into* every keyframe
+            # rather than a discrete jump. ``inset = 0`` collapses the
+            # spike to zero (perfect velocity continuity) at the cost of
+            # letting the per-pair body samples settle visibly onto the
+            # keyframe (the original "stops on the still" symptom).
+            #
+            # Cost vs. v7: +1 IFNet inference per internal boundary
+            # (``total_segs - 1`` extra forward passes per bake —
+            # sub-second on a 3090 for typical 20–40-keyframe songs).
             if seg_i < total_segs - 1:
-                anchor = keyframes[seg_i + 1]
+                anchor = rife_ifnet_at_timestep(
+                    model,
+                    keyframes[seg_i],
+                    keyframes[seg_i + 1],
+                    timestep=1.0,
+                    device=device,
+                )
                 if on_frame is not None:
                     on_frame(global_idx, anchor, t1)
                 if keep_frames:

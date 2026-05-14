@@ -92,7 +92,36 @@ MANIFEST_RIFE_FILENAME = "manifest_rife.json"
 # are silently re-baked once (``+1`` bridge per internal keyframe and a
 # new body sample distribution; both invalidate the legacy frame count
 # and on-disk PNGs).
-RIFE_MANIFEST_SCHEMA_VERSION = 7
+# v7: cross-pair bridges removed; *exact SDXL still* anchored at every
+# internal ``t_{i+1}``. v6's bridge added a *third* pair-mismatched warp
+# at every seam (the bridge's flow points *across* the shared keyframe,
+# not into and out of it), so the compositor's pixel-space linear blend
+# across the three pair-mismatched samples translated the dominant object
+# bigger, not smaller — perceived as a hard *spatial* jump on every
+# transition. v7 dropped the bridge and inserted the byte-exact SDXL
+# keyframe at every internal ``t_{i+1}``, on the assumption that it was
+# byte-identical to ``IFNet(s=1.0)`` modulo identity behaviour at the
+# endpoints. v7 also reverted the body inset 0.25 → 0.12.
+# v8: v7.1 IFNet-rendered anchor. The v7 "identity at endpoints"
+# assumption is *wrong*: Practical-RIFE's :class:`IFNet` has no identity
+# branch at ``s = 0`` or ``s = 1`` — it always runs all five flow
+# refinement blocks with ``timestep`` baked into the feature
+# concatenation. So the raw SDXL VAE still and ``IFNet(kf_i, kf_{i+1},
+# s=1.0)`` differ by a per-network texture signature: the VAE still is
+# sharper / more saturated; the IFNet render is slightly smoother. v7
+# therefore swapped VAE → IFNet texture every internal boundary, which
+# read as a 1–2-video-frame texture "blip" / "skip" on every keyframe
+# (the artifact users reported under v7 even with clean SDXL stills).
+# v8 (= v7.1) replaces the raw still with ``IFNet(kf_i, kf_{i+1},
+# s=1.0)`` — IFNet's own render of ``kf_{i+1}``, sharing texture with
+# every flanking body sample. The pre-anchor blend stays within a single
+# pair *and* a single texture; the post-anchor blend still crosses pairs
+# but between two IFNet renders both dominated by ``kf_{i+1}`` content,
+# so its flow residual is at its minimum visible scale. Cost: +1 IFNet
+# inference per internal boundary (sub-second on a 3090 for 20–40
+# keyframe songs). v7 manifests are silently re-baked once (the anchor
+# bytes change — body samples / bookends / spacing all unchanged).
+RIFE_MANIFEST_SCHEMA_VERSION = 8
 
 ProgressFn = Callable[[float, str], None]
 
@@ -1358,8 +1387,9 @@ class BackgroundStills:
         # Total estimate for progress: matches ``rife_build_morph_timeline``
         # — ``per_seg`` centered IFNet predictions per segment, plus the two
         # velocity-matched IFNet bookends (one at the song start, one at the
-        # end), plus one v7 exact-still anchor per internal keyframe boundary
-        # (``total_segs - 1`` of them, zero when there is only one segment).
+        # end), plus one v7.1 IFNet-rendered anchor (``IFNet(kf_i, kf_{i+1},
+        # s=1.0)``) per internal keyframe boundary (``total_segs - 1`` of
+        # them, zero when there is only one segment).
         total_segs = max(1, mf.num_keyframes - 1)
         per_seg = (1 << int(self._rife_exp))
         est_total = total_segs * per_seg + max(0, total_segs - 1) + 2

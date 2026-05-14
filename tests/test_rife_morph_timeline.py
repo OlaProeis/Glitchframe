@@ -1,32 +1,38 @@
 """Dense RIFE morph timeline structure (inset-warped centered sampling +
-velocity-matched IFNet bookends + exact-still internal-keyframe anchors).
+velocity-matched IFNet bookends + IFNet-rendered internal-keyframe anchors).
 
 These tests do not require CUDA or RIFE weights — :func:`load_rife_model`,
 the per-pair IFNet interpolator, and the single-shot IFNet helper used for
-the bookends are all stubbed. The goal is to lock in the timeline-times
-grid and the bookend / internal-anchor behaviour that together address the
-perceived stutter at SDXL keyframe boundaries (see
-``docs/technical/rife-morph-background.md``):
+the bookends *and the internal anchors* are all stubbed. The goal is to
+lock in the timeline-times grid and the bookend / internal-anchor
+behaviour that together address the perceived stutter at SDXL keyframe
+boundaries (see ``docs/technical/rife-morph-background.md``):
 
 * a velocity-matched IFNet bookend at ``t = keyframe_times[0]`` (first frame)
   and another at ``t = keyframe_times[-1]`` (last frame) — at IFNet timesteps
   ``s = inset`` and ``s = 1 - inset`` respectively, so the bookend → first
   body sample velocity equals the body's own ``span / T_seg`` (v5);
-* the **exact SDXL keyframe** ``kf_{i+1}`` placed at every *internal*
-  keyframe time ``t_{i+1}`` (v7) — because the still is byte-identical to
-  ``IFNet(kf_i, kf_{i+1}, s=1.0)`` AND to ``IFNet(kf_{i+1}, kf_{i+2}, s=0.0)``
-  it sits on both adjacent optical-flow pairs simultaneously, so the
-  compositor's pixel-space linear blend across the boundary never blends
-  two pair-mismatched IFNet warps (which v6's cross-pair ``s=0.5`` bridge
-  caused, producing the "clear move of the object" symptom);
+* an **IFNet render** ``IFNet(kf_i, kf_{i+1}, s=1.0)`` placed at every
+  *internal* keyframe time ``t_{i+1}`` (v7.1 / schema v8) — sharing
+  IFNet's texture signature with every flanking body sample so the
+  compositor's pixel-space linear blend never crosses a VAE↔IFNet hand-
+  off at the seam (the texture "blip" v7 introduced when it placed the
+  raw SDXL still here on the false assumption that IFNet had an identity
+  branch at the endpoints). The post-anchor blend still crosses optical-
+  flow pairs but between two IFNet renders both dominated by ``kf_{i+1}``
+  content, so the flow residual at the boundary is at its minimum
+  visible scale — far smaller than v6's cross-pair ``s=0.5`` bridge
+  (which lived in a flow space *neither* flanking sample lived in and
+  produced the "clear move of the object" symptom);
 * dense wall-clock spacing is uniform ``T_seg / 2**exp`` within a segment;
   internal-keyframe anchors sit exactly on the keyframe times (so the
   boundary blend windows are halved to ``T_seg / (2 * 2**exp)`` per side);
 * with the default inset > 0 the boundary IFNet samples carry visible flow
   displacement instead of collapsing onto near-keyframe pixels — this is
-  what the v3 → v4 → v5 → v7 schema bumps lock in (v6 used the same
-  inset-warped body but with a cross-pair bridge instead of the exact
-  still; v7 reverts that one piece).
+  what the v3 → v4 → v5 → v7 → v8 (= v7.1) schema bumps lock in (v6 used
+  the same inset-warped body but with a cross-pair bridge; v7 replaced
+  the bridge with the raw SDXL still; v7.1 keeps the anchor *position*
+  but renders it through IFNet to share texture with its neighbours).
 """
 
 from __future__ import annotations
@@ -114,7 +120,18 @@ def _build(
     ifnet_timestep_inset: float | None = None,
     on_frame=None,
     keep_frames: bool = True,
+    return_ifnet_mock: bool = False,
 ):
+    """Run ``rife_build_morph_timeline`` with all GPU dependencies stubbed.
+
+    When ``return_ifnet_mock`` is set, the third tuple element is the
+    :class:`unittest.mock.MagicMock` patched in for ``rife_ifnet_at_timestep``
+    — tests can inspect ``call_args_list`` to verify that v7.1 internal
+    anchors invoke the IFNet endpoint render rather than emitting a raw
+    keyframe copy (the v7 regression: under the linear-blend fake at
+    ``s = 1.0`` the IFNet render byte-equals ``kf_{i+1}``, so byte
+    comparisons alone can't distinguish the two implementations).
+    """
     with mock.patch.object(
         rife_runtime, "load_rife_model", return_value=_FakeModel()
     ), mock.patch.object(
@@ -125,13 +142,13 @@ def _build(
         rife_runtime,
         "rife_ifnet_at_timestep",
         side_effect=_fake_ifnet_at_timestep,
-    ), mock.patch("torch.cuda.is_available", return_value=False):
+    ) as ifnet_mock, mock.patch("torch.cuda.is_available", return_value=False):
         # ``device.type`` is read by the cudnn-benchmark guard; an object
         # without ``type`` would break that branch, so just stub it.
         class _Dev:
             type = "cpu"
 
-        return rife_runtime.rife_build_morph_timeline(
+        frames, times = rife_runtime.rife_build_morph_timeline(
             keyframes,
             keyframe_times,
             exp=exp,
@@ -140,6 +157,9 @@ def _build(
             on_frame=on_frame,
             keep_frames=keep_frames,
         )
+        if return_ifnet_mock:
+            return frames, times, ifnet_mock
+        return frames, times
 
 
 class CenteredMorphTimelineTests(unittest.TestCase):
@@ -162,8 +182,9 @@ class CenteredMorphTimelineTests(unittest.TestCase):
         np.testing.assert_array_equal(frames[0], kf0)
         np.testing.assert_array_equal(frames[-1], kf1)
 
-    def test_three_keyframes_internal_anchor_is_exact_kf(self) -> None:
-        # Two segments [0, 8] and [8, 16], exp=2 (n=4). v7 expected dense times:
+    def test_three_keyframes_internal_anchor_at_keyframe_time(self) -> None:
+        # Two segments [0, 8] and [8, 16], exp=2 (n=4). v7.1 expected dense
+        # times:
         #   bookend_start=0, seg0=[1, 3, 5, 7], anchor=8, seg1=[9, 11, 13, 15],
         #   bookend_end=16
         kf0, kf1, kf2 = _solid_rgb(10), _solid_rgb(120), _solid_rgb(250)
@@ -175,12 +196,15 @@ class CenteredMorphTimelineTests(unittest.TestCase):
             [0.0, 1.0, 3.0, 5.0, 7.0, 8.0, 9.0, 11.0, 13.0, 15.0, 16.0],
         )
 
-        # v7: the frame at the internal keyframe time t=8 IS the exact SDXL
-        # keyframe kf1 itself — byte-identical, not an IFNet prediction.
-        # This is what eliminates cross-pair pixel blending at the seam:
-        # the anchor lives on BOTH adjacent optical-flow pairs (s=1.0 of
-        # (kf0, kf1) AND s=0.0 of (kf1, kf2) — the same image), so the
-        # compositor's linear blend never crosses pairs.
+        # v7.1: the frame at the internal keyframe time t=8 is
+        # ``IFNet(kf0, kf1, s=1.0)`` — IFNet's own render of kf1, *not* a
+        # byte-identical copy of the SDXL still kf1. Under the linear-
+        # blend fake ``IFNet(kf0, kf1, s=1.0)`` happens to byte-equal kf1
+        # (lerp at s=1 collapses to rgb1), so this byte check still
+        # passes — but the real contract (anchor produced via
+        # ``rife_ifnet_at_timestep``) is verified separately in
+        # :class:`InternalKeyframeAnchorTests`. See that class's
+        # ``test_anchor_calls_ifnet_at_s_one_on_prior_pair``.
         idx_anchor = times.index(8.0)
         np.testing.assert_array_equal(frames[idx_anchor], kf1)
 
@@ -202,7 +226,7 @@ class CenteredMorphTimelineTests(unittest.TestCase):
     def test_uniform_spacing_across_internal_boundaries(self) -> None:
         # Four segments of varying durations to confirm the boundary spacing
         # rule ``T_seg/2**exp`` per segment holds independently per side and
-        # that v7 internal-keyframe anchors land exactly on every internal
+        # that v7.1 internal-keyframe anchors land exactly on every internal
         # keyframe time.
         kfs = [_solid_rgb(v) for v in (5, 50, 100, 150, 200)]
         kts = [0.0, 4.0, 12.0, 16.0, 24.0]  # spans 4, 8, 4, 8
@@ -243,14 +267,14 @@ class CenteredMorphTimelineTests(unittest.TestCase):
             on_frame=_cb,
             keep_frames=False,
         )
-        # ``keep_frames=False`` still produces the full v7 times grid …
+        # ``keep_frames=False`` still produces the full v7.1 times grid …
         self.assertEqual(
             times,
             [0.0, 1.0, 3.0, 5.0, 7.0, 8.0, 9.0, 11.0, 13.0, 15.0, 16.0],
         )
         # … and ``on_frame`` was invoked once per timeline slot, in order
-        # (start bookend + n body samples + internal anchor + n body samples
-        # + end bookend).
+        # (start bookend + n body samples + internal IFNet anchor + n body
+        # samples + end bookend).
         self.assertEqual([t for _, t in seen], times)
         self.assertEqual([i for i, _ in seen], list(range(len(times))))
 
@@ -301,7 +325,7 @@ class IfnetTimestepInsetTests(unittest.TestCase):
             self.assertAlmostEqual(got, want, places=2)
 
     def test_env_var_override_when_kwarg_omitted(self) -> None:
-        # Pick a value that is *not* the v7 default (0.12) so this test
+        # Pick a value that is *not* the v7.1 default (0.12) so this test
         # actually verifies the env override path rather than coinciding
         # with the resolved default.
         kf0, kf1 = _solid_rgb(0), _solid_rgb(255)
@@ -450,7 +474,7 @@ class BookendVelocityTests(unittest.TestCase):
 
 
 class InternalKeyframeAnchorTests(unittest.TestCase):
-    """Lock in the v7 sampling: exact SDXL keyframes at internal boundaries.
+    """Lock in the v7.1 sampling: IFNet-rendered anchors at internal boundaries.
 
     With pair-wise IFNet alone, the last body sample of segment ``i`` and
     the first body sample of segment ``i + 1`` come from *different* IFNet
@@ -470,18 +494,35 @@ class InternalKeyframeAnchorTests(unittest.TestCase):
     and amplified the spatial-jump perception ("clear move of the
     object").
 
-    v7 places the **exact SDXL keyframe** ``kf_{i+1}`` at every internal
-    keyframe time. The exact still is byte-identical to both
-    ``IFNet(kf_i, kf_{i+1}, s=1.0)`` (at IFNet's identity endpoint) and
-    ``IFNet(kf_{i+1}, kf_{i+2}, s=0.0)``, so the anchor lives on *both*
-    adjacent pairs at once and the compositor's linear blend stays
-    within a single optical-flow pair on each side of the seam — no
-    pair-mismatch at any video-frame time.
+    v7 placed the **exact SDXL keyframe** ``kf_{i+1}`` at every internal
+    boundary on the assumption that it was byte-identical to
+    ``IFNet(kf_i, kf_{i+1}, s=1.0)`` modulo identity behaviour at the
+    endpoints. That assumption is wrong: Practical-RIFE's :class:`IFNet`
+    has *no* identity branch at ``s = 0`` or ``s = 1`` — it always runs
+    all five flow-refinement blocks with ``timestep`` baked into the
+    feature concatenation. The raw VAE still and the IFNet render at
+    ``s = 1.0`` therefore differ by a per-network texture signature
+    (VAE sharper / more saturated; IFNet smoother). v7 had the
+    compositor swap VAE ↔ IFNet texture every internal boundary, which
+    read as a 1–2-video-frame texture "blip" on every keyframe.
+
+    v7.1 (schema v8) renders the anchor through IFNet at ``s = 1.0`` on
+    the *prior* pair ``(kf_i, kf_{i+1})`` instead of using the raw SDXL
+    still. The anchor now shares IFNet's texture signature with every
+    flanking body sample. Pre-anchor blend stays entirely within pair
+    ``A`` (same flow field, same texture). Post-anchor blend crosses to
+    pair ``B`` but between two IFNet renders both dominated by
+    ``kf_{i+1}`` content (the anchor is a full warp toward ``kf_{i+1}``;
+    the first body of seg_{i+1} is only ``inset`` along the next flow),
+    so the flow residual at the boundary is at its minimum visible
+    scale — and crucially there is no VAE↔IFNet texture hand-off.
 
     These tests pin (a) that exactly one anchor is emitted per internal
     boundary, (b) that it lands at exactly the keyframe time, (c) that
-    it is byte-identical to the SDXL keyframe (not a midpoint guess),
-    and (d) that it does not depend on the body inset.
+    each anchor is produced by an explicit ``rife_ifnet_at_timestep``
+    call on the prior pair at ``timestep = 1.0`` (the v7.1 contract that
+    distinguishes from a v7-style raw-keyframe copy), and (d) that the
+    anchor's IFNet call signature does not depend on the body inset.
     """
 
     def test_no_anchor_for_single_segment(self) -> None:
@@ -489,65 +530,113 @@ class InternalKeyframeAnchorTests(unittest.TestCase):
         # anchors. Frame count for a single segment is just the two
         # bookends and the body samples.
         kf0, kf1 = _solid_rgb(0), _solid_rgb(255)
-        frames, times = _build(
-            [kf0, kf1], [0.0, 8.0], exp=2, ifnet_timestep_inset=0.20
+        frames, times, ifnet_mock = _build(
+            [kf0, kf1],
+            [0.0, 8.0],
+            exp=2,
+            ifnet_timestep_inset=0.20,
+            return_ifnet_mock=True,
         )
         # 1 bookend + 4 body + 1 bookend = 6 (no anchor slot in a one-seg run).
         self.assertEqual(len(frames), 6)
         self.assertEqual(len(times), 6)
+        # Both IFNet calls in this run must be bookends (s = inset and
+        # s = 1 - inset). No s = 1.0 call ⇒ no internal anchor.
+        ts_called = [c.kwargs["timestep"] for c in ifnet_mock.call_args_list]
+        self.assertEqual(len(ts_called), 2)
+        self.assertNotIn(1.0, ts_called)
 
     def test_one_anchor_per_internal_boundary(self) -> None:
         # 4 keyframes ⇒ 3 segments ⇒ 2 internal boundaries ⇒ 2 anchors.
         # Frame count = 1 + 3*4 + 2 + 1 = 16.
         kfs = [_solid_rgb(v) for v in (0, 80, 160, 240)]
         kts = [0.0, 8.0, 16.0, 24.0]
-        frames, times = _build(kfs, kts, exp=2, ifnet_timestep_inset=0.0)
+        frames, times, ifnet_mock = _build(
+            kfs, kts, exp=2, ifnet_timestep_inset=0.0, return_ifnet_mock=True
+        )
         self.assertEqual(len(frames), 16)
         self.assertEqual(len(times), 16)
         # Both internal keyframe times are present (anchors sit there);
         # the song bookends are also keyframe times.
         for kt in kts:
             self.assertIn(kt, times)
+        # Exactly two ``s = 1.0`` calls — one per internal boundary.
+        # (The two bookends use ``s = inset`` and ``s = 1 - inset``,
+        # which at inset = 0 collapse to ``s = 0`` and ``s = 1``; the
+        # latter would *also* be ``1.0``, so isolate the anchor calls
+        # by their pair signature: anchors use the *prior* pair, not
+        # the *last* pair like the end bookend does.)
+        ts_called = [c.kwargs["timestep"] for c in ifnet_mock.call_args_list]
+        self.assertEqual(ts_called.count(1.0), 3)  # 2 anchors + 1 end bookend
+        self.assertEqual(ts_called.count(0.0), 1)  # 1 start bookend (s = inset = 0)
 
-    def test_anchor_is_byte_identical_to_sdxl_keyframe(self) -> None:
-        # Three keyframes with R-channel values chosen so every candidate
-        # midpoint is distinct from the actual kf1 still:
-        #   pair (kf0, kf1) midpoint at s=0.5 → 35   (flanking-left guess)
-        #   pair (kf1, kf2) midpoint at s=0.5 → 135  (flanking-right guess)
-        #   cross (kf0, kf2) midpoint at s=0.5 → 100 (v6 cross-pair bridge)
-        #   kf1 R=70                                 (the v7 exact anchor)
+    def test_anchor_calls_ifnet_at_s_one_on_prior_pair(self) -> None:
+        # Three keyframes with distinguishable R-channel values so we can
+        # match each IFNet call's pair against the keyframe identities.
+        # kf1 R=70 is chosen to differ from every candidate midpoint a
+        # regression to v6's cross-pair bridge or to either flanking pair
+        # midpoint would land at.
         kf0 = np.zeros((4, 4, 3), dtype=np.uint8)
         kf0[..., 0] = 0
         kf1 = np.zeros((4, 4, 3), dtype=np.uint8)
         kf1[..., 0] = 70
         kf2 = np.zeros((4, 4, 3), dtype=np.uint8)
         kf2[..., 0] = 200
-        frames, times = _build(
-            [kf0, kf1, kf2], [0.0, 8.0, 16.0], exp=2, ifnet_timestep_inset=0.0
+        frames, times, ifnet_mock = _build(
+            [kf0, kf1, kf2],
+            [0.0, 8.0, 16.0],
+            exp=2,
+            ifnet_timestep_inset=0.20,
+            return_ifnet_mock=True,
         )
+
+        # Locate the IFNet call that produced the internal anchor: it is
+        # the one (and only one) with ``timestep == 1.0`` whose pair is
+        # ``(kf0, kf1)`` (the *prior* pair). The end bookend's call uses
+        # ``timestep = 1 - inset = 0.80``, so timestep alone suffices,
+        # but assert the pair too to lock in "prior pair, not last pair".
+        anchor_calls = [
+            c for c in ifnet_mock.call_args_list if c.kwargs["timestep"] == 1.0
+        ]
+        self.assertEqual(
+            len(anchor_calls),
+            1,
+            msg="expected exactly one IFNet(s=1.0) call (the internal anchor)",
+        )
+        anchor_call = anchor_calls[0]
+        np.testing.assert_array_equal(anchor_call.args[1], kf0)
+        np.testing.assert_array_equal(anchor_call.args[2], kf1)
+
+        # The anchor frame in the timeline (at t = 8.0) is the linear
+        # blend's value at s = 1.0 of pair (kf0, kf1), which under the
+        # fake byte-equals kf1 — the same byte content v7 emitted, but
+        # produced via the IFNet path instead of a raw copy. Real IFNet
+        # would render a *slightly* smoother version of kf1 here; the
+        # fake collapses to byte-exact rgb1 at s = 1, which is fine for
+        # the timeline-structure contract this test pins.
         idx_anchor = times.index(8.0)
-        # v7 anchor is byte-identical to the SDXL keyframe kf1.
-        np.testing.assert_array_equal(frames[idx_anchor], kf1)
-        # And explicitly *not* any of the alternative interpretations
-        # (left-flanking midpoint, right-flanking midpoint, v6 cross-pair
-        # midpoint). kf1's R=70 was deliberately chosen to differ from
-        # all three so a regression to either flanking pair midpoint or
-        # the v6 bridge would show up here.
         anchor_r = float(frames[idx_anchor][0, 0, 0])
         self.assertAlmostEqual(anchor_r, 70.0, delta=1.0)
-        for wrong in (35.0, 135.0, 100.0):
+        for wrong in (35.0, 135.0, 100.0):  # left mid / right mid / v6 cross-pair
             self.assertGreater(
                 abs(anchor_r - wrong),
                 5.0,
                 msg=f"anchor byte {anchor_r} matched alternative midpoint {wrong}",
             )
 
-    def test_anchor_independent_of_body_inset(self) -> None:
-        # The exact-still anchor is always ``keyframes[i+1]`` regardless
-        # of the body inset (the inset governs body samples only; the
-        # anchor identity is what eliminates the cross-pair blend region).
-        # Verify by baking with several insets and checking the anchor
-        # is byte-identical to kf1 in every case.
+    def test_anchor_call_independent_of_body_inset(self) -> None:
+        # The v7.1 anchor is always ``rife_ifnet_at_timestep(..., s=1.0)``
+        # on the prior pair regardless of body inset (the inset governs
+        # body sample timesteps only). Verify by baking at several insets
+        # and checking the anchor call signature is identical in each.
+        #
+        # We filter the IFNet call list by pair identity *and* timestep
+        # because at ``inset = 0`` the end bookend collapses to
+        # ``timestep = 1 - inset = 1.0`` and would otherwise collide with
+        # the anchor call on the same timestep. The end bookend uses the
+        # *last* pair ``(kf_{N-1}, kf_N) = (kf1, kf2)``, the anchor for
+        # the only internal boundary here uses the *prior* pair
+        # ``(kf0, kf1)`` — distinguishable by the first input frame.
         kf0 = np.zeros((4, 4, 3), dtype=np.uint8)
         kf0[..., 0] = 0
         kf1 = np.zeros((4, 4, 3), dtype=np.uint8)
@@ -555,14 +644,27 @@ class InternalKeyframeAnchorTests(unittest.TestCase):
         kf2 = np.zeros((4, 4, 3), dtype=np.uint8)
         kf2[..., 0] = 200
         for inset in (0.0, 0.12, 0.25, 0.40):
-            frames, times = _build(
-                [kf0, kf1, kf2], [0.0, 8.0, 16.0], exp=2, ifnet_timestep_inset=inset
+            _frames, _times, ifnet_mock = _build(
+                [kf0, kf1, kf2],
+                [0.0, 8.0, 16.0],
+                exp=2,
+                ifnet_timestep_inset=inset,
+                return_ifnet_mock=True,
             )
-            idx_anchor = times.index(8.0)
-            np.testing.assert_array_equal(
-                frames[idx_anchor],
-                kf1,
-                err_msg=f"anchor not byte-equal to kf1 at inset={inset}",
+            anchor_calls = [
+                c
+                for c in ifnet_mock.call_args_list
+                if c.kwargs["timestep"] == 1.0
+                and np.array_equal(c.args[1], kf0)
+                and np.array_equal(c.args[2], kf1)
+            ]
+            self.assertEqual(
+                len(anchor_calls),
+                1,
+                msg=(
+                    f"missing v7.1 anchor IFNet(s=1.0, pair=(kf0, kf1)) "
+                    f"call at inset={inset}"
+                ),
             )
 
     def test_anchor_at_exact_keyframe_time(self) -> None:
