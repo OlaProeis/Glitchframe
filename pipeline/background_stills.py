@@ -92,7 +92,7 @@ MANIFEST_RIFE_FILENAME = "manifest_rife.json"
 # are silently re-baked once (``+1`` bridge per internal keyframe and a
 # new body sample distribution; both invalidate the legacy frame count
 # and on-disk PNGs).
-RIFE_MANIFEST_SCHEMA_VERSION = 6
+RIFE_MANIFEST_SCHEMA_VERSION = 7
 
 ProgressFn = Callable[[float, str], None]
 
@@ -1358,7 +1358,7 @@ class BackgroundStills:
         # Total estimate for progress: matches ``rife_build_morph_timeline``
         # — ``per_seg`` centered IFNet predictions per segment, plus the two
         # velocity-matched IFNet bookends (one at the song start, one at the
-        # end), plus one v6 cross-pair bridge per internal keyframe boundary
+        # end), plus one v7 exact-still anchor per internal keyframe boundary
         # (``total_segs - 1`` of them, zero when there is only one segment).
         total_segs = max(1, mf.num_keyframes - 1)
         per_seg = (1 << int(self._rife_exp))
