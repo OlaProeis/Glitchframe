@@ -121,7 +121,34 @@ MANIFEST_RIFE_FILENAME = "manifest_rife.json"
 # inference per internal boundary (sub-second on a 3090 for 20–40
 # keyframe songs). v7 manifests are silently re-baked once (the anchor
 # bytes change — body samples / bookends / spacing all unchanged).
-RIFE_MANIFEST_SCHEMA_VERSION = 8
+# v9: v7.2 boundary-velocity cap. v7.1 fixed the *texture* blip but the
+# *velocity* spike from the last body sample (at ``s ≈ 1 - inset``) to
+# the anchor (at ``s = 1.0``) on the same pair still scales linearly with
+# ``n_steps``. At ``rife_exp = 4`` (n_steps = 16) the constant
+# ``inset = 0.12`` produces a 5 × body-velocity spike at every internal
+# anchor (the v7 design target — "brief speed-up *into* the anchor"). At
+# ``rife_exp = 8`` (n_steps = 256) the *same* constant produces a ~80 ×
+# spike — about 25 % IFNet-timestep change per video frame at 30 fps,
+# perceived as a clear "skip" right before every keyframe (and a
+# symmetric cross-pair residual right after, because the post-anchor
+# first body of the next segment sits ``inset = 0.12`` along the next
+# flow). v9 caps the inset by inverting the velocity-ratio formula,
+# ``inset_cap = ratio / (2 * n_steps + 2 * ratio)`` (default
+# ``ratio = 5``), so the spike stays at ~5 × body velocity for *every*
+# ``rife_exp``. At ``rife_exp = 4`` the cap evaluates to 0.119 —
+# essentially the v8 default — so the common path is unchanged. At
+# ``rife_exp = 8`` the cap shrinks the inset to ~0.0096, which also
+# tightens the boundary body samples toward the keyframes and therefore
+# minimises the post-anchor cross-pair residual (both flanking samples
+# now sit at IFNet timesteps where the render is essentially
+# ``kf_{i+1}``). The cap is applied only when no explicit inset is set
+# (kwarg / ``GLITCHFRAME_RIFE_IFNET_INSET``); explicit overrides bypass
+# the cap. Override the ratio via
+# ``GLITCHFRAME_RIFE_BOUNDARY_VELOCITY_RATIO``. v8 manifests at
+# ``rife_exp >= 5`` are silently re-baked (body sample timesteps change);
+# at ``rife_exp = 4`` the bytes change minimally (inset 0.12 → 0.119)
+# but the schema bump triggers a re-bake regardless.
+RIFE_MANIFEST_SCHEMA_VERSION = 9
 
 ProgressFn = Callable[[float, str], None]
 
@@ -1389,7 +1416,10 @@ class BackgroundStills:
         # velocity-matched IFNet bookends (one at the song start, one at the
         # end), plus one v7.1 IFNet-rendered anchor (``IFNet(kf_i, kf_{i+1},
         # s=1.0)``) per internal keyframe boundary (``total_segs - 1`` of
-        # them, zero when there is only one segment).
+        # them, zero when there is only one segment). v7.2 boundary-velocity
+        # cap leaves this frame count untouched; only the IFNet timesteps at
+        # which the body samples / bookends are evaluated shrink with
+        # ``rife_exp``.
         total_segs = max(1, mf.num_keyframes - 1)
         per_seg = (1 << int(self._rife_exp))
         est_total = total_segs * per_seg + max(0, total_segs - 1) + 2

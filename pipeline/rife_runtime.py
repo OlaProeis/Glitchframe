@@ -76,16 +76,76 @@ RIFE_CACHE_SUBDIR = "rife_practical"
 # anchor-velocity argument is unchanged).
 #
 # Override at runtime via ``GLITCHFRAME_RIFE_IFNET_INSET`` (clamped to the
-# safe range below). Set to ``0`` to recover the legacy centered-only
-# behaviour for byte-exact reproducibility against older bakes; tune
-# towards ``0.0`` if you want the morph to settle visibly onto every SDXL
-# keyframe (at the cost of brief perceived pauses there).
+# safe range below); when set, this value is honoured byte-exactly and the
+# v7.2 boundary-velocity cap (see :data:`DEFAULT_BOUNDARY_VELOCITY_RATIO`
+# below) is bypassed entirely. Set the env var to ``0`` to recover the
+# legacy centered-only behaviour for byte-exact reproducibility against
+# older bakes; tune towards ``0.0`` if you want the morph to settle
+# visibly onto every SDXL keyframe (at the cost of brief perceived
+# pauses there).
 DEFAULT_IFNET_TIMESTEP_INSET = 0.12
 _IFNET_TIMESTEP_INSET_MIN = 0.0
 # Capping at 0.45 keeps both halves of the (warped) [inset, 1-inset]
 # interval non-degenerate; in practice values much above ~0.30 over-compress
 # the visible motion range and start to feel "muted" rather than "fluid".
 _IFNET_TIMESTEP_INSET_MAX = 0.45
+
+# v7.2 boundary-velocity cap.
+#
+# The v7 / v7.1 internal-keyframe anchor is an IFNet sample at ``s = 1.0``
+# (or the exact SDXL still, pre-v7.1) placed at every internal ``t_kf``.
+# The IFNet-timestep gap from the last body sample (at ``s = 1 - inset``,
+# approximately, after the centered-inset warp) to the anchor at ``s = 1.0``
+# is ``inset`` per boundary cell, traversed in ``T_seg / (2 * n_steps)``
+# wall-clock seconds. The ratio of that boundary IFNet-timestep velocity to
+# the body's own IFNet-timestep velocity ``(1 - 2 * inset) / T_seg`` is
+#
+#   ratio  =  2 * n_steps * inset / (1 - 2 * inset)
+#
+# (T_seg cancels). At ``inset = 0.12`` this gives ~5× the body pace at
+# ``rife_exp = 4`` (n_steps = 16) — the v7 design target, which reads as a
+# brief speed-up *into* every keyframe rather than a discrete jump. But
+# the ratio scales linearly in ``n_steps``: at ``rife_exp = 8``
+# (n_steps = 256) the same constant inset produces ~80× body velocity at
+# every anchor — about 25 % IFNet-timestep change per video frame at
+# 30 fps, perceived as a clear "skip" before *and* a symmetric cross-pair
+# residual after every keyframe boundary. (The pre-v7 cross-pair bridge
+# masked this with a different artifact; v7.1 fixed the texture blip and
+# made the velocity spike the dominant residual at high ``rife_exp``.)
+#
+# v7.2 caps the inset by inverting the ratio formula:
+#
+#   inset_cap         =  ratio / (2 * n_steps + 2 * ratio)
+#   inset_effective   =  min(DEFAULT_IFNET_TIMESTEP_INSET, inset_cap)
+#
+# so the boundary IFNet-timestep velocity stays at ``ratio`` × body
+# velocity *or less* for every ``n_steps``. At the v7.1 reference
+# ``rife_exp = 4`` (n_steps = 16) the cap evaluates to 0.119 — just below
+# the legacy default 0.12 — and the ``min`` returns 0.119; the difference
+# is below user-perceptible motion thresholds so the common path is
+# preserved. At ``rife_exp ≤ 2`` (n_steps ≤ 4) the cap exceeds 0.12 and
+# the ``min`` returns the legacy default, leaving low-``rife_exp``
+# behaviour byte-identical. At higher ``rife_exp`` the cap kicks in
+# (e.g. 0.0362 at n_steps = 64, 0.0096 at n_steps = 256), which also
+# tightens the boundary body samples toward ``s = 0`` / ``s = 1``; the
+# post-anchor cross-pair residual (anchor on pair A at ``s = 1.0`` →
+# first body of next segment on pair B at ``s = inset``) is correspond-
+# ingly minimised because both flanking samples now sit at IFNet
+# timesteps where the network's render is essentially ``kf_{i+1}``.
+#
+# The cap is applied *only* when no explicit ``ifnet_timestep_inset``
+# kwarg and no ``GLITCHFRAME_RIFE_IFNET_INSET`` env var are set; an
+# explicit override is honoured byte-for-byte so reproducibility and
+# manual experimentation continue to work. Override the velocity-ratio
+# target via ``GLITCHFRAME_RIFE_BOUNDARY_VELOCITY_RATIO`` (clamped to
+# ``[0.0, _BOUNDARY_VELOCITY_RATIO_MAX]``).
+DEFAULT_BOUNDARY_VELOCITY_RATIO = 5.0
+_BOUNDARY_VELOCITY_RATIO_MIN = 0.0
+# Cap the target ratio at 100 because beyond that the derived inset
+# approaches the safe-max 0.45 (e.g. at n_steps = 256 the inset hits
+# ~0.164) and we'd be re-introducing the v7.0 perceived-pause regime via
+# the back door.
+_BOUNDARY_VELOCITY_RATIO_MAX = 100.0
 
 
 ProgressFn = Callable[[float, str], None]
@@ -115,6 +175,13 @@ def _resolve_ifnet_timestep_inset(override: float | None = None) -> float:
     > :data:`DEFAULT_IFNET_TIMESTEP_INSET`. Values are clamped to
     ``[_IFNET_TIMESTEP_INSET_MIN, _IFNET_TIMESTEP_INSET_MAX]``; unparseable
     strings fall back to the default with a debug log entry.
+
+    This resolver does NOT apply the v7.2 boundary-velocity cap — it always
+    returns either the explicit override or the constant
+    :data:`DEFAULT_IFNET_TIMESTEP_INSET`. The morph timeline builder uses
+    :func:`_resolve_ifnet_timestep_inset_explicit` + the cap instead so it
+    can scale inset with ``n_steps``; callers wanting the raw legacy default
+    keep using this helper.
     """
     if override is not None:
         v = float(override)
@@ -134,6 +201,109 @@ def _resolve_ifnet_timestep_inset(override: float | None = None) -> float:
                 )
                 v = DEFAULT_IFNET_TIMESTEP_INSET
     return max(_IFNET_TIMESTEP_INSET_MIN, min(_IFNET_TIMESTEP_INSET_MAX, v))
+
+
+def _resolve_ifnet_timestep_inset_explicit(
+    override: float | None = None,
+) -> float | None:
+    """Return the explicit IFNet timestep inset override, or ``None`` when none is set.
+
+    Order of precedence: explicit ``override`` kwarg >
+    ``GLITCHFRAME_RIFE_IFNET_INSET`` env var. Returns ``None`` when both are
+    absent (or the env var is unparseable) so the caller can apply the
+    v7.2 boundary-velocity cap instead of the raw legacy default. Returned
+    values are clamped to ``[_IFNET_TIMESTEP_INSET_MIN,
+    _IFNET_TIMESTEP_INSET_MAX]``.
+    """
+    if override is not None:
+        v = float(override)
+        return max(_IFNET_TIMESTEP_INSET_MIN, min(_IFNET_TIMESTEP_INSET_MAX, v))
+    raw = os.environ.get("GLITCHFRAME_RIFE_IFNET_INSET", "").strip()
+    if raw == "":
+        return None
+    try:
+        v = float(raw)
+    except ValueError:
+        LOGGER.debug(
+            "Ignoring non-numeric GLITCHFRAME_RIFE_IFNET_INSET=%r; "
+            "falling back to v7.2 boundary-velocity cap",
+            raw,
+        )
+        return None
+    return max(_IFNET_TIMESTEP_INSET_MIN, min(_IFNET_TIMESTEP_INSET_MAX, v))
+
+
+def _resolve_boundary_velocity_ratio() -> float:
+    """Resolve the v7.2 target boundary IFNet-timestep velocity / body velocity ratio.
+
+    Reads ``GLITCHFRAME_RIFE_BOUNDARY_VELOCITY_RATIO`` (defaults to
+    :data:`DEFAULT_BOUNDARY_VELOCITY_RATIO`). Values are clamped to
+    ``[_BOUNDARY_VELOCITY_RATIO_MIN, _BOUNDARY_VELOCITY_RATIO_MAX]``;
+    unparseable strings fall back to the default with a debug log entry.
+    """
+    raw = os.environ.get("GLITCHFRAME_RIFE_BOUNDARY_VELOCITY_RATIO", "").strip()
+    if raw == "":
+        return DEFAULT_BOUNDARY_VELOCITY_RATIO
+    try:
+        v = float(raw)
+    except ValueError:
+        LOGGER.debug(
+            "Ignoring non-numeric GLITCHFRAME_RIFE_BOUNDARY_VELOCITY_RATIO=%r; "
+            "using default %.2f",
+            raw,
+            DEFAULT_BOUNDARY_VELOCITY_RATIO,
+        )
+        return DEFAULT_BOUNDARY_VELOCITY_RATIO
+    return max(_BOUNDARY_VELOCITY_RATIO_MIN, min(_BOUNDARY_VELOCITY_RATIO_MAX, v))
+
+
+def _inset_from_boundary_velocity_ratio(n_steps: int, ratio: float) -> float:
+    """Compute the inset that produces the given boundary-velocity ratio at ``n_steps``.
+
+    Inverts ``ratio = 2 * n_steps * inset / (1 - 2 * inset)``:
+
+        inset = ratio / (2 * n_steps + 2 * ratio)
+
+    Clamped to ``[_IFNET_TIMESTEP_INSET_MIN, _IFNET_TIMESTEP_INSET_MAX]``.
+    """
+    if n_steps <= 0 or ratio <= 0.0:
+        return 0.0
+    inset = ratio / (2.0 * n_steps + 2.0 * ratio)
+    return max(_IFNET_TIMESTEP_INSET_MIN, min(_IFNET_TIMESTEP_INSET_MAX, inset))
+
+
+def _resolve_effective_inset(
+    n_steps: int,
+    override: float | None = None,
+) -> float:
+    """Resolve the effective IFNet timestep inset for ``n_steps`` body samples.
+
+    When an explicit ``override`` kwarg or ``GLITCHFRAME_RIFE_IFNET_INSET``
+    env var is set, that value is honoured byte-exactly (clamped only to
+    the safe ``[0, 0.45]`` range) — the v7.2 cap is bypassed so byte-exact
+    reproduction against older bakes / manual experimentation continues to
+    work.
+
+    Otherwise the effective inset is ``min(DEFAULT_IFNET_TIMESTEP_INSET,
+    inset_cap)`` where ``inset_cap`` is derived from the target
+    boundary-velocity ratio (default :data:`DEFAULT_BOUNDARY_VELOCITY_RATIO`,
+    override via ``GLITCHFRAME_RIFE_BOUNDARY_VELOCITY_RATIO``). The
+    ``min`` makes the cap a **no-op** below the velocity-knee — at
+    ``rife_exp ≤ 4`` (n_steps ≤ 16) the constant ``0.12`` already satisfies
+    the 5 × ratio target so the v7.1 default is preserved byte-for-byte.
+    At higher ``rife_exp`` the cap shrinks the inset to keep the
+    IFNet-timestep velocity spike at every internal-keyframe anchor at
+    ``ratio`` × body velocity regardless of ``n_steps``.
+
+    See the :data:`DEFAULT_BOUNDARY_VELOCITY_RATIO` block comment for the
+    full derivation and the trade-offs at high ``rife_exp``.
+    """
+    explicit = _resolve_ifnet_timestep_inset_explicit(override)
+    if explicit is not None:
+        return explicit
+    ratio = _resolve_boundary_velocity_ratio()
+    inset_cap = _inset_from_boundary_velocity_ratio(n_steps, ratio)
+    return min(DEFAULT_IFNET_TIMESTEP_INSET, inset_cap)
 
 
 def rife_weights_dir(repo_id: str = DEFAULT_RIFE_REPO) -> Path:
@@ -476,19 +646,40 @@ def rife_build_morph_timeline(
     intentional speed-up *into* each internal keyframe anchor.
 
     ``ifnet_timestep_inset`` overrides :data:`DEFAULT_IFNET_TIMESTEP_INSET`
-    and the ``GLITCHFRAME_RIFE_IFNET_INSET`` env var; pass ``None`` (default)
-    to use the resolved default. Set to ``0`` for the legacy plain centered
-    sampling — at ``inset = 0`` the bookends collapse to ``s = 0`` / ``s = 1``
-    (≈ exact stills under IFNet) and the body samples reach close to the
-    keyframes on each side, so the IFNet-timestep velocity into every
-    internal-keyframe anchor collapses to ~body velocity (no boundary
-    speed-up). The trade-off at ``inset = 0`` is that the body samples
-    near every keyframe become visually near-identical to the keyframe
-    itself (IFNet's near-endpoint motion collapse), bringing back the
-    "stops on the still" perception inside the body. The cache count
-    formula stays ``frame_count = total_segs * n_steps + (total_segs - 1)
-    + 2`` (body samples + internal-keyframe anchors + the two
-    velocity-matched song bookends).
+    and the ``GLITCHFRAME_RIFE_IFNET_INSET`` env var. Pass ``None`` (default)
+    to let the **v7.2 boundary-velocity cap** kick in: the effective inset
+    becomes ``min(0.12, ratio / (2 * n_steps + 2 * ratio))`` where
+    ``ratio`` defaults to :data:`DEFAULT_BOUNDARY_VELOCITY_RATIO` (5 ×;
+    override via ``GLITCHFRAME_RIFE_BOUNDARY_VELOCITY_RATIO``). At
+    ``rife_exp ≤ 4`` (n_steps ≤ 16) the cap is a no-op — the v7.1
+    default of 0.12 already satisfies the 5 × ratio target — so the
+    common path is preserved byte-for-byte. At higher ``rife_exp`` the
+    cap shrinks the inset so the IFNet-timestep velocity spike at every
+    internal-keyframe anchor stays at ``ratio`` × body velocity (≈ 5 %
+    per video frame at 30 fps for ratio = 5, a "brief speed-up *into*
+    the anchor" rather than a discrete jump). Without the cap,
+    ``inset = 0.12`` at ``rife_exp = 8`` (n_steps = 256) produces a
+    ~80 × body-velocity spike — ~25 % IFNet timestep change per video
+    frame — which reads as a clear "skip" right before every keyframe
+    (and a symmetric cross-pair residual after).
+
+    Set ``ifnet_timestep_inset = 0`` (or
+    ``GLITCHFRAME_RIFE_IFNET_INSET = 0``) for the legacy plain centered
+    sampling — at ``inset = 0`` the bookends collapse to ``s = 0`` /
+    ``s = 1`` (≈ exact stills under IFNet) and the body samples reach
+    close to the keyframes on each side, so the IFNet-timestep velocity
+    into every internal-keyframe anchor collapses to ~body velocity (no
+    boundary speed-up). The trade-off at ``inset = 0`` is that the body
+    samples near every keyframe become visually near-identical to the
+    keyframe itself (IFNet's near-endpoint motion collapse), bringing
+    back the "stops on the still" perception inside the body — milder
+    at higher ``n_steps`` because the near-identical window shrinks to
+    ``T_seg / n`` wall-clock per side. An explicit override bypasses the
+    v7.2 cap entirely so byte-exact reproduction against older bakes
+    continues to work. The cache count formula stays
+    ``frame_count = total_segs * n_steps + (total_segs - 1) + 2`` (body
+    samples + internal-keyframe anchors + the two velocity-matched song
+    bookends).
 
     ``on_frame``, if given, is invoked for every output frame as soon as it
     is available with ``(global_index, rgb_uint8, t_sec)``. Callers can use
@@ -508,7 +699,12 @@ def rife_build_morph_timeline(
     if n < 2:
         raise ValueError("RIFE morph needs at least two SDXL keyframes")
 
-    inset = _resolve_ifnet_timestep_inset(ifnet_timestep_inset)
+    # n_steps body samples per segment — also the parameter the v7.2
+    # boundary-velocity cap uses to shrink the inset at higher ``rife_exp``.
+    # Computed up front so the inset resolver can apply the cap before any
+    # other RIFE work happens.
+    n_steps = 1 << int(exp)  # = 2 ** exp; centered-sample count per segment
+    inset = _resolve_effective_inset(n_steps=n_steps, override=ifnet_timestep_inset)
 
     def _report(p: float, msg: str) -> None:
         if progress is not None:
@@ -533,7 +729,6 @@ def rife_build_morph_timeline(
     times_out: list[float] = []
     global_idx = 0
 
-    n_steps = 1 << int(exp)  # = 2 ** exp; centered-sample count per segment
     total_segs = n - 1
     try:
         # Bookend at song start: IFNet at s = inset (instead of the legacy

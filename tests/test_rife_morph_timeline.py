@@ -285,13 +285,11 @@ class IfnetTimestepInsetTests(unittest.TestCase):
     def test_default_inset_pushes_boundary_samples_inward(self) -> None:
         # The fake interpolator linearly blends ``rgb0`` and ``rgb1`` at the
         # IFNet timestep, so the produced byte value directly encodes the
-        # effective ``s`` for each emitted frame.
+        # effective ``s`` for each emitted frame. We strip *both* inset-
+        # related env vars so the v7.2 boundary-velocity cap and the
+        # legacy direct-inset env var can't leak in from the dev shell.
         kf0, kf1 = _solid_rgb(0), _solid_rgb(255)
-        env_no_override = {
-            k: v
-            for k, v in os.environ.items()
-            if k != "GLITCHFRAME_RIFE_IFNET_INSET"
-        }
+        env_no_override = _clean_env_for_inset_tests()
         with mock.patch.dict(os.environ, env_no_override, clear=True):
             frames, times = _build(
                 [kf0, kf1], [0.0, 8.0], exp=2, ifnet_timestep_inset=None
@@ -301,6 +299,10 @@ class IfnetTimestepInsetTests(unittest.TestCase):
         ifnet_frames = frames[1:-1]
         self.assertEqual(len(ifnet_frames), 4)
         recovered_s = [float(f[0, 0, 0]) / 255.0 for f in ifnet_frames]
+        # At exp=2 (n=4) the v7.2 cap evaluates to ratio/(2n+2*ratio) =
+        # 5/18 ≈ 0.278, well above the legacy default 0.12, so the
+        # ``min`` selects the legacy default and behaviour at low
+        # rife_exp matches v7.1 byte-for-byte.
         default = rife_runtime.DEFAULT_IFNET_TIMESTEP_INSET
         span = 1.0 - 2.0 * default
         expected = [default + span * (j + 0.5) / 4.0 for j in range(4)]
@@ -430,10 +432,16 @@ class BookendVelocityTests(unittest.TestCase):
     def test_velocity_continuous_at_default_inset(self) -> None:
         # Same continuity check at the default inset that ships in
         # production. See note above for why this uses ``places=2``.
+        # Scrub the inset-related env vars so the resolver's default
+        # behaviour is what we measure (otherwise a shell-set value
+        # would silently shift the body grid).
         kf0, kf1 = _solid_rgb(0), _solid_rgb(255)
-        frames, times = _build(
-            [kf0, kf1], [0.0, 8.0], exp=2, ifnet_timestep_inset=None
-        )
+        with mock.patch.dict(
+            os.environ, _clean_env_for_inset_tests(), clear=True
+        ):
+            frames, times = _build(
+                [kf0, kf1], [0.0, 8.0], exp=2, ifnet_timestep_inset=None
+            )
         s = [float(f[0, 0, 0]) / 255.0 for f in frames]
         body_velocity = (s[2] - s[1]) / (times[2] - times[1])
         v_open = (s[1] - s[0]) / (times[1] - times[0])
@@ -683,6 +691,236 @@ class InternalKeyframeAnchorTests(unittest.TestCase):
         #   seg1 (T=8.5): first body at 5.5 + 8.5/8 = 6.5625
         self.assertIn(4.8125, times)
         self.assertIn(6.5625, times)
+
+
+def _clean_env_for_inset_tests() -> dict[str, str]:
+    """Strip every IFNet-inset / boundary-velocity env override so a test
+    can exercise the resolver's *default* path deterministically.
+
+    The user's CI / dev shell may have either env var set for manual
+    experimentation; clearing them in-test guarantees we're measuring the
+    v7.2 cap behaviour and not whatever happens to be in the shell.
+    """
+    stripped_keys = {
+        "GLITCHFRAME_RIFE_IFNET_INSET",
+        "GLITCHFRAME_RIFE_BOUNDARY_VELOCITY_RATIO",
+    }
+    return {k: v for k, v in os.environ.items() if k not in stripped_keys}
+
+
+class BoundaryVelocityCapTests(unittest.TestCase):
+    """Lock in the v7.2 boundary-velocity cap (schema v9).
+
+    The v7 / v7.1 anchor introduces an IFNet-timestep velocity spike at
+    every internal-keyframe boundary: the last body sample sits at
+    ``s ≈ 1 - inset`` and the anchor sits at ``s = 1.0`` on the same
+    pair, traversed in ``T_seg / (2 * n_steps)`` wall-clock seconds. The
+    ratio of that boundary IFNet-timestep velocity to the body's own
+    velocity is
+
+        ratio = 2 * n_steps * inset / (1 - 2 * inset)
+
+    (``T_seg`` cancels). At ``inset = 0.12`` this is 5× at
+    ``rife_exp = 4`` (n_steps = 16) — the v7 design target — but scales
+    linearly in ``n_steps``: at ``rife_exp = 8`` (n_steps = 256) the
+    same constant inset produces ~80× body velocity, which reads as a
+    clear "skip" right before every internal keyframe (plus a symmetric
+    cross-pair residual right after).
+
+    v7.2 caps the inset so the ratio stays at
+    :data:`rife_runtime.DEFAULT_BOUNDARY_VELOCITY_RATIO` × body velocity
+    for *every* ``n_steps``: ``inset_cap = ratio / (2*n + 2*ratio)``.
+    The effective inset is ``min(DEFAULT_IFNET_TIMESTEP_INSET,
+    inset_cap)`` so the cap is a no-op below the velocity-knee (n ≤ ~42
+    for ratio = 5) and only shrinks the inset at higher ``rife_exp``.
+    Explicit kwarg / env overrides bypass the cap so byte-exact
+    reproduction against older bakes continues to work. These tests pin
+    that contract.
+    """
+
+    def test_cap_inverts_ratio_formula(self) -> None:
+        # The helper math itself is the foundation everything else builds
+        # on, so pin a handful of well-known values directly.
+        for n_steps, ratio, expected_inset in [
+            (16, 5.0, 5.0 / 42.0),    # rife_exp=4 → 0.119...
+            (64, 5.0, 5.0 / 138.0),   # rife_exp=6 → 0.0362...
+            (256, 5.0, 5.0 / 522.0),  # rife_exp=8 → 0.00958...
+            (16, 1.0, 1.0 / 34.0),    # ratio=1 (no spike target)
+            (16, 10.0, 10.0 / 52.0),  # ratio=10 (looser)
+        ]:
+            got = rife_runtime._inset_from_boundary_velocity_ratio(n_steps, ratio)
+            self.assertAlmostEqual(got, expected_inset, places=6)
+            # And the round-trip: this inset *does* produce the requested
+            # ratio under the velocity formula.
+            roundtrip_ratio = 2.0 * n_steps * got / (1.0 - 2.0 * got)
+            self.assertAlmostEqual(roundtrip_ratio, ratio, places=4)
+
+    def test_cap_is_noop_at_low_rife_exp(self) -> None:
+        # At ``rife_exp ≤ 4`` (n ≤ 16) with the default 5× target the cap
+        # evaluates ≥ 0.119, so the ``min`` with the legacy 0.12 default
+        # returns either the legacy value or 0.119 — both within the
+        # user-perceptible motion-velocity tolerance of the v7.1 reference.
+        with mock.patch.dict(os.environ, _clean_env_for_inset_tests(), clear=True):
+            for exp, expected_close_to in [
+                (1, 0.12),    # n=2  → cap = 5/14 = 0.357 → min → 0.12
+                (2, 0.12),    # n=4  → cap = 5/18 = 0.278 → min → 0.12
+                (3, 0.12),    # n=8  → cap = 5/26 = 0.192 → min → 0.12
+                (4, 0.119),   # n=16 → cap = 5/42 = 0.119 → min → 0.119
+            ]:
+                got = rife_runtime._resolve_effective_inset(1 << exp)
+                self.assertAlmostEqual(
+                    got,
+                    expected_close_to,
+                    places=3,
+                    msg=f"effective inset at exp={exp} (n={1<<exp}) was {got!r}",
+                )
+
+    def test_cap_shrinks_inset_at_high_rife_exp(self) -> None:
+        # At ``rife_exp ≥ 5`` (n ≥ 32) the cap drops below the legacy
+        # 0.12 default and starts shrinking the inset. Verify the exact
+        # values that ship in production so re-bakes are reproducible.
+        with mock.patch.dict(os.environ, _clean_env_for_inset_tests(), clear=True):
+            for exp, expected in [
+                (5, 5.0 / 74.0),    # n=32  → 0.06757
+                (6, 5.0 / 138.0),   # n=64  → 0.03623
+                (7, 5.0 / 266.0),   # n=128 → 0.01880
+                (8, 5.0 / 522.0),   # n=256 → 0.00958
+            ]:
+                got = rife_runtime._resolve_effective_inset(1 << exp)
+                self.assertAlmostEqual(got, expected, places=6)
+                # And confirm the cap really *did* kick in — i.e. it's
+                # strictly less than the legacy 0.12 default.
+                self.assertLess(got, rife_runtime.DEFAULT_IFNET_TIMESTEP_INSET)
+
+    def test_boundary_velocity_ratio_is_constant_under_cap(self) -> None:
+        # The whole point: under the cap the boundary IFNet-timestep
+        # velocity ratio is ~5× regardless of ``rife_exp``. We check via
+        # the effective inset (a closed-form quantity) rather than
+        # standing up a full timeline at exp=8 (which would emit 256
+        # body samples per segment).
+        with mock.patch.dict(os.environ, _clean_env_for_inset_tests(), clear=True):
+            for exp in (5, 6, 7, 8, 9):
+                n_steps = 1 << exp
+                inset = rife_runtime._resolve_effective_inset(n_steps)
+                ratio = 2.0 * n_steps * inset / (1.0 - 2.0 * inset)
+                self.assertAlmostEqual(
+                    ratio,
+                    rife_runtime.DEFAULT_BOUNDARY_VELOCITY_RATIO,
+                    places=3,
+                    msg=(
+                        f"boundary velocity ratio at exp={exp} (n={n_steps}) "
+                        f"was {ratio:.4f}, expected ~5"
+                    ),
+                )
+
+    def test_explicit_kwarg_override_bypasses_cap(self) -> None:
+        # Even at rife_exp=8 where the cap would shrink the inset to
+        # ~0.01, an explicit ``ifnet_timestep_inset = 0.30`` kwarg must
+        # be honoured byte-exactly — reproducibility against legacy bakes
+        # / manual experimentation.
+        with mock.patch.dict(os.environ, _clean_env_for_inset_tests(), clear=True):
+            got = rife_runtime._resolve_effective_inset(256, override=0.30)
+        self.assertAlmostEqual(got, 0.30, places=6)
+
+    def test_explicit_env_var_override_bypasses_cap(self) -> None:
+        # Same contract via the env var path: an explicit
+        # ``GLITCHFRAME_RIFE_IFNET_INSET`` value bypasses the cap.
+        env = _clean_env_for_inset_tests()
+        env["GLITCHFRAME_RIFE_IFNET_INSET"] = "0.30"
+        with mock.patch.dict(os.environ, env, clear=True):
+            got = rife_runtime._resolve_effective_inset(256)
+        self.assertAlmostEqual(got, 0.30, places=6)
+
+    def test_ratio_env_var_overrides_default_target(self) -> None:
+        # ``GLITCHFRAME_RIFE_BOUNDARY_VELOCITY_RATIO`` lets the user
+        # widen or tighten the velocity target. At ratio=1 the boundary
+        # spike collapses to body velocity (no perceived speed-up) but
+        # the first/last body samples slip even closer to the keyframes.
+        env = _clean_env_for_inset_tests()
+        env["GLITCHFRAME_RIFE_BOUNDARY_VELOCITY_RATIO"] = "1.0"
+        with mock.patch.dict(os.environ, env, clear=True):
+            got = rife_runtime._resolve_effective_inset(256)
+        # ratio=1, n=256 → inset = 1 / (512 + 2) = 1/514 ≈ 0.00195
+        self.assertAlmostEqual(got, 1.0 / 514.0, places=6)
+
+    def test_ratio_env_var_garbage_falls_back_to_default(self) -> None:
+        env = _clean_env_for_inset_tests()
+        env["GLITCHFRAME_RIFE_BOUNDARY_VELOCITY_RATIO"] = "not-a-number"
+        with mock.patch.dict(os.environ, env, clear=True):
+            got = rife_runtime._resolve_boundary_velocity_ratio()
+        self.assertAlmostEqual(
+            got,
+            rife_runtime.DEFAULT_BOUNDARY_VELOCITY_RATIO,
+        )
+
+    def test_ratio_env_var_clamped_to_safe_max(self) -> None:
+        env = _clean_env_for_inset_tests()
+        env["GLITCHFRAME_RIFE_BOUNDARY_VELOCITY_RATIO"] = "9999.0"
+        with mock.patch.dict(os.environ, env, clear=True):
+            got = rife_runtime._resolve_boundary_velocity_ratio()
+        self.assertAlmostEqual(got, rife_runtime._BOUNDARY_VELOCITY_RATIO_MAX)
+
+    def test_timeline_at_exp_4_unchanged_from_v71_under_cap(self) -> None:
+        # End-to-end: at ``rife_exp = 4`` (n=16) the cap evaluates to
+        # 0.119, only 0.001 below the legacy default. The body sample
+        # IFNet timesteps should still match the v7.1 grid to within the
+        # uint8 quantisation step (~0.004), so a song baked at the
+        # default rife_exp sees no perceptible change in motion.
+        kf0, kf1 = _solid_rgb(0), _solid_rgb(255)
+        with mock.patch.dict(os.environ, _clean_env_for_inset_tests(), clear=True):
+            frames, _times = _build([kf0, kf1], [0.0, 16.0], exp=4)
+        ifnet_frames = frames[1:-1]
+        self.assertEqual(len(ifnet_frames), 16)
+        recovered_s = [float(f[0, 0, 0]) / 255.0 for f in ifnet_frames]
+        # v7.1 reference grid at inset=0.12:
+        v71_inset = 0.12
+        v71_span = 1.0 - 2.0 * v71_inset
+        v71_expected = [v71_inset + v71_span * (j + 0.5) / 16.0 for j in range(16)]
+        for got, want in zip(recovered_s, v71_expected):
+            # 0.01 tolerance covers the 0.12 → 0.119 numerical drift plus
+            # the uint8 round-trip.
+            self.assertAlmostEqual(got, want, delta=0.01)
+
+    def test_timeline_at_exp_8_under_cap_keeps_boundary_samples_near_keyframes(
+        self,
+    ) -> None:
+        # End-to-end at ``rife_exp = 8`` (n=256) the cap shrinks the
+        # inset to ~0.0096 so the *first* and *last* body samples of
+        # every segment sit at IFNet timesteps very close to the flanking
+        # keyframes — which is what makes both the pre-anchor velocity
+        # spike (now ~5× body) and the post-anchor cross-pair residual
+        # collapse to their minimum visible scale.
+        #
+        # We bake a single-segment song to keep the test fast (n=256 ⇒
+        # 256 body samples + 2 bookends = 258 frames). The first body
+        # sample's IFNet timestep is what the user perceives as the
+        # frame immediately after the start keyframe; under v7.1 with
+        # inset=0.12 it would have landed at s ≈ 0.121 (visible 12 %
+        # along the next flow in 1 video frame), under v7.2 it lands at
+        # s ≈ 0.011 (visible < 1.1 % along the flow — no perceived
+        # jump).
+        kf0, kf1 = _solid_rgb(0), _solid_rgb(255)
+        with mock.patch.dict(os.environ, _clean_env_for_inset_tests(), clear=True):
+            frames, _times = _build([kf0, kf1], [0.0, 8.0], exp=8)
+        ifnet_frames = frames[1:-1]
+        self.assertEqual(len(ifnet_frames), 256)
+        first_s = float(ifnet_frames[0][0, 0, 0]) / 255.0
+        last_s = float(ifnet_frames[-1][0, 0, 0]) / 255.0
+        # Expected effective inset:
+        cap = 5.0 / 522.0
+        # First/last body at s = cap + (1 - 2*cap) * 0.5 / 256
+        span = 1.0 - 2.0 * cap
+        expected_first = cap + span * 0.5 / 256.0
+        expected_last = cap + span * 255.5 / 256.0
+        # uint8 quantisation: ±0.5/255 ≈ 0.002
+        self.assertAlmostEqual(first_s, expected_first, delta=0.004)
+        self.assertAlmostEqual(last_s, expected_last, delta=0.004)
+        # And — the user-facing point — the first body is essentially on
+        # ``kf_0`` (s < 0.015) and the last body is essentially on
+        # ``kf_1`` (s > 0.985), so the boundary blend windows produce
+        # nearly-identical bracketing samples around every anchor.
+        self.assertLess(first_s, 0.015)
+        self.assertGreater(last_s, 0.985)
 
 
 if __name__ == "__main__":
