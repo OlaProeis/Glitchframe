@@ -10,6 +10,7 @@ cache key. Run-scoped paths (e.g. ``outputs/<run_id>/``) should use a separate
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field
 from math import pi
 from pathlib import Path
@@ -476,6 +477,7 @@ def _render_pipeline(
     is_preview: bool,
     force: bool,
     progress: ProgressFn | None,
+    cancel_event: threading.Event | None = None,
 ) -> RenderResult:
     """Shared implementation behind preview and full render.
 
@@ -682,6 +684,7 @@ def _render_pipeline(
             thumbnail_palette=palette if thumb_line else None,
             start_sec=t_start,
             duration_sec=window_sec,
+            cancel_event=cancel_event,
         )
     finally:
         try:
@@ -737,13 +740,16 @@ def orchestrate_preview_10s(
     *,
     force: bool = False,
     progress: ProgressFn | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> RenderResult:
     """
     Render a short preview (~``inputs.preview_window_sec`` seconds) starting
     at the loudest RMS window of the track. Reuses all cached artifacts
     (analysis, lyrics alignment, background) so re-runs stay fast.
     """
-    return _render_pipeline(inputs, is_preview=True, force=force, progress=progress)
+    return _render_pipeline(
+        inputs, is_preview=True, force=force, progress=progress, cancel_event=cancel_event
+    )
 
 
 def orchestrate_full_render(
@@ -751,10 +757,13 @@ def orchestrate_full_render(
     *,
     force: bool = False,
     progress: ProgressFn | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> RenderResult:
     """
     Render the full music video to ``outputs/<run_id>/output.mp4`` and write
     ``metadata.txt`` alongside. Runs a post-encode ffprobe A/V sync check and
     includes the report in :class:`RenderResult`.
     """
-    return _render_pipeline(inputs, is_preview=False, force=force, progress=progress)
+    return _render_pipeline(
+        inputs, is_preview=False, force=force, progress=progress, cancel_event=cancel_event
+    )

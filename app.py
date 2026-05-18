@@ -40,6 +40,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 import time
 import traceback
 import urllib.parse
@@ -55,6 +56,9 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 LOGGER = logging.getLogger("glitchframe.app")
+
+# Cooperative cancel for Preview / Full render (compositor + ffmpeg stage).
+_RENDER_CANCEL_EVENT = threading.Event()
 
 
 class _SuppressAsyncioWinReset(logging.Filter):
@@ -106,6 +110,7 @@ from pipeline.audio_ingest import (
     ingest_audio_file,
     preview_value_for_gradio,
 )
+from pipeline.compositor import RenderCancelledError
 from pipeline.effects_editor import (
     bake_auto_schedule,
     build_editor_html as build_effects_editor_html,
@@ -605,6 +610,16 @@ def _open_last_output_folder(
     return _append_log(log, f"Opened output folder: {p}")
 
 
+def _request_render_cancel(log: str) -> str:
+    """Signal the in-process compositor to stop (non-queued click)."""
+    _RENDER_CANCEL_EVENT.set()
+    return _append_log(
+        log,
+        "Stop render: cancel requested — compositing/encode will wind down "
+        "(cannot interrupt earlier analysis/background stages).",
+    )
+
+
 def _run_preview(
     song_hash: str | None,
     bg_mode: str,
@@ -664,6 +679,7 @@ def _run_preview(
     progress: gr.Progress = gr.Progress(),
 ) -> tuple[str, Any, Any]:
     progress(0.0, desc="Preview 10 s")
+    _RENDER_CANCEL_EVENT.clear()
     try:
         inputs = _build_render_inputs(
             song_hash=song_hash,
@@ -727,7 +743,19 @@ def _run_preview(
 
     cb = _EtaProgress(progress)
     try:
-        result = orchestrate_preview_10s(inputs, progress=cb)
+        result = orchestrate_preview_10s(
+            inputs, progress=cb, cancel_event=_RENDER_CANCEL_EVENT
+        )
+    except RenderCancelledError:
+        progress(1.0, desc="Idle")
+        return (
+            _append_log(
+                log,
+                "Preview cancelled — adjust settings and run Preview or Full render again.",
+            ),
+            gr.update(),
+            gr.update(),
+        )
     except Exception as exc:
         progress(1.0, desc="Idle")
         LOGGER.exception("Preview pipeline failed")
@@ -804,6 +832,7 @@ def _run_render(
     progress: gr.Progress = gr.Progress(),
 ) -> tuple[str, Any, Any]:
     progress(0.0, desc="Render full video")
+    _RENDER_CANCEL_EVENT.clear()
     try:
         inputs = _build_render_inputs(
             song_hash=song_hash,
@@ -867,7 +896,19 @@ def _run_render(
 
     cb = _EtaProgress(progress)
     try:
-        result = orchestrate_full_render(inputs, progress=cb)
+        result = orchestrate_full_render(
+            inputs, progress=cb, cancel_event=_RENDER_CANCEL_EVENT
+        )
+    except RenderCancelledError:
+        progress(1.0, desc="Idle")
+        return (
+            _append_log(
+                log,
+                "Render cancelled — adjust settings and run Preview or Full render again.",
+            ),
+            gr.update(),
+            gr.update(),
+        )
     except Exception as exc:
         progress(1.0, desc="Idle")
         LOGGER.exception("Render pipeline failed")
@@ -1216,9 +1257,10 @@ _KF_REGEN_JS = (
     "]"
 )
 _KF_GEN_JS = (
-    "(song_hash, preset, cprompt, res, regen_all, slot, log, _buf, backend) => ["
+    "(song_hash, preset, cprompt, res, regen_all, slot, log, _buf, backend, confirm_gen) => ["
     "song_hash, preset, cprompt, res, regen_all, slot, log, "
-    "JSON.stringify(window." + _KEYFRAMES_EDITOR_STATE_JS_VAR + " || {}), backend"
+    "JSON.stringify(window." + _KEYFRAMES_EDITOR_STATE_JS_VAR + " || {}), backend, "
+    "confirm_gen"
     "]"
 )
 _KF_CROP_STILL_PREP_JS = (
@@ -2167,6 +2209,16 @@ def _regenerate_selected_keyframe_sdxl(
         )
 
 
+def _kf_count_existing_keyframe_pngs(cache_dir: Path) -> int:
+    """How many timeline slots already have a ``keyframe_*.png`` on disk."""
+    choices = keyframe_id_choices(cache_dir)
+    n = 0
+    for i in range(len(choices)):
+        if keyframe_png_abs_path_for_index(cache_dir, i) is not None:
+            n += 1
+    return n
+
+
 def _generate_keyframes_sdxl(
     song_hash: str | None,
     shader_dd: str | None,
@@ -2177,8 +2229,9 @@ def _generate_keyframes_sdxl(
     log: str,
     edited_json: str,
     image_backend: str | None = None,
+    confirm_generate_stills: bool = False,
     progress: gr.Progress = gr.Progress(),
-) -> tuple[str, str, object, str | object]:
+) -> tuple[str, str, object, str | object, object]:
     if not song_hash:
         progress(1.0, desc="Idle")
         return (
@@ -2186,7 +2239,38 @@ def _generate_keyframes_sdxl(
             gr.update(),
             gr.update(),
             gr.update(),
+            gr.update(),
         )
+    cache_dir = song_cache_dir(song_hash)
+    n_existing = _kf_count_existing_keyframe_pngs(cache_dir)
+    if n_existing > 0 and not confirm_generate_stills:
+        progress(1.0, desc="Idle")
+        msg_force = (
+            " With **Regenerate all AI-generated slots** checked, every AI slot will "
+            "be re-rendered (uploads untouched)."
+            if force_all
+            else ""
+        )
+        gr.Warning(
+            f"You already have {n_existing} keyframe PNG(s) on disk. **Generate stills** "
+            "only fills **missing** frames unless that checkbox is enabled."
+            + msg_force
+            + " To redo **one** clip, use **Regenerate (SDXL)** on the timeline. "
+            'Tick **Confirm Generate stills** below and click **Generate stills** again '
+            "to proceed."
+        )
+        return (
+            _append_log(
+                log,
+                "Generate stills: confirm blocked — tick **Confirm Generate stills** "
+                "and click again (see orange warning banner).",
+            ),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(value=False),
+        )
+
     backend = normalize_image_backend(image_backend)
     backend_label = "HiDream" if backend == IMAGE_BACKEND_HIDREAM else "SDXL"
     _kf_try_flush_keyframes_browser(
@@ -2195,7 +2279,6 @@ def _generate_keyframes_sdxl(
     progress(0.0, desc=f"{backend_label} keyframes")
     cb = _EtaProgress(progress)
     try:
-        cache_dir = song_cache_dir(song_hash)
         preset_id, preset_prompt = _kf_resolve_prompt(shader_dd, custom_prompt)
         w, h = _parse_resolution(out_resolution)
         generate_sdxl_keyframes_for_cache(
@@ -2231,6 +2314,7 @@ def _generate_keyframes_sdxl(
             html_blob,
             dd_up,
             ptxt,
+            gr.update(value=False),
         )
     except Exception as exc:  # noqa: BLE001
         progress(1.0, desc="Idle")
@@ -2242,6 +2326,7 @@ def _generate_keyframes_sdxl(
             gr.update(),
             gr.update(),
             gr.update(),
+            gr.update(value=False),
         )
 
 
@@ -2850,7 +2935,9 @@ See [`docs/technical/background-stills.md`](docs/technical/background-stills.md)
                     "Plan **SDXL background stills** (or uploads) on a **single waveform timeline** "
                     "(preview, prompt, Regenerate / Replace / Crop live in the editor). **Load timeline** "
                     "needs ingest + **Analyze**. **Save timeline** writes `keyframes_timeline.json` + "
-                    "`manifest.json` (clears RIFE cache). **Generate SDXL stills** fills missing slots. "
+                    "`manifest.json` (clears RIFE cache). **Generate stills** fills missing AI slots; "
+                    "once PNGs exist you must tick **Confirm Generate stills** (guards against confusing "
+                    "this with **Regenerate (SDXL)**). "
                     "Staging uploads show in the timeline preview immediately; **Save timeline** commits them "
                     "to `keyframe_*.png`."
                 )
@@ -2881,6 +2968,15 @@ See [`docs/technical/background-stills.md`](docs/technical/background-stills.md)
                 kf_regen_all_cb = gr.Checkbox(
                     label="Regenerate all AI-generated slots (not uploads)",
                     value=False,
+                )
+                kf_confirm_generate_stills = gr.Checkbox(
+                    label="Confirm Generate stills (required when any keyframe PNGs exist)",
+                    value=False,
+                    info=(
+                        "First batch needs no tick. After PNGs exist, **Generate stills** asks for "
+                        "this once per run so you do not confuse it with **Regenerate (SDXL)** on "
+                        "the timeline."
+                    ),
                 )
                 kf_slot_dd = gr.Dropdown(
                     label="Target slot id (for Apply crop — syncs when you click a clip)",
@@ -2926,7 +3022,8 @@ See [`docs/technical/background-stills.md`](docs/technical/background-stills.md)
                 gr.Markdown(
                     "Long runs use **Queue** — progress, elapsed time, and an ETA show on the bar while a job runs. "
                     "**Preview 10 s** renders the loudest RMS window; **Render full video** writes "
-                    "`outputs/<run_id>/output.mp4`, `thumbnail.png`, and `metadata.txt`, then runs an ffprobe A/V sync check."
+                    "`outputs/<run_id>/output.mp4`, `thumbnail.png`, and `metadata.txt`, then runs an ffprobe A/V sync check. "
+                    "**Stop render** cancels during compositing/encode (after analysis and background prep)."
                 )
                 out_resolution = gr.Dropdown(
                     label="Resolution",
@@ -2946,6 +3043,7 @@ See [`docs/technical/background-stills.md`](docs/technical/background-stills.md)
                 with gr.Row():
                     btn_preview = gr.Button("Preview 10 s")
                     btn_render = gr.Button("Render full video", variant="stop")
+                    btn_stop_render = gr.Button("Stop render")
                 gr.Markdown(
                     "When a run **finishes**, the **MP4 plays below** (same file on disk under `outputs/<run_id>/`). "
                     "**Open output folder** launches your file manager — the player has no download button."
@@ -3043,6 +3141,12 @@ See [`docs/technical/background-stills.md`](docs/technical/background-stills.md)
             inputs=render_inputs,
             outputs=[run_log, output_result_video, last_output_dir_state],
             show_progress="full",
+        )
+        btn_stop_render.click(
+            fn=_request_render_cancel,
+            inputs=[run_log],
+            outputs=[run_log],
+            queue=False,
         )
         btn_open_output_folder.click(
             fn=_open_last_output_folder,
@@ -3208,8 +3312,15 @@ See [`docs/technical/background-stills.md`](docs/technical/background-stills.md)
                 run_log,
                 kf_state_buffer,
                 kf_image_backend,
+                kf_confirm_generate_stills,
             ],
-            outputs=[run_log, kf_editor_html, kf_slot_dd, kf_sel_prompt],
+            outputs=[
+                run_log,
+                kf_editor_html,
+                kf_slot_dd,
+                kf_sel_prompt,
+                kf_confirm_generate_stills,
+            ],
             show_progress="full",
             js=_KF_GEN_JS,
         )

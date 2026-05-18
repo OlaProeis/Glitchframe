@@ -380,6 +380,45 @@ _EDITOR_CSS = """
     pointer-events: none; z-index: 6; display: none; }
   .mv-editor .mv-scroller { overflow-x: auto; }
   .mv-editor .mv-stage { position: relative; }
+  /* Fixed strip: words active at the playhead (approximates burned-in typography). */
+  .mv-editor .mv-video-preview {
+    margin-top: 8px;
+    padding: 8px 12px 10px;
+    background: #020617;
+    border: 1px solid #1e293b;
+    border-radius: 6px;
+    min-height: 52px;
+    box-sizing: border-box;
+  }
+  .mv-editor .mv-video-preview-caption {
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #64748b;
+    margin-bottom: 4px;
+  }
+  .mv-editor .mv-video-preview-text {
+    font-size: clamp(16px, 2.2vw, 22px);
+    font-weight: 600;
+    line-height: 1.25;
+    color: #f8fafc;
+    text-align: center;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+    min-height: 1.25em;
+  }
+  .mv-editor .mv-video-preview-text.mv-video-preview-empty {
+    color: #475569;
+    font-weight: 500;
+    font-size: 15px;
+  }
+  .mv-editor .mv-video-preview-sub {
+    font-size: 12px;
+    color: #94a3b8;
+    text-align: center;
+    margin-top: 4px;
+    min-height: 1.2em;
+    font-style: italic;
+  }
   .mv-editor .mv-audio { display: block; width: 100%; margin-top: 6px; }
   .mv-editor .mv-help { color: #9ca3af; font-size: 11px; margin-top: 6px;
     line-height: 1.4; }
@@ -599,6 +638,12 @@ def build_editor_html(
         f"      <div class=\"mv-drag-guide\" data-mv-drag-guide></div>"
         f"    </div>"
         f"  </div>"
+        f"  <div class=\"mv-video-preview\" data-mv-video-preview>"
+        f"    <div class=\"mv-video-preview-caption\">On-video lyrics (preview)</div>"
+        f"    <div class=\"mv-video-preview-text mv-video-preview-empty\" "
+        f"data-mv-preview-main></div>"
+        f"    <div class=\"mv-video-preview-sub\" data-mv-preview-sub></div>"
+        f"  </div>"
         # Native HTML5 <audio> lives directly inside the editor so the
         # playback UI is flush with the waveform the user is editing. The
         # JS toolbar drives this exact element (known id), so there's no
@@ -618,7 +663,8 @@ def build_editor_html(
         f"<strong>double-click</strong> a bar to edit its text (or use "
         f"<b>+ word at playhead</b>). "
         f"<kbd>Space</kbd> play/pause. <kbd>+</kbd>/<kbd>−</kbd> zoom. "
-        f"Colour: green = confident, yellow = low confidence, red = very low, grey = no score."
+        f"Colour: green = confident, yellow = low confidence, red = very low, grey = no score. "
+        f"The preview strip above the audio shows text visible at the playhead (like burned-in lyrics)."
         f"  </div>"
         f"</div>"
         f"<script type=\"text/plain\" id=\"{code_tag_id}\">{code_blob}</script>"
@@ -651,6 +697,8 @@ _EDITOR_JS = r"""
   const playhead = container.querySelector("[data-mv-playhead]");
   const dragGuide = container.querySelector("[data-mv-drag-guide]");
   const toolbar = container.querySelector(".mv-toolbar");
+  const previewMain = container.querySelector("[data-mv-preview-main]");
+  const previewSub = container.querySelector("[data-mv-preview-sub]");
 
   let pxPerSec = __MV_PIXELS_PER_SECOND__;
 
@@ -1213,6 +1261,41 @@ _EDITOR_JS = r"""
     updateSelectionStyling();
   }
 
+  /** Text visible at time ``t`` — matches typical kinetic-type windows [t_start, t_end). */
+  function updateLyricsPreviewBar(t) {
+    if (!previewMain) return;
+    const tt = (typeof t === "number" && isFinite(t)) ? Math.max(0, t) : 0;
+    const arr = Array.isArray(state.words) ? state.words : [];
+    const activeTok = [];
+    for (let i = 0; i < arr.length; i++) {
+      const w = arr[i];
+      const ts = Number(w.t_start);
+      const te = Number(w.t_end);
+      if (!(isFinite(ts) && isFinite(te))) continue;
+      if (tt >= ts && tt < te) activeTok.push((w.word || "").trim());
+    }
+    const activeLine = activeTok.filter(Boolean).join(" ").trim();
+    if (activeLine) {
+      previewMain.textContent = activeLine;
+      previewMain.classList.remove("mv-video-preview-empty");
+      if (previewSub) previewSub.textContent = "";
+      return;
+    }
+    previewMain.textContent = "—";
+    previewMain.classList.add("mv-video-preview-empty");
+    let nextW = null;
+    for (let i = 0; i < arr.length; i++) {
+      const w = arr[i];
+      const ts = Number(w.t_start);
+      if (!isFinite(ts)) continue;
+      if (ts > tt) { nextW = w; break; }
+    }
+    if (previewSub) {
+      const nw = (nextW && (nextW.word || "").trim()) ? nextW.word.trim() : "";
+      previewSub.textContent = nw ? ("Next: " + nw) : "";
+    }
+  }
+
   function onBandUp(_ev) {
     if (!band) return;
     if (bandEl) {
@@ -1230,14 +1313,18 @@ _EDITOR_JS = r"""
 
   function tickPlayhead() {
     const a = audio();
-    if (a && !a.paused && !a.ended) {
-      playhead.style.left = secondsToPx(a.currentTime) + "px";
-      // Keep playhead visible while scrolling through a long song.
-      const sl = scroller.scrollLeft;
-      const sw = scroller.clientWidth;
-      const x = secondsToPx(a.currentTime);
-      if (x < sl + 40) { scroller.scrollLeft = Math.max(0, x - 40); }
-      else if (x > sl + sw - 40) { scroller.scrollLeft = x - sw + 40; }
+    if (a && isFinite(a.currentTime)) {
+      const ct = a.currentTime;
+      playhead.style.left = secondsToPx(ct) + "px";
+      updateLyricsPreviewBar(ct);
+      if (!a.paused && !a.ended) {
+        // Keep playhead visible while scrolling through a long song.
+        const sl = scroller.scrollLeft;
+        const sw = scroller.clientWidth;
+        const x = secondsToPx(ct);
+        if (x < sl + 40) { scroller.scrollLeft = Math.max(0, x - 40); }
+        else if (x > sl + sw - 40) { scroller.scrollLeft = x - sw + 40; }
+      }
     }
     requestAnimationFrame(tickPlayhead);
   }
@@ -1313,6 +1400,7 @@ _EDITOR_JS = r"""
 
   setStageWidth();
   renderWords();
+  updateLyricsPreviewBar(0);
   requestAnimationFrame(tickPlayhead);
 })();
 """

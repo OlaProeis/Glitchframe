@@ -140,6 +140,42 @@ from pipeline.renderer import (
 
 LOGGER = logging.getLogger(__name__)
 
+
+class RenderCancelledError(Exception):
+    """Raised when :func:`render_full_video` stops early due to ``cancel_event``."""
+
+
+def _drain_compositor_queue_on_cancel(
+    frame_q: queue.Queue,
+    producer: threading.Thread,
+    stop_event: threading.Event,
+    *,
+    drain_timeout_sec: float = 180.0,
+) -> None:
+    """Wake a blocked producer by consuming queued frames until the sentinel."""
+    stop_event.set()
+    LOGGER.info("Compositor: cancel requested — draining encoder queue…")
+    deadline = time.monotonic() + drain_timeout_sec
+    while time.monotonic() < deadline:
+        try:
+            chunk = frame_q.get(timeout=0.25)
+        except queue.Empty:
+            if not producer.is_alive():
+                try:
+                    chunk = frame_q.get_nowait()
+                except queue.Empty:
+                    return
+                if chunk is None:
+                    return
+                continue
+            continue
+        if chunk is None:
+            return
+    LOGGER.warning(
+        "Compositor: cancel drain exceeded %.0fs — forcing shutdown",
+        drain_timeout_sec,
+    )
+
 DEFAULT_QUEUE_SIZE = 4
 
 # Smoother kick envelope for reactive shaders (longer decay than logo pulse).
@@ -1813,6 +1849,7 @@ def render_full_video(
     thumbnail_palette: Sequence[str] | None = None,
     start_sec: float = 0.0,
     duration_sec: float | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> CompositorResult:
     """
     Render a full-length video: background + reactive shader + kinetic
@@ -1863,6 +1900,10 @@ def render_full_video(
         ``floor(duration_sec * fps)`` and the muxed audio is trimmed to
         match. Must be positive; must fit inside the audio's remaining
         duration after ``start_sec``.
+    cancel_event:
+        When set, any waiter checks ``cancel_event.is_set()`` and stops the
+        producer / encoder cooperatively, deletes a partial ``output.mp4``, and
+        raises :class:`RenderCancelledError`.
 
     Raises
     ------
@@ -1871,6 +1912,8 @@ def render_full_video(
     ValueError
         Invalid config, size mismatch between background and compositor,
         unknown shader stem, or malformed per-frame arrays.
+    RenderCancelledError
+        User cancelled via ``cancel_event`` during compositing / encode.
     RuntimeError
         ``ffmpeg`` missing, encoder failure, or an exception raised in the
         render producer thread.
@@ -2018,6 +2061,9 @@ def render_full_video(
     producer_error: list[BaseException] = []
     stop_event = threading.Event()
 
+    def cancel_requested() -> bool:
+        return cancel_event is not None and cancel_event.is_set()
+
     # Shared progress state. Initialised on the request thread *before* the
     # producer starts so the consumer's progress poll has valid totals from
     # the very first tick. ``started_at`` is reset in the producer once it
@@ -2140,7 +2186,7 @@ def render_full_video(
                     except Exception:  # noqa: BLE001 - diagnostics only
                         _proc = None
                     for i in range(frame_count):
-                        if stop_event.is_set():
+                        if stop_event.is_set() or cancel_requested():
                             return
                         # Frame-centered time matches `pipeline.renderer`; it
                         # makes interpolation symmetric and avoids double-
@@ -2343,6 +2389,11 @@ def render_full_video(
 
         try:
             while True:
+                if cancel_requested():
+                    _drain_compositor_queue_on_cancel(
+                        frame_q, producer, stop_event
+                    )
+                    break
                 try:
                     chunk = frame_q.get(timeout=_PROGRESS_TICK_SEC)
                 except queue.Empty:
@@ -2350,6 +2401,11 @@ def render_full_video(
                     # the UI so the user sees "warming up", "preparing
                     # typography", etc., as the producer transitions phases.
                     _emit_progress()
+                    if cancel_requested():
+                        _drain_compositor_queue_on_cancel(
+                            frame_q, producer, stop_event
+                        )
+                        break
                     continue
                 if chunk is None:
                     break
@@ -2386,12 +2442,28 @@ def render_full_video(
         stderr_file.seek(0)
         err_tail = stderr_file.read().decode("utf-8", errors="replace").strip()
 
+    user_cancelled = cancel_requested()
+
     if producer_error:
         exc = producer_error[0]
-        raise RuntimeError(
-            f"Compositor producer thread failed: {exc}\n"
-            "See log line 'Compositor producer thread crashed' for full traceback."
-        ) from exc
+        if user_cancelled:
+            LOGGER.info(
+                "Compositor: ignoring producer thread error after cancel: %s",
+                exc,
+            )
+        else:
+            raise RuntimeError(
+                f"Compositor producer thread failed: {exc}\n"
+                "See log line 'Compositor producer thread crashed' for full traceback."
+            ) from exc
+
+    if user_cancelled:
+        try:
+            out_mp4.unlink(missing_ok=True)
+        except OSError as exc:
+            LOGGER.debug("Could not remove partial mp4 after cancel: %s", exc)
+        LOGGER.info("Compositor: render cancelled — partial output removed")
+        raise RenderCancelledError("Video render cancelled")
 
     if code != 0:
         msg = f"ffmpeg exited with code {code}"
@@ -2444,6 +2516,7 @@ __all__: Sequence[str] = [
     "CompositorResult",
     "ProgressFn",
     "PulseFn",
+    "RenderCancelledError",
     "render_full_video",
     "render_single_frame",
 ]
