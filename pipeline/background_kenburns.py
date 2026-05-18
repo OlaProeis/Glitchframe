@@ -61,6 +61,9 @@ ZOOM_U_SCALE = 0.14
 ZOOM_RMS_SCALE = 0.18
 PAN_RANGE = 0.42
 ROT_DEG_MAX = 1.35
+# After rotate(expand=True), padded corners are black; uniform resize-to-frame pulls them in as edge slivers.
+# Center-crop with aspect ratio matching output, scaled by this overscan (>1 zooms in slightly).
+ROT_TRIM_OVERSCAN = 1.032
 
 ProgressFn = Callable[[float, str], None]
 
@@ -170,6 +173,35 @@ def _cover_canvas(
     return img.resize((nw, nh), Image.LANCZOS)
 
 
+def _crop_center_cover_resize(
+    img: Image.Image, width: int, height: int, overscan: float
+) -> Image.Image:
+    """
+    Largest centered crop matching ``width:height``, divided by ``overscan`` for extra zoom-in,
+    then scaled to ``width`` x ``height``.
+    """
+    ew, eh = img.size
+    if ew <= 0 or eh <= 0:
+        raise ValueError("invalid image dimensions for crop-resize")
+    target_ar = float(width) / float(height)
+    src_ar = float(ew) / float(eh)
+    if src_ar > target_ar:
+        crop_h = eh
+        crop_w = int(round(float(crop_h) * target_ar))
+    else:
+        crop_w = ew
+        crop_h = int(round(float(crop_w) / target_ar))
+    oz = max(1.0, float(overscan))
+    crop_w = max(1, int(round(float(crop_w) / oz)))
+    crop_h = max(1, int(round(float(crop_h) / oz)))
+    crop_w = min(crop_w, ew)
+    crop_h = min(crop_h, eh)
+    left = max(0, (ew - crop_w) // 2)
+    top = max(0, (eh - crop_h) // 2)
+    cropped = img.crop((left, top, left + crop_w, top + crop_h))
+    return cropped.resize((width, height), Image.LANCZOS)
+
+
 def _rms_envelope_stats(analysis: Mapping[str, Any]) -> tuple[float, list[float]]:
     rms_block = analysis.get("rms") or {}
     values = rms_block.get("values")
@@ -218,8 +250,11 @@ def _ken_burns_transform(
         cropped = cropped.rotate(
             rot_deg, resample=Image.Resampling.BICUBIC, expand=True, fillcolor=(0, 0, 0)
         )
-        cropped = _cover_canvas(cropped, width, height, 1.0)
-    out = cropped.resize((width, height), Image.LANCZOS)
+        out = _crop_center_cover_resize(
+            cropped, width, height, ROT_TRIM_OVERSCAN
+        )
+    else:
+        out = cropped.resize((width, height), Image.LANCZOS)
     return np.asarray(out, dtype=np.uint8).copy()
 
 
