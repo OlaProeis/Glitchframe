@@ -32,6 +32,23 @@ the Gradio timeline (edit timing/prompts, regen, uploads).
 - `pipeline.background.normalize_background_mode` maps UI labels to canonical IDs (raises on unknown).
 - `OrchestratorInputs.background_mode` and `OrchestratorInputs.static_background_image` carry user choices into full render / preview (non-cache-key metadata).
 
+## Ken Burns (`pipeline/background_kenburns.py`)
+
+**Where it applies**
+
+- **`static-kenburns`:** entire plate is RMS-driven Ken Burns (`StaticKenBurnsBackground`).
+- **`sdxl-stills`:** optional — when **`sdxl_ken_burns`** is on, each sampled still (interpolated and/or **RIFE**-morphed) passes through **`apply_ken_burns_to_rgb_array`** (`BackgroundStills`).
+
+**Motion recipe**
+
+- Progress **`u`** from smoothstep(`t/duration`), **normalized RMS** from `analysis.json` (`rms.values` at RMS fps inside **`_rms_envelope_stats`** / **`_interp_scalar_series`**).
+- **`_ken_burns_transform`** pans/zooms/tilts a crop from **`_cover_canvas`** scaling ( **`DEFAULT_MARGIN`** 1.38 by default → headroom — override via **`ken_burns_margin`** in the factory / orchestrator wiring).
+- **Effects timeline** optional **`ken_burns_rms_automation`**: RMS drive is **`sdxl_ken_burns_rms_reactivity`** × interpolated envelope (see **`docs/technical/effects-timeline.md`**, **`docs/technical/orchestrator-effects-timeline-wiring.md`**).
+
+**Post-rotate edge trim (zoom-in)**
+
+Tilt calls Pillow **`rotate(..., expand=True, fillcolor=black)`**. Resizing the full expanded bounding box onto the compositor rectangle used to shear black padding into thin **edge slivers**. The pipeline now **`_crop_center_cover_resize`** after rotate: centered crop matching output aspect ratio with **`ROT_TRIM_OVERSCAN`** (default ~1.032 × zoom-in versus the maximal inscribed crop), then **`resize`** to final width × height. Increase **`ROT_TRIM_OVERSCAN`** slightly in code if traces remain under extreme RMS.
+
 ## AnimateDiff prompt construction
 
 AnimateDiff uses a **dedicated motion-prompt builder** (`_build_motion_prompt` in
